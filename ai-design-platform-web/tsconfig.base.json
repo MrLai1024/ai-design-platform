@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "jsx": "preserve",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "sourceMap": true,
+    "paths": {
+      "@ai-design/shared": ["./packages/shared/src"],
+      "@ai-design/shared/*": ["./packages/shared/src/*"],
+      "@ai-design/micro-core": ["./packages/micro-core/src"],
+      "@ai-design/micro-core/*": ["./packages/micro-core/src/*"]
+    }
+  },
+  "exclude": ["node_modules", "dist"]
+}
