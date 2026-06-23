@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package ai.v1;
+
+option go_package = "ai-design-platform/gen/go/ai/v1;aiv1";
+
+// AgentService handles AI agent workflow execution.
+service AgentService {
+  // ExecuteAgent triggers an async agent workflow, returning a run_id.
+  rpc ExecuteAgent(AgentRequest) returns (AgentResponse);
+
+  // WatchAgent streams agent execution progress.
+  rpc WatchAgent(WatchRequest) returns (stream AgentEvent);
+}
+
+message AgentRequest {
+  string agent_id = 1;
+  string workflow_type = 2;  // "design" | "codegen" | "analysis"
+  string input = 3;          // JSON-encoded input parameters
+  reserved 4;
+  map<string, string> metadata = 5;
+}
+
+message AgentResponse {
+  string agent_run_id = 1;
+  string status = 2;  // "queued" | "running"
+}
+
+message WatchRequest {
+  string agent_run_id = 1;
+}
+
+message AgentEvent {
+  string agent_run_id = 1;
+  string status = 2;   // "THINKING" | "TOOL_CALLING" | "GENERATING" | "DONE" | "ERROR"
+  string message = 3;  // Human-readable status description
+  string data = 4;     // JSON-encoded intermediate data
+}

@@ -1,0 +1,24 @@
+# Generated code
+gen/
+
+# Go
+gateway/cmd/server/server
+*.exe
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Environment
+.env
+.env.local
+
+# Docker
+.docker/
