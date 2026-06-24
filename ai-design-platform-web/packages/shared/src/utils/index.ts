@@ -1,2 +1,2 @@
-export { formatDate, formatCurrency } from './format';
+export { formatDate } from './format';
 export { storage } from './storage';

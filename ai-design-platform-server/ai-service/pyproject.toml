@@ -1,0 +1,19 @@
+[project]
+name = "ai-service"
+version = "0.1.0"
+description = "AI Design Platform — AI Services"
+requires-python = ">=3.12"
+dependencies = [
+    "grpcio>=1.62",
+    "protobuf>=5.26",
+    "openai>=1.30",
+    "zai-sdk>=0.1",
+    "structlog>=24.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "grpcio-tools>=1.62",
+]
