@@ -6,8 +6,8 @@ requires-python = ">=3.12"
 dependencies = [
     "grpcio>=1.62",
     "protobuf>=5.26",
-    "anthropic>=0.30",
     "openai>=1.30",
+    "zai-sdk>=0.1",
     "structlog>=24.1",
 ]
 

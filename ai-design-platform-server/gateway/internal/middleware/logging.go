@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Logging returns a Gin middleware that logs request method, path, status, and duration.
+// Logging 返回一个记录请求方法、路径、状态和持续时间的 Gin 中间件。
 func Logging() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()

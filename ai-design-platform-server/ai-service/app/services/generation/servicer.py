@@ -1,4 +1,4 @@
-"""gRPC GenerationService implementation."""
+"""gRPC GenerationService 实现。"""
 
 import logging
 from typing import AsyncIterator
@@ -17,7 +17,6 @@ from ai.v1.generation_pb2 import (
 )
 from ai.v1.generation_pb2_grpc import GenerationServiceServicer
 
-from app.services.llm.mock import MockLLMProvider
 from app.services.llm.provider import (
     CompleteEvent,
     LLMConfig,
@@ -26,27 +25,31 @@ from app.services.llm.provider import (
     TokenEvent,
     ToolCallEvent,
 )
+from app.services.llm.router import resolve_provider
 
 logger = logging.getLogger(__name__)
 
 
 class GenerationServicer(GenerationServiceServicer):
-    """Handles LLM generation requests via gRPC server-streaming."""
+    """通过 gRPC 服务器流式处理 LLM 生成请求。"""
 
-    def __init__(self, llm_provider: LLMProvider | None = None) -> None:
-        self._llm = llm_provider or MockLLMProvider()
-        self._active_generations: dict[str, str] = {}  # generation_id -> "running"|"cancelling"
+    def __init__(self) -> None:
+        self._active_generations: dict[str, str] = {}  # generation_id -> "running"|"cancelling"（生成状态）
 
     async def StreamGenerate(
         self,
         request: GenerateRequest,
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[GenerateResponse]:
-        """Server-streaming RPC: streams tokens from LLM to caller."""
+        """服务端流式 RPC：从 LLM 向调用者流式传输 token。"""
         generation_id = request.generation_id
+        model = request.model or "glm-5.2"
         self._active_generations[generation_id] = "running"
 
-        # Convert proto messages to domain messages
+        # 为此模型解析正确的提供者
+        provider = resolve_provider(model)
+
+        # 将 proto 消息转换为领域消息
         messages = [
             Message(role=m.role, content=m.content)
             for m in request.messages
@@ -60,14 +63,14 @@ class GenerationServicer(GenerationServiceServicer):
         )
 
         try:
-            async for event in self._llm.stream_generate(
-                model=request.model or "claude-sonnet-4-6",
+            async for event in provider.stream_generate(
+                model=model,
                 messages=messages,
                 config=config,
             ):
-                # Check for cancellation
+                # 检查是否取消
                 if context.cancelled() or self._active_generations.get(generation_id) == "cancelling":
-                    await self._llm.cancel()
+                    await provider.cancel()
                     yield GenerateResponse(
                         complete=GenerationComplete(
                             finish_reason="cancelled",
@@ -100,7 +103,7 @@ class GenerationServicer(GenerationServiceServicer):
                         )
                     )
         except Exception as e:
-            logger.exception("Generation failed: generation_id=%s", generation_id)
+            logger.exception("Generation failed: generation_id=%s model=%s", generation_id, model)
             yield GenerateResponse(
                 error=GenerationError(code="INTERNAL", message=str(e))
             )
@@ -112,10 +115,9 @@ class GenerationServicer(GenerationServiceServicer):
         request: CancelRequest,
         context: grpc.aio.ServicerContext,
     ) -> CancelResponse:
-        """Cancel an in-progress generation."""
+        """取消正在进行的生成。"""
         gid = request.generation_id
         if gid in self._active_generations:
             self._active_generations[gid] = "cancelling"
-            await self._llm.cancel()
             return CancelResponse(success=True)
         return CancelResponse(success=False)

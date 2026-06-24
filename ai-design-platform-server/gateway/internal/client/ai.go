@@ -11,13 +11,13 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// AIClient wraps the gRPC connection to the Python AI service.
+// AIClient 封装了到 Python AI 服务的 gRPC 连接。
 type AIClient struct {
 	conn   *grpc.ClientConn
 	genCli pb.GenerationServiceClient
 }
 
-// NewAIClient creates a new gRPC client connected to the AI service.
+// NewAIClient 创建连接到 AI 服务的新 gRPC 客户端。
 func NewAIClient(ctx context.Context, addr string) (*AIClient, error) {
 	conn, err := grpc.DialContext(ctx, addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -34,7 +34,7 @@ func NewAIClient(ctx context.Context, addr string) (*AIClient, error) {
 	}, nil
 }
 
-// StreamGenerate opens a server-streaming gRPC call for AI generation.
+// StreamGenerate 打开用于 AI 生成的服务端流式 gRPC 调用。
 func (c *AIClient) StreamGenerate(
 	ctx context.Context,
 	req *pb.GenerateRequest,
@@ -46,7 +46,7 @@ func (c *AIClient) StreamGenerate(
 	return stream, nil
 }
 
-// CancelGeneration cancels an in-progress generation in the AI service.
+// CancelGeneration 取消 AI 服务中正在进行的生成任务。
 func (c *AIClient) CancelGeneration(ctx context.Context, generationID, reason string) error {
 	_, err := c.genCli.CancelGeneration(ctx, &pb.CancelRequest{
 		GenerationId: generationID,
@@ -55,12 +55,12 @@ func (c *AIClient) CancelGeneration(ctx context.Context, generationID, reason st
 	return err
 }
 
-// Close shuts down the gRPC connection.
+// Close 关闭 gRPC 连接。
 func (c *AIClient) Close() error {
 	return c.conn.Close()
 }
 
-// ReceiveAll reads all responses from a stream (for testing).
+// ReceiveAll 从流中读取所有响应（用于测试）。
 func ReceiveAll(stream pb.GenerationService_StreamGenerateClient) ([]*pb.GenerateResponse, error) {
 	var responses []*pb.GenerateResponse
 	for {

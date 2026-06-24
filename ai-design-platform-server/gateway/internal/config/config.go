@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Config holds all gateway configuration.
+// Config 保存所有网关配置。
 type Config struct {
 	ServerPort    string
 	AIServiceAddr string
@@ -15,7 +15,7 @@ type Config struct {
 	LogLevel      string
 }
 
-// Load reads configuration from environment variables with defaults.
+// Load 从环境变量读取配置，并提供默认值。
 func Load() (*Config, error) {
 	cfg := &Config{
 		ServerPort:    getEnv("SERVER_PORT", "8080"),

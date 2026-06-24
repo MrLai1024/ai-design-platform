@@ -4,7 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// User is a placeholder type for authenticated user info.
+// User 是已认证用户信息的占位符类型。
 type User struct {
 	ID   string
 	Name string
@@ -12,27 +12,27 @@ type User struct {
 
 const userKey = "user"
 
-// Auth returns a middleware that validates JWT tokens.
-// Phase 1: stub — accepts any request and sets a placeholder user.
-// Phase 2: real JWT validation.
+// Auth 返回一个验证 JWT 令牌的中间件。
+// 第一阶段：桩代码 — 接受任何请求并设置占位用户。
+// 第二阶段：真正的 JWT 验证。
 func Auth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// TODO(phase2): Validate JWT from Authorization header
+		// TODO(phase2): 从 Authorization 头验证 JWT
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
-			// For now, allow unauthenticated requests with a placeholder user
+			// 目前，允许未认证的请求并使用占位用户
 			c.Set(userKey, User{ID: "anonymous", Name: "Anonymous"})
 			c.Next()
 			return
 		}
 
-		// Placeholder: treat token as user ID
+		// 占位：将令牌视为用户 ID
 		c.Set(userKey, User{ID: authHeader, Name: authHeader})
 		c.Next()
 	}
 }
 
-// GetUser extracts the authenticated user from the Gin context.
+// GetUser 从 Gin 上下文中提取已认证用户。
 func GetUser(c *gin.Context) (User, bool) {
 	u, exists := c.Get(userKey)
 	if !exists {

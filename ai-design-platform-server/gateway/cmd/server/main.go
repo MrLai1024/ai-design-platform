@@ -18,19 +18,19 @@ import (
 )
 
 func main() {
-	// Logger
+	// 日志
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})))
 
-	// Config
+	// 配置
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("Failed to load config", "error", err)
 		os.Exit(1)
 	}
 
-	// gRPC client to AI service
+	// AI 服务的 gRPC 客户端
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -41,37 +41,46 @@ func main() {
 	}
 	defer aiClient.Close()
 
-	// Handlers
+	// 处理器
 	healthH := handler.NewHealthHandler()
 	chatH := handler.NewChatHandler(aiClient)
+	convH := handler.NewConversationHandler(aiClient)
 
-	// Gin router
+	// Gin 路由器
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(middleware.Logging())
 	r.Use(middleware.Auth())
 
-	// Routes
+	// 路由
 	r.GET("/health", healthH.Health)
 	r.GET("/ready", healthH.Ready)
 
 	api := r.Group("/api/v1")
 	{
+		// 原始聊天
 		api.POST("/chat/stream", chatH.StreamChat)
 		api.POST("/chat/cancel/:id", chatH.CancelChat)
+
+		// 对话管理
+		api.POST("/conversations", convH.CreateConversation)
+		api.GET("/conversations", convH.ListConversations)
+		api.GET("/conversations/:id", convH.GetConversation)
+		api.POST("/conversations/:id/messages", convH.SendMessage)
+		api.DELETE("/conversations/:id", convH.DeleteConversation)
 	}
 
-	// HTTP server
+	// HTTP 服务器
 	srv := &http.Server{
 		Addr:         ":" + cfg.ServerPort,
 		Handler:      r,
 		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 5 * time.Minute, // SSE connections are long-lived
+		WriteTimeout: 5 * time.Minute, // SSE 连接是长连接
 		IdleTimeout:  2 * time.Minute,
 	}
 
-	// Graceful shutdown
+	// 优雅关闭
 	go func() {
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

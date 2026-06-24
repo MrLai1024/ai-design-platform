@@ -13,29 +13,29 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// ChatRequest is the JSON body for the chat stream endpoint.
+// ChatRequest 是聊天流端点的 JSON 请求体。
 type ChatRequest struct {
 	Model    string        `json:"model" binding:"required"`
 	Messages []ChatMessage `json:"messages" binding:"required"`
 }
 
-// ChatMessage represents a single message in the conversation.
+// ChatMessage 表示对话中的单条消息。
 type ChatMessage struct {
 	Role    string `json:"role" binding:"required"`
 	Content string `json:"content" binding:"required"`
 }
 
-// ChatHandler handles AI chat streaming endpoints.
+// ChatHandler 处理 AI 聊天流式端点。
 type ChatHandler struct {
 	aiClient *client.AIClient
 }
 
-// NewChatHandler creates a new ChatHandler.
+// NewChatHandler 创建一个新的 ChatHandler。
 func NewChatHandler(aiClient *client.AIClient) *ChatHandler {
 	return &ChatHandler{aiClient: aiClient}
 }
 
-// StreamChat handles SSE-based streaming AI chat.
+// StreamChat 处理基于 SSE 的流式 AI 聊天。
 // POST /api/v1/chat/stream
 func (h *ChatHandler) StreamChat(c *gin.Context) {
 	var req ChatRequest
@@ -46,7 +46,7 @@ func (h *ChatHandler) StreamChat(c *gin.Context) {
 
 	generationID := newUUID()
 
-	// Build gRPC request
+	// 构建 gRPC 请求
 	pbMessages := make([]*pb.Message, len(req.Messages))
 	for i, m := range req.Messages {
 		pbMessages[i] = &pb.Message{
@@ -65,7 +65,7 @@ func (h *ChatHandler) StreamChat(c *gin.Context) {
 		},
 	}
 
-	// Open gRPC stream to AI service
+	// 打开到 AI 服务的 gRPC 流
 	stream, err := h.aiClient.StreamGenerate(c.Request.Context(), grpcReq)
 	if err != nil {
 		slog.Error("Failed to start gRPC stream", "error", err)
@@ -73,18 +73,18 @@ func (h *ChatHandler) StreamChat(c *gin.Context) {
 		return
 	}
 
-	// Set SSE headers
+	// 设置 SSE 头部
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
 
-	// Send generation_id as first event so client can cancel
+	// 发送 generation_id 作为第一个事件，以便客户端可以取消
 	c.SSEvent("meta", gin.H{"generation_id": generationID})
 	c.Writer.Flush()
 
-	// Bridge gRPC stream → SSE
+	// 将 gRPC 流转发为 SSE
 	c.Stream(func(w io.Writer) bool {
 		resp, err := stream.Recv()
 		if err == io.EOF {
@@ -122,7 +122,7 @@ func (h *ChatHandler) StreamChat(c *gin.Context) {
 	})
 }
 
-// CancelChat cancels an in-progress generation.
+// CancelChat 取消正在进行的生成任务。
 // POST /api/v1/chat/cancel/:id
 func (h *ChatHandler) CancelChat(c *gin.Context) {
 	generationID := c.Param("id")
@@ -140,15 +140,15 @@ func (h *ChatHandler) CancelChat(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "cancelled", "generation_id": generationID})
 }
 
-// newUUID generates a v4 UUID string using crypto/rand.
+// newUUID 使用 crypto/rand 生成 v4 UUID 字符串。
 func newUUID() string {
 	var buf [16]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		panic("failed to generate UUID: " + err.Error())
 	}
-	// Set version 4
+	// 设置版本 4
 	buf[6] = (buf[6] & 0x0f) | 0x40
-	// Set variant bits (10xx)
+	// 设置变体位 (10xx)
 	buf[8] = (buf[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
