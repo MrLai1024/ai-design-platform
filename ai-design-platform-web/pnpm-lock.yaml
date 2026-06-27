@@ -413,6 +413,9 @@ importers:
       vitest:
         specifier: ^1.2.0
         version: 1.2.0(@types/node@20.19.43)(happy-dom@20.10.6)(terser@5.48.0)
+      vue:
+        specifier: ^3.5.38
+        version: 3.5.38(typescript@5.3.3)
 
 packages:
 
