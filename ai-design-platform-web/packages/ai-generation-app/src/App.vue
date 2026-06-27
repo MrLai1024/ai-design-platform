@@ -1,10 +1,9 @@
 <template>
-  <div class="ai-generation-app p-6">
-    <h1 class="text-2xl font-bold text-gray-800 mb-4">AI 生成</h1>
-    <nav class="flex space-x-4 mb-6">
-      <router-link to="/" class="text-blue-600 hover:underline"> 首页 </router-link>
-      <router-link to="/about" class="text-blue-600 hover:underline"> 关于 </router-link>
-    </nav>
+  <div class="ai-generation-app">
+    <header class="flex items-center justify-between px-6 py-3 bg-gray-900 text-white">
+      <h1 class="text-lg font-bold">AI 代码生成</h1>
+      <span class="text-xs text-gray-400">Vue SFC + 实时预览</span>
+    </header>
     <router-view />
   </div>
 </template>
@@ -15,3 +14,16 @@ onGlobalStateChange((state, prev) => {
   console.log('[ai-generation-app] global state changed:', state, prev);
 });
 </script>
+
+<style>
+/* reset 防基座样式污染 */
+.ai-generation-app {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+.ai-generation-app *,
+.ai-generation-app *::before,
+.ai-generation-app *::after {
+  box-sizing: border-box;
+}
+</style>
+

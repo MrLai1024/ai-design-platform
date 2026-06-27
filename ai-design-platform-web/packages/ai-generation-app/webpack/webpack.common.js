@@ -2,11 +2,17 @@ const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const { VueLoaderPlugin } = require('vue-loader');
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
+const MonacoWebpackPlugin = require('monaco-editor-webpack-plugin');
 
 const isDev = process.env.NODE_ENV === 'development';
 const appName = 'ai-generation-app';
 
 module.exports = {
+  ignoreWarnings: [
+    // @vue/compiler-sfc browser ESM build contains dynamic require() for
+    // Node-only features (source-map, postcss) that gracefully degrade at runtime.
+    /Critical dependency: require function is used in a way/,
+  ],
   entry: path.resolve(__dirname, '../src/main.ts'),
   output: {
     path: path.resolve(__dirname, '../dist'),
@@ -49,6 +55,10 @@ module.exports = {
   },
   plugins: [
     new VueLoaderPlugin(),
+    new MonacoWebpackPlugin({
+      languages: ['html', 'css', 'javascript', 'typescript'],
+      features: ['bracketMatching', 'wordHighlighter', 'find', 'folding', 'lineSelection'],
+    }),
     new HtmlWebpackPlugin({
       template: path.resolve(__dirname, '../public/index.html'),
       title: 'AI Generation',

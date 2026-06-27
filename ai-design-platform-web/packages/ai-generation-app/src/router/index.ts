@@ -1,8 +1,6 @@
-import type { RouteRecordRaw } from 'vue-router';
-import Home from '../views/Home.vue';
-import About from '../views/About.vue';
+import type { RouteRecordRaw } from 'vue-router'
+import GenerationView from '../views/GenerationView.vue'
 
 export const routes: RouteRecordRaw[] = [
-  { path: '/', name: 'Home', component: Home },
-  { path: '/about', name: 'About', component: About },
-];
+  { path: '/', name: 'Generation', component: GenerationView },
+]
