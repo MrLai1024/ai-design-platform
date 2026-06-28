@@ -3,6 +3,7 @@ import { streamChat, cancelGeneration } from '../api/chat';
 
 export interface StreamCallbacks {
   onToken: (text: string, index: number) => void;
+  onReasoning?: (text: string, index: number) => void;
   onMeta: (meta: { generation_id: string; conversation_id?: string; message_id?: string }) => void;
   onToolCall: (tool: { id: string; name: string; arguments: string }) => void;
   onComplete: (finishReason: string) => void;
@@ -76,6 +77,9 @@ export function useChatStream(callbacks: StreamCallbacks) {
               callbacks.onToken(event.text as string, event.index as number);
               // 让出主线程，使 Vue 有机会渲染本次 token 再处理下一个
               await new Promise((r) => setTimeout(r, 0));
+              break;
+            case 'reasoning':
+              callbacks.onReasoning?.(event.text as string, event.index as number);
               break;
             case 'tool_call':
               callbacks.onToolCall({
