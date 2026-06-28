@@ -62,7 +62,7 @@ func (h *ChatHandler) StreamChat(c *gin.Context) {
 		Messages:     pbMessages,
 		Config: &pb.GenerationConfig{
 			Temperature:    0.7,
-			MaxTokens:      4096,
+			MaxTokens:      2048,
 			EnableThinking: req.EnableThinking,
 		},
 	}
@@ -101,7 +101,20 @@ func (h *ChatHandler) StreamChat(c *gin.Context) {
 
 		switch payload := resp.Payload.(type) {
 		case *pb.GenerateResponse_Token:
-			writeSSE(c, "token", gin.H{"_t": "token", "text": payload.Token.Text, "index": payload.Token.Index})
+			if payload.Token.ReasoningContent != "" {
+				writeSSE(c, "reasoning", gin.H{
+					"_t":    "reasoning",
+					"text":  payload.Token.ReasoningContent,
+					"index": payload.Token.Index,
+				})
+			}
+			if payload.Token.Text != "" {
+				writeSSE(c, "token", gin.H{
+					"_t":    "token",
+					"text":  payload.Token.Text,
+					"index": payload.Token.Index,
+				})
+			}
 		case *pb.GenerateResponse_ToolCall:
 			writeSSE(c, "tool_call", gin.H{
 				"_t":        "tool_call",
