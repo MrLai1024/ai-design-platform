@@ -45,6 +45,9 @@ const callbacks: StreamCallbacks = {
   onToken(text) {
     chatStore.appendToken(text);
   },
+  onReasoning(text) {
+    chatStore.appendReasoning(text);
+  },
   onToolCall(tool) {
     console.log('[chat] tool_call:', tool);
   },
