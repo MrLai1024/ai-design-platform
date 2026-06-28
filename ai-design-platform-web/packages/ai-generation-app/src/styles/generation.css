@@ -1,0 +1,57 @@
+/* src/styles/generation.css */
+
+/* 三栏布局 */
+.generation-view {
+  min-height: 0;
+}
+
+/* 消息内容中的 Markdown */
+.message-content h1,
+.message-content h2,
+.message-content h3 {
+  font-weight: 600;
+  margin: 0.5em 0 0.25em;
+}
+.message-content h1 { font-size: 1.125rem; }
+.message-content h2 { font-size: 1rem; }
+.message-content h3 { font-size: 0.875rem; }
+.message-content p { margin: 0.25em 0; }
+.message-content code {
+  background: rgba(0,0,0,0.06);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+.message-content pre {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 8px 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.8em;
+  margin: 0.5em 0;
+}
+
+/* ChatPanel 消息滚动 */
+.chat-panel .overflow-y-auto {
+  scroll-behavior: smooth;
+}
+
+/* Monaco 编辑器容器 */
+.code-editor .relative {
+  position: relative;
+}
+.code-editor .monaco-editor {
+  position: absolute !important;
+  top: 0;
+  left: 0;
+}
+
+/* FileTabBar 滚动条 */
+.file-tab-bar::-webkit-scrollbar {
+  height: 2px;
+}
+.file-tab-bar::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 2px;
+}

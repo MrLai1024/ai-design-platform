@@ -1,8 +1,8 @@
 import type { RouteRecordRaw } from 'vue-router';
-import Home from '../views/Home.vue';
-import About from '../views/About.vue';
+import ChatView from '../views/ChatView.vue';
 
 export const routes: RouteRecordRaw[] = [
-  { path: '/', name: 'Home', component: Home },
-  { path: '/about', name: 'About', component: About },
+  { path: '/', name: 'Chat', component: ChatView },
+  { path: '/chat', name: 'ChatNew', component: ChatView },
+  { path: '/chat/:id', name: 'ChatDetail', component: ChatView },
 ];

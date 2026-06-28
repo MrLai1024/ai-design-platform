@@ -4,6 +4,7 @@ import { createRouter, createWebHistory, type Router } from 'vue-router';
 import App from './App.vue';
 import { routes } from './router';
 import './styles/global.css';
+import './styles/generation.css';
 
 let app: VueApp | null = null;
 let router: Router | null = null;
