@@ -75,9 +75,9 @@ func main() {
 	srv := &http.Server{
 		Addr:         ":" + cfg.ServerPort,
 		Handler:      r,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 5 * time.Minute, // SSE 连接是长连接
-		IdleTimeout:  2 * time.Minute,
+		ReadTimeout:  30 * time.Second,    // 读取请求体
+		WriteTimeout: 10 * time.Minute,    // SSE 长连接，匹配 AI 服务 600s 超时
+		IdleTimeout:  5 * time.Minute,     // Keep-alive 空闲超时
 	}
 
 	// 优雅关闭

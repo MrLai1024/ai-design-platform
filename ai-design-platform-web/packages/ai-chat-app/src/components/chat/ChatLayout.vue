@@ -50,6 +50,16 @@ const callbacks: StreamCallbacks = {
   },
   onComplete(finishReason) {
     console.log('[chat] complete:', finishReason);
+    // 兜底：确保流式内容被保存（正常情况下 done 事件会处理）
+    if (chatStore.isStreaming) {
+      const msgId = crypto.randomUUID();
+      chatStore.finishStreaming(msgId);
+      const convId = chatStore.currentConversationId;
+      if (convId) {
+        convStore.incrementMsgCount(convId);
+        refreshConversationList();
+      }
+    }
   },
   onError(message) {
     chatStore.setStreamError(message);

@@ -1,3 +1,4 @@
+import './public-path';
 import { createApp, type App as VueApp } from 'vue';
 import { createPinia } from 'pinia';
 import { createRouter, createWebHistory, type Router } from 'vue-router';

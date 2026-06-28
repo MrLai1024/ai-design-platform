@@ -13,6 +13,7 @@ class LLMConfig:
     max_tokens: int = 4096
     top_p: float = 1.0
     stop_sequences: list[str] = field(default_factory=list)
+    enable_thinking: bool = True  # 是否启用 GLM 思考模式
 
 
 @dataclass

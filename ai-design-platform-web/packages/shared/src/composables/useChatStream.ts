@@ -48,6 +48,8 @@ export function useChatStream(callbacks: StreamCallbacks) {
       const decoder = new TextDecoder();
       let buffer = '';
 
+      let streamFinishedNormally = false;
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -82,15 +84,22 @@ export function useChatStream(callbacks: StreamCallbacks) {
               break;
             case 'complete':
               callbacks.onComplete(event.finish_reason as string);
+              streamFinishedNormally = true;
               break;
             case 'error':
               callbacks.onError(event.message as string, event.code as string | undefined);
               break;
             case 'done':
+              streamFinishedNormally = true;
               callbacks.onDone();
               break;
           }
         }
+      }
+
+      // 安全兜底：流自然结束时，如果没有收到 done 事件，主动触发
+      if (!streamFinishedNormally) {
+        callbacks.onDone();
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error';

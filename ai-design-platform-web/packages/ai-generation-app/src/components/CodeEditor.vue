@@ -1,53 +1,17 @@
 <!-- src/components/CodeEditor.vue -->
 <script setup lang="ts">
-import { ref, watch, onMounted } from 'vue'
+import { watch } from 'vue'
 import { useGenerationStore } from '@/stores/generation'
 import FileTabBar from './FileTabBar.vue'
 
 const store = useGenerationStore()
-const editorContainer = ref<HTMLElement | null>(null)
-let editor: import('monaco-editor').editor.IStandaloneCodeEditor | null = null
 
-// 懒加载 Monaco
-onMounted(async () => {
-  if (!editorContainer.value) return
-  const monaco = await import('monaco-editor')
-  editor = monaco.editor.create(editorContainer.value, {
-    value: store.activeFileEntry?.content || '',
-    language: 'html', // Vue SFC 使用 HTML 语法高亮
-    theme: 'vs',
-    minimap: { enabled: false },
-    fontSize: 13,
-    lineNumbers: 'on',
-    scrollBeyondLastLine: false,
-    wordWrap: 'on',
-    automaticLayout: true,
-    tabSize: 2,
-  })
-
-  editor.onDidChangeModelContent(() => {
-    if (!store.activeFile || !editor) return
-    const value = editor.getValue()
+function onContentChange(e: Event): void {
+  const value = (e.target as HTMLTextAreaElement).value
+  if (store.activeFile) {
     store.updateFileContent(store.activeFile, value)
-  })
-
-  // 初始内容
-  if (store.activeFileEntry) {
-    editor.setValue(store.activeFileEntry.content)
   }
-})
-
-// 切换文件时更新编辑器内容
-watch(
-  () => store.activeFile,
-  () => {
-    if (!editor || !store.activeFileEntry) return
-    const model = editor.getModel()
-    if (model) {
-      model.setValue(store.activeFileEntry.content)
-    }
-  },
-)
+}
 
 function handleFileClose(filename: string): void {
   store.removeFile(filename)
@@ -78,11 +42,15 @@ function handleFileAdd(): void {
       @close="handleFileClose"
       @add="handleFileAdd"
     />
-    <div
-      ref="editorContainer"
-      class="flex-1 relative"
+    <textarea
+      v-if="store.activeFileEntry"
+      :value="store.activeFileEntry.content"
+      @input="onContentChange"
+      class="flex-1 w-full p-4 font-mono text-sm resize-none outline-none border-0 bg-gray-50 text-gray-800 leading-relaxed"
+      placeholder="选择文件开始编辑..."
+      spellcheck="false"
     />
-    <div v-if="!store.activeFile" class="flex-1 flex items-center justify-center text-gray-400 text-sm">
+    <div v-else class="flex-1 flex items-center justify-center text-gray-400 text-sm">
       暂无文件 — 通过 AI 对话生成代码，或点击 + 新建
     </div>
   </div>

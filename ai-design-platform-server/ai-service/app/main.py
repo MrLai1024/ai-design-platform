@@ -11,7 +11,7 @@ from pathlib import Path
 _env_path = Path(__file__).resolve().parent.parent / ".env"
 if _env_path.exists():
     import os as _os
-    with open(_env_path) as _f:
+    with open(_env_path, encoding="utf-8") as _f:
         for _line in _f:
             _line = _line.strip()
             if _line and not _line.startswith("#") and "=" in _line:

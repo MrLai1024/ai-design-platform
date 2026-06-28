@@ -41,6 +41,16 @@
 
     <!-- Page Content -->
     <router-view />
+
+    <!--
+      Pre-render all sub-app containers so qiankun's sandbox can find them
+      during module initialization. Use v-show (not v-if) so they remain in
+      the DOM — qiankun needs them before activation. Only the active one
+      is visible; others are display:none.
+    -->
+    <div id="sub-app-chat" v-show="isRoute('/ai-chat')" class="sub-app-container" />
+    <div id="sub-app-generation" v-show="isRoute('/ai-generation')" class="sub-app-container" />
+    <div id="sub-app-workflow" v-show="isRoute('/ai-workflow')" class="sub-app-container" />
   </div>
 </template>
 
@@ -50,7 +60,15 @@ import { useRoute } from 'vue-router';
 
 const route = useRoute();
 
-const showNavbar = computed(() => {
-  return route.path !== '/' && route.path !== '';
-});
+function isRoute(path: string): boolean {
+  return route.path.startsWith(path);
+}
+
+const showNavbar = computed(() => route.path !== '/' && route.path !== '');
 </script>
+
+<style>
+.sub-app-container {
+  height: calc(100vh - 56px);
+}
+</style>

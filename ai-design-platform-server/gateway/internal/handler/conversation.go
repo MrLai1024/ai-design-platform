@@ -187,6 +187,7 @@ func (h *ConversationHandler) SendMessage(c *gin.Context) {
 				"finish_reason": payload.Complete.FinishReason,
 			})
 			c.SSEvent("complete", string(completeJSON))
+			c.SSEvent("done", "[DONE]")
 			return false
 		case *pb.GenerateResponse_Error:
 			c.SSEvent("error", gin.H{"code": payload.Error.Code, "message": payload.Error.Message})

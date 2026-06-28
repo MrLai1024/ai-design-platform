@@ -1,8 +1,11 @@
 """ZhipuAI (GLM) LLM 提供者 — 官方 zai-sdk。"""
 
 import asyncio
+import logging
 import os
 from collections.abc import AsyncIterator
+
+import httpx
 
 from app.services.llm.provider import (
     CompleteEvent,
@@ -14,8 +17,13 @@ from app.services.llm.provider import (
     ToolCallEvent,
 )
 
+logger = logging.getLogger(__name__)
+
 # 唯一支持的模型
 SUPPORTED_MODELS = frozenset({"glm-5.2"})
+
+# 默认超时：连接 30s，读取 600s（10 分钟）以容纳 GLM 思考模式
+DEFAULT_TIMEOUT = httpx.Timeout(timeout=600.0, connect=30.0)
 
 
 def _to_openai_messages(messages: list[Message]) -> list[dict[str, str]]:
@@ -29,12 +37,15 @@ class ZhipuProvider(LLMProvider):
     环境变量：ZHIPUAI_API_KEY
     """
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(self, api_key: str | None = None, timeout: httpx.Timeout | None = None) -> None:
         from zai import ZhipuAiClient
 
         key = api_key or os.environ.get("ZHIPUAI_API_KEY", "")
-        self._client = ZhipuAiClient(api_key=key)
+        self._timeout = timeout or DEFAULT_TIMEOUT
+        self._client = ZhipuAiClient(api_key=key, timeout=self._timeout)
         self._cancel_flag = False
+        logger.info("ZhipuProvider initialized with timeout connect=%.0fs read=%.0fs",
+                     self._timeout.connect, self._timeout.read)
 
     async def stream_generate(
         self,
@@ -57,8 +68,9 @@ class ZhipuProvider(LLMProvider):
             "max_tokens": cfg.max_tokens,
             "temperature": cfg.temperature,
             "stream": True,
-            "thinking": {"type": "enabled"},
         }
+        if cfg.enable_thinking:
+            kwargs["thinking"] = {"type": "enabled"}
 
         index = 0
         try:
