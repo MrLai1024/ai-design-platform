@@ -29,6 +29,55 @@ func NewConversationHandler(aiClient *client.AIClient) *ConversationHandler {
 	}
 }
 
+const (
+	maxHistoryRounds = 10
+	systemPrompt     = `你是 AI 设计助手，专注于 UI/UX 设计、前端开发和设计系统咨询。
+你可以帮助用户进行界面设计、交互设计、组件开发、样式调整等任务。
+请用简洁专业的方式回答，优先给出可执行的具体建议。`
+)
+
+// trimMessages 裁剪对话历史，避免超出模型上下文窗口。
+// 规则：保留首条 system 消息 + 最近 maxRounds 轮对话，中间插入省略提示。
+func trimMessages(messages []store.Message, maxRounds int) []*pb.Message {
+	hasSystem := len(messages) > 0 && messages[0].Role == "system"
+
+	keepCount := maxRounds * 2 // user + assistant 对
+	if hasSystem {
+		keepCount++
+	}
+
+	totalAllowed := keepCount + 1 // +1 for possible system summary
+	if len(messages) <= totalAllowed {
+		// 无需裁剪
+		out := make([]*pb.Message, len(messages))
+		for i, m := range messages {
+			out[i] = &pb.Message{Role: m.Role, Content: m.Content}
+		}
+		return out
+	}
+
+	out := make([]*pb.Message, 0, totalAllowed)
+
+	// 保留第一条 system 消息
+	if hasSystem {
+		out = append(out, &pb.Message{Role: messages[0].Role, Content: messages[0].Content})
+	}
+
+	// 插入省略提示
+	out = append(out, &pb.Message{Role: "system", Content: "[之前的对话已省略]"})
+
+	// 保留最近的消息
+	startIdx := len(messages) - keepCount
+	if hasSystem {
+		startIdx = len(messages) - (maxRounds * 2)
+	}
+	for _, m := range messages[startIdx:] {
+		out = append(out, &pb.Message{Role: m.Role, Content: m.Content})
+	}
+
+	return out
+}
+
 // --- 请求 / 响应类型 ---
 
 type createConversationReq struct {
@@ -102,15 +151,21 @@ func (h *ConversationHandler) SendMessage(c *gin.Context) {
 	userMsgID := newUUID()
 	h.store.AddMessage(convID, userMsgID, "user", req.Content)
 
-	// 使用完整对话历史构建 gRPC 请求
+	// 构建消息历史（含自动注入 system prompt 和裁剪）
 	conv = h.store.Get(convID) // 添加新消息后重新获取
-	pbMessages := make([]*pb.Message, 0, len(conv.Messages)+1)
-	for _, m := range conv.Messages {
-		pbMessages = append(pbMessages, &pb.Message{
-			Role:    m.Role,
-			Content: m.Content,
-		})
+	rawMessages := conv.Messages
+
+	// 如果第一条消息不是 system，则在最前面插入 system prompt
+	// （仅在内存中注入，不写入 store）
+	if len(rawMessages) == 0 || rawMessages[0].Role != "system" {
+		rawMessages = append(
+			[]store.Message{{Role: "system", Content: systemPrompt}},
+			rawMessages...,
+		)
 	}
+
+	// 裁剪历史消息
+	pbMessages := trimMessages(rawMessages, maxHistoryRounds)
 
 	generationID := newUUID()
 	grpcReq := &pb.GenerateRequest{
@@ -119,7 +174,7 @@ func (h *ConversationHandler) SendMessage(c *gin.Context) {
 		Messages:     pbMessages,
 		Config: &pb.GenerationConfig{
 			Temperature:    0.7,
-			MaxTokens:      4096,
+			MaxTokens:      2048,
 			EnableThinking: req.EnableThinking,
 		},
 	}
@@ -171,12 +226,23 @@ func (h *ConversationHandler) SendMessage(c *gin.Context) {
 
 		switch payload := resp.Payload.(type) {
 		case *pb.GenerateResponse_Token:
-			fullContent.WriteString(payload.Token.Text)
-			writeSSE(c, "token", gin.H{
-				"_t":    "token",
-				"text":  payload.Token.Text,
-				"index": payload.Token.Index,
-			})
+			// 思考过程 → reasoning 事件
+			if payload.Token.ReasoningContent != "" {
+				writeSSE(c, "reasoning", gin.H{
+					"_t":    "reasoning",
+					"text":  payload.Token.ReasoningContent,
+					"index": payload.Token.Index,
+				})
+			}
+			// 正常文本 → token 事件
+			if payload.Token.Text != "" {
+				fullContent.WriteString(payload.Token.Text)
+				writeSSE(c, "token", gin.H{
+					"_t":    "token",
+					"text":  payload.Token.Text,
+					"index": payload.Token.Index,
+				})
+			}
 		case *pb.GenerateResponse_ToolCall:
 			writeSSE(c, "tool_call", gin.H{
 				"_t":        "tool_call",

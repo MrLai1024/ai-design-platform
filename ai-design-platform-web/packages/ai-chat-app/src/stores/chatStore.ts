@@ -10,6 +10,9 @@ export const useChatStore = defineStore('chat', () => {
   const streamError = ref<string | null>(null);
   const inputText = ref('');
   const enableThinking = ref(false);
+  const reasoningContent = ref('');
+  const isReasoning = ref(false);
+  const reasoningStartTime = ref(0);
 
   const displayMessages = computed<Message[]>(() => {
     if (streamingContent.value) {
@@ -18,6 +21,10 @@ export const useChatStore = defineStore('chat', () => {
         role: 'assistant',
         content: streamingContent.value,
         created_at: new Date().toISOString(),
+        reasoning_content: reasoningContent.value || undefined,
+        reasoning_duration_ms: reasoningStartTime.value
+          ? Date.now() - reasoningStartTime.value
+          : undefined,
       };
       return [...messages.value, virtual];
     }
@@ -31,6 +38,9 @@ export const useChatStore = defineStore('chat', () => {
     streamingContent.value = '';
     isStreaming.value = false;
     streamError.value = null;
+    reasoningContent.value = '';
+    isReasoning.value = false;
+    reasoningStartTime.value = 0;
   }
 
   function appendMessage(msg: Message) {
@@ -41,10 +51,29 @@ export const useChatStore = defineStore('chat', () => {
     isStreaming.value = true;
     streamingContent.value = '';
     streamError.value = null;
+    reasoningContent.value = '';
+    isReasoning.value = false;
+    reasoningStartTime.value = 0;
   }
 
   function appendToken(text: string) {
     streamingContent.value += text;
+  }
+
+  function appendReasoning(text: string) {
+    if (!isReasoning.value) {
+      isReasoning.value = true;
+      reasoningStartTime.value = Date.now();
+    }
+    reasoningContent.value += text;
+  }
+
+  function finishReasoning() {
+    isReasoning.value = false;
+  }
+
+  function getReasoningDuration(): number {
+    return reasoningStartTime.value ? Date.now() - reasoningStartTime.value : 0;
   }
 
   function finishStreaming(messageId: string) {
@@ -54,10 +83,16 @@ export const useChatStore = defineStore('chat', () => {
         role: 'assistant',
         content: streamingContent.value,
         created_at: new Date().toISOString(),
+        reasoning_content: reasoningContent.value || undefined,
+        reasoning_duration_ms: reasoningStartTime.value
+          ? Date.now() - reasoningStartTime.value
+          : undefined,
       });
     }
     streamingContent.value = '';
     isStreaming.value = false;
+    reasoningContent.value = '';
+    isReasoning.value = false;
   }
 
   function setStreamError(err: string) {
@@ -85,11 +120,17 @@ export const useChatStore = defineStore('chat', () => {
     streamError,
     inputText,
     enableThinking,
+    reasoningContent,
+    isReasoning,
+    reasoningStartTime,
     displayMessages,
     selectConversation,
     appendMessage,
     startStreaming,
     appendToken,
+    appendReasoning,
+    finishReasoning,
+    getReasoningDuration,
     finishStreaming,
     setStreamError,
     cancelStream,
