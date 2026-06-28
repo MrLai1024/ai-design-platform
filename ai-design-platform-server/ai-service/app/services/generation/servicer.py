@@ -22,6 +22,7 @@ from app.services.llm.provider import (
     LLMConfig,
     LLMProvider,
     Message,
+    ReasoningEvent,
     TokenEvent,
     ToolCallEvent,
 )
@@ -83,6 +84,13 @@ class GenerationServicer(GenerationServiceServicer):
                 if isinstance(event, TokenEvent):
                     yield GenerateResponse(
                         token=Token(text=event.text, index=event.index)
+                    )
+                elif isinstance(event, ReasoningEvent):
+                    yield GenerateResponse(
+                        token=Token(
+                            reasoning_content=event.text,
+                            index=event.index,
+                        )
                     )
                 elif isinstance(event, ToolCallEvent):
                     yield GenerateResponse(
