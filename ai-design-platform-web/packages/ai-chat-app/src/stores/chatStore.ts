@@ -15,7 +15,7 @@ export const useChatStore = defineStore('chat', () => {
   const reasoningStartTime = ref(0);
 
   const displayMessages = computed<Message[]>(() => {
-    if (streamingContent.value) {
+    if (isStreaming.value) {
       const virtual: Message = {
         id: '__streaming__',
         role: 'assistant',
