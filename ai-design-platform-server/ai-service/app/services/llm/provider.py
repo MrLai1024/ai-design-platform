@@ -39,13 +39,20 @@ class ToolCallEvent:
 
 
 @dataclass
+class ReasoningEvent:
+    """GLM 思考过程 token — 在前端可折叠区域展示。"""
+    text: str
+    index: int
+
+
+@dataclass
 class CompleteEvent:
     """表示生成完成。"""
     finish_reason: str  # "stop" | "length" | "cancelled"（结束原因）
     usage: dict[str, int]  # {"prompt_tokens": N, "completion_tokens": M, "total_tokens": T}（用量统计）
 
 
-type StreamEvent = TokenEvent | ToolCallEvent | CompleteEvent
+type StreamEvent = TokenEvent | ToolCallEvent | ReasoningEvent | CompleteEvent
 
 
 class LLMProvider(ABC):
