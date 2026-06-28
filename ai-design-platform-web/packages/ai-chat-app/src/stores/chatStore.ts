@@ -9,6 +9,7 @@ export const useChatStore = defineStore('chat', () => {
   const isStreaming = ref(false);
   const streamError = ref<string | null>(null);
   const inputText = ref('');
+  const enableThinking = ref(false);
 
   const displayMessages = computed<Message[]>(() => {
     if (streamingContent.value) {
@@ -20,7 +21,8 @@ export const useChatStore = defineStore('chat', () => {
       };
       return [...messages.value, virtual];
     }
-    return messages.value;
+    // 始终返回新数组引用，确保 Vue v-for 检测到变化
+    return [...messages.value];
   });
 
   function selectConversation(id: string | null, msgs: Message[] = []) {
@@ -71,6 +73,10 @@ export const useChatStore = defineStore('chat', () => {
     inputText.value = '';
   }
 
+  function toggleThinking() {
+    enableThinking.value = !enableThinking.value;
+  }
+
   return {
     currentConversationId,
     messages,
@@ -78,6 +84,7 @@ export const useChatStore = defineStore('chat', () => {
     isStreaming,
     streamError,
     inputText,
+    enableThinking,
     displayMessages,
     selectConversation,
     appendMessage,
@@ -87,5 +94,6 @@ export const useChatStore = defineStore('chat', () => {
     setStreamError,
     cancelStream,
     clearInput,
+    toggleThinking,
   };
 });

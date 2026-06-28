@@ -36,8 +36,9 @@ type createConversationReq struct {
 }
 
 type sendMessageReq struct {
-	Model   string `json:"model" binding:"required"`
-	Content string `json:"content" binding:"required"`
+	Model          string `json:"model" binding:"required"`
+	Content        string `json:"content" binding:"required"`
+	EnableThinking bool   `json:"enable_thinking"`
 }
 
 // --- Handlers ---
@@ -88,6 +89,8 @@ func (h *ConversationHandler) SendMessage(c *gin.Context) {
 		return
 	}
 
+	slog.Info("SendMessage", "conv_id", convID, "model", req.Model, "enable_thinking", req.EnableThinking)
+
 	// 验证对话是否存在
 	conv := h.store.Get(convID)
 	if conv == nil {
@@ -115,8 +118,9 @@ func (h *ConversationHandler) SendMessage(c *gin.Context) {
 		Model:        req.Model,
 		Messages:     pbMessages,
 		Config: &pb.GenerationConfig{
-			Temperature: 0.7,
-			MaxTokens:   4096,
+			Temperature:    0.7,
+			MaxTokens:      4096,
+			EnableThinking: req.EnableThinking,
 		},
 	}
 
@@ -130,13 +134,14 @@ func (h *ConversationHandler) SendMessage(c *gin.Context) {
 
 	// SSE 头部
 	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
+	c.Header("Cache-Control", "no-cache, no-transform")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
 
 	// 发送元数据
-	c.SSEvent("meta", gin.H{
+	writeSSE(c, "meta", gin.H{
+		"_t":             "meta",
 		"generation_id":  generationID,
 		"conversation_id": convID,
 		"message_id":     userMsgID,
@@ -155,24 +160,26 @@ func (h *ConversationHandler) SendMessage(c *gin.Context) {
 			if aiContent != "" {
 				h.store.AddMessage(convID, newUUID(), "assistant", aiContent)
 			}
-			c.SSEvent("done", "[DONE]")
+			writeSSE(c, "done", "[DONE]")
 			return false
 		}
 		if err != nil {
 			slog.Error("gRPC stream error", "error", err)
-			c.SSEvent("error", gin.H{"message": err.Error()})
+			writeSSE(c, "error", gin.H{"_t": "error", "message": err.Error()})
 			return false
 		}
 
 		switch payload := resp.Payload.(type) {
 		case *pb.GenerateResponse_Token:
 			fullContent.WriteString(payload.Token.Text)
-			c.SSEvent("token", gin.H{
+			writeSSE(c, "token", gin.H{
+				"_t":    "token",
 				"text":  payload.Token.Text,
 				"index": payload.Token.Index,
 			})
 		case *pb.GenerateResponse_ToolCall:
-			c.SSEvent("tool_call", gin.H{
+			writeSSE(c, "tool_call", gin.H{
+				"_t":        "tool_call",
 				"id":        payload.ToolCall.Id,
 				"name":      payload.ToolCall.Name,
 				"arguments": payload.ToolCall.Arguments,
@@ -184,13 +191,14 @@ func (h *ConversationHandler) SendMessage(c *gin.Context) {
 				h.store.AddMessage(convID, newUUID(), "assistant", aiContent)
 			}
 			completeJSON, _ := json.Marshal(gin.H{
+				"_t":            "complete",
 				"finish_reason": payload.Complete.FinishReason,
 			})
-			c.SSEvent("complete", string(completeJSON))
-			c.SSEvent("done", "[DONE]")
+			writeSSE(c, "complete", string(completeJSON))
+			writeSSE(c, "done", "[DONE]")
 			return false
 		case *pb.GenerateResponse_Error:
-			c.SSEvent("error", gin.H{"code": payload.Error.Code, "message": payload.Error.Message})
+			writeSSE(c, "error", gin.H{"_t": "error", "code": payload.Error.Code, "message": payload.Error.Message})
 			return false
 		default:
 			slog.Warn("Unknown response payload type", "type", fmt.Sprintf("%T", resp.Payload))

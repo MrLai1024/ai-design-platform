@@ -44,11 +44,16 @@ export function deleteConversation(id: string) {
  * 使用原生 fetch 以支持 ReadableStream 读取
  * 注意：请求体需要 model + content（均为必填）
  */
-export function streamChat(conversationId: string, model: string, content: string) {
+export function streamChat(
+  conversationId: string,
+  model: string,
+  content: string,
+  enableThinking: boolean = false,
+) {
   return fetch(`/api/v1/conversations/${conversationId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, content }),
+    body: JSON.stringify({ model, content, enable_thinking: enableThinking }),
   });
 }
 

@@ -50,16 +50,6 @@ const callbacks: StreamCallbacks = {
   },
   onComplete(finishReason) {
     console.log('[chat] complete:', finishReason);
-    // 兜底：确保流式内容被保存（正常情况下 done 事件会处理）
-    if (chatStore.isStreaming) {
-      const msgId = crypto.randomUUID();
-      chatStore.finishStreaming(msgId);
-      const convId = chatStore.currentConversationId;
-      if (convId) {
-        convStore.incrementMsgCount(convId);
-        refreshConversationList();
-      }
-    }
   },
   onError(message) {
     chatStore.setStreamError(message);
@@ -116,7 +106,7 @@ async function handleSend(content: string) {
   });
 
   chatStore.startStreaming();
-  startStream(convId, MODEL, content);
+  startStream(convId, MODEL, content, chatStore.enableThinking);
 }
 
 function handleStop() {
@@ -142,7 +132,7 @@ async function handleRetry() {
   if (lastUserMsg && chatStore.currentConversationId) {
     chatStore.streamError = null as any;
     chatStore.startStreaming();
-    startStream(chatStore.currentConversationId!, MODEL, lastUserMsg.content);
+    startStream(chatStore.currentConversationId!, MODEL, lastUserMsg.content, chatStore.enableThinking);
   }
 }
 
@@ -158,7 +148,7 @@ async function handleRegenerate(msgId: string) {
   }
   if (lastUserMsg && chatStore.currentConversationId) {
     chatStore.startStreaming();
-    startStream(chatStore.currentConversationId!, MODEL, lastUserMsg.content);
+    startStream(chatStore.currentConversationId!, MODEL, lastUserMsg.content, chatStore.enableThinking);
   }
 }
 

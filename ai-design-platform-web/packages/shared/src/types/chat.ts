@@ -76,6 +76,7 @@ export interface StreamEvents {
 export interface SendMessageRequest {
   model: string;
   content: string;
+  enable_thinking?: boolean;
 }
 
 /** 创建对话响应（后端返回） */

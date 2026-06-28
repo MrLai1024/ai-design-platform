@@ -38,8 +38,10 @@
     <MessageInput
       v-model="chatStore.inputText"
       :is-streaming="chatStore.isStreaming"
+      :enable-thinking="chatStore.enableThinking"
       @send="handleSend"
       @stop="$emit('stop')"
+      @toggle-thinking="chatStore.toggleThinking()"
     />
   </div>
 </template>
