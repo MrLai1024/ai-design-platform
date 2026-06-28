@@ -13,6 +13,8 @@ export interface Message {
   role: 'system' | 'user' | 'assistant';
   content: string;
   created_at: string;
+  reasoning_content?: string;
+  reasoning_duration_ms?: number;
 }
 
 /** 完整对话（含消息列表），对应后端 Conversation */
@@ -27,7 +29,7 @@ export interface Conversation {
 // ── SSE 事件类型 ──
 
 /** SSE 事件类型 */
-export type StreamEventType = 'meta' | 'token' | 'tool_call' | 'complete' | 'error' | 'done';
+export type StreamEventType = 'meta' | 'token' | 'reasoning' | 'tool_call' | 'complete' | 'error' | 'done';
 
 /** SSE token 事件 — 后端字段名是 text */
 export interface TokenEvent {
@@ -64,6 +66,7 @@ export interface CompleteEvent {
 export interface StreamEvents {
   meta: MetaEvent;
   token: TokenEvent;
+  reasoning: TokenEvent;
   tool_call: ToolCallEvent;
   complete: CompleteEvent;
   error: ErrorEvent;
