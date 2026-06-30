@@ -98,7 +98,9 @@ export function useMultiAgent() {
   function isCurrentStageFinished(): boolean {
     if (store.isStreaming) return false
     const last = store.lastAssistantMessage
-    return last !== null && !last.isStreaming && last.content.length > 0
+    if (!last || last.isStreaming) return false
+    // 有文本内容或有思考内容都视为阶段完成
+    return last.content.length > 0 || (last.reasoningContent?.length ?? 0) > 0
   }
 
   /** 点击已完成节点，查看产出 */
