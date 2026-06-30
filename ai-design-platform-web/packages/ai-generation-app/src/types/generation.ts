@@ -19,6 +19,7 @@ export interface ChatMessage {
   codeBlocks: ParsedCodeBlock[]
   timestamp: number
   isStreaming: boolean
+  stage?: Stage
 }
 
 /** 生成的文件条目 */
@@ -50,4 +51,29 @@ export interface CompileResult {
 /** 编译选项 */
 export interface CompileOptions {
   filename?: string
+}
+
+/** 工作流阶段 */
+export type Stage = 'idle' | 'analysis' | 'design' | 'code'
+
+/** 阶段状态 */
+export type StageStatus = 'pending' | 'active' | 'done'
+
+/** 各阶段产出 */
+export interface StageOutputs {
+  analysis: string | null
+  design: string | null
+}
+
+/** 代码实现阶段 Tab */
+export type CodeViewTab = 'preview' | 'files'
+
+/** 右侧面板视图 */
+export type RightPanelView = 'stage-output' | 'preview' | 'files'
+
+/** 步骤条节点定义 */
+export interface StepNode {
+  key: Stage
+  label: string
+  status: StageStatus
 }
