@@ -36,6 +36,12 @@ export function useMultiAgent() {
     await send({
       content: userContent,
       lib: store.currentLib,
+      messages: [
+        { role: 'system', content: getAnalysisPrompt() },
+        ...store.messages
+          .filter((m) => !m.isStreaming)
+          .map((m) => ({ role: m.role, content: m.content })),
+      ],
       stage: 'analysis',
     })
   }
