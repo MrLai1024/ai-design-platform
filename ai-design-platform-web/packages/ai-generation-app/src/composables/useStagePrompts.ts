@@ -3,7 +3,7 @@ import { useComponentDocs } from './useComponentDocs'
 import type { ComponentLibrary } from '@/types/generation'
 
 export function useStagePrompts() {
-  const { getSystemPrompt } = useComponentDocs()
+  const { getSystemPrompt, libraryConfigs } = useComponentDocs()
 
   function getAnalysisPrompt(): string {
     return `你是资深产品需求分析师。用户会描述一个前端应用需求，你需要通过提问来补充不明确的细节。
@@ -89,7 +89,8 @@ App.vue
   }
 
   function getCodeGenPrompt(lib: ComponentLibrary): string {
-    const componentDocs = getSystemPrompt(lib)
+    const config = libraryConfigs[lib]
+    const componentDocs = config.docInjection
     return `你是资深 Vue 3 前端全栈工程师。你会收到需求规格文档和详细设计方案，请基于它们生成可运行的完整前端应用代码。
 
 **技术栈：**
