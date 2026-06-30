@@ -81,6 +81,21 @@ export const useGenerationStore = defineStore('generation', () => {
     }
   }
 
+  function appendReasoning(text: string): void {
+    const last = messages.value[messages.value.length - 1]
+    if (last && last.role === 'assistant') {
+      if (!last.reasoningContent) last.reasoningContent = ''
+      last.reasoningContent += text
+    }
+  }
+
+  function finishReasoning(): void {
+    const last = messages.value[messages.value.length - 1]
+    if (last && last.role === 'assistant') {
+      last.reasoningDurationMs = Date.now() - (last.timestamp || Date.now())
+    }
+  }
+
   function finalizeLastMessage(): void {
     const last = messages.value[messages.value.length - 1]
     if (last && last.role === 'assistant') {
@@ -214,7 +229,7 @@ export const useGenerationStore = defineStore('generation', () => {
     lastAssistantMessage, dirtyFiles, fileList, activeFileEntry,
     currentStepNodes, isStageDone,
     // actions
-    addMessage, appendToLastMessage, finalizeLastMessage,
+    addMessage, appendToLastMessage, appendReasoning, finishReasoning, finalizeLastMessage,
     setFile, updateFileContent, setActiveFile, removeFile, addNewFile,
     markFileClean, setCompiledOutput, setCompileError, setCurrentLib,
     setStage, setStageStatus, setStageOutput, setCodeViewTab, setRightPanelView,

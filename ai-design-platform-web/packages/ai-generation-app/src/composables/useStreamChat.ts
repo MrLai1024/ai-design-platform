@@ -87,27 +87,70 @@ export function useStreamChat() {
       const reader = response.body!.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let reasoningStartTime = 0
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
 
         buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
+        // SSE 帧以 \n\n 分隔（匹配后端 writeSSE 的格式）
+        const frames = buffer.split('\n\n')
+        buffer = frames.pop() || ''
 
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
+        for (const frame of frames) {
+          if (!frame.trim()) continue
+          // 提取 data: 行
+          const dataLine = frame
+            .split('\n')
+            .find((l) => l.startsWith('data:'))
+          if (!dataLine) continue
+
+          const raw = dataLine.slice(5).trimStart()
+          if (!raw) continue
+
+          // [DONE] 标记 — 流结束
+          if (raw === '[DONE]') continue
+
           try {
-            const event = JSON.parse(line.slice(6))
-            if (event.content) {
-              store.appendToLastMessage(event.content)
-            }
-            if (event.error) {
-              error.value = event.error
+            const event = JSON.parse(raw)
+            const eventType: string = event._t
+
+            switch (eventType) {
+              case 'meta':
+                break
+
+              case 'token':
+                if (event.text) {
+                  store.appendToLastMessage(event.text)
+                  // 让出主线程，使 Vue 有机会渲染本次 token
+                  await new Promise((r) => setTimeout(r, 0))
+                }
+                break
+
+              case 'reasoning':
+                if (!reasoningStartTime) reasoningStartTime = Date.now()
+                if (event.text) {
+                  // 排除 GLM API 可能返回的占位符
+                  const cleaned = event.text.replace(/^(\s*\[思考中\]\s*)+$/, '')
+                  if (cleaned.trim()) {
+                    store.appendReasoning(cleaned)
+                  }
+                }
+                break
+
+              case 'complete':
+                if (reasoningStartTime) {
+                  store.finishReasoning()
+                }
+                break
+
+              case 'error':
+                error.value = event.message || event.error || '未知错误'
+                break
             }
           } catch {
-            // JSON 解析失败，跳过该行
+            // JSON 解析失败，跳过该帧
           }
         }
       }

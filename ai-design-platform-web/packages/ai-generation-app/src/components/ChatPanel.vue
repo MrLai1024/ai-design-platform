@@ -80,6 +80,19 @@ function stageBadgeClass(stage?: string): string {
     default: return 'bg-gray-100 text-gray-500'
   }
 }
+
+// 思考内容展开/折叠状态
+const reasoningOpen = ref<Record<string, boolean>>({})
+
+function toggleReasoning(msgId: string): void {
+  reasoningOpen.value[msgId] = !reasoningOpen.value[msgId]
+}
+
+function formatDuration(ms?: number): string {
+  if (!ms) return ''
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
 </script>
 
 <template>
@@ -121,6 +134,29 @@ function stageBadgeClass(stage?: string): string {
             >
               生成中...
             </span>
+          </div>
+
+          <!-- 思考内容（可折叠） -->
+          <div
+            v-if="msg.role === 'assistant' && msg.reasoningContent"
+            class="mb-2"
+          >
+            <button
+              class="flex items-center gap-1 text-[10px] text-gray-500 hover:text-gray-700 transition-colors"
+              @click="toggleReasoning(msg.id)"
+            >
+              <span>{{ reasoningOpen[msg.id] ? '▾' : '▸' }}</span>
+              <span>思考过程</span>
+              <span v-if="msg.reasoningDurationMs" class="text-gray-400">
+                ({{ formatDuration(msg.reasoningDurationMs) }})
+              </span>
+            </button>
+            <div
+              v-if="reasoningOpen[msg.id]"
+              class="mt-1 p-2 bg-gray-50 border border-gray-200 rounded text-xs text-gray-500 whitespace-pre-wrap max-h-[200px] overflow-y-auto"
+            >
+              {{ msg.reasoningContent }}
+            </div>
           </div>
 
           <!-- 文本内容 -->

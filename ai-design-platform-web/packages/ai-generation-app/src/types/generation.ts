@@ -20,6 +20,8 @@ export interface ChatMessage {
   timestamp: number
   isStreaming: boolean
   stage?: Stage
+  reasoningContent?: string
+  reasoningDurationMs?: number
 }
 
 /** 生成的文件条目 */
