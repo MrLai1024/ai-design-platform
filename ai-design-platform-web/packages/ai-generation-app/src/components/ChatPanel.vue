@@ -54,6 +54,58 @@ function handleSend(content: string, lib: ComponentLibrary): void {
   }
 }
 
+// ── 选项解析与交互 ──
+
+interface ParsedQuestion {
+  question: string
+  options: string[]
+}
+
+/** 从消息内容中解析问题和选项（**问题：** ... - option） */
+function parseQuestion(content: string): ParsedQuestion | null {
+  // 匹配 **问题：**<问题文本> 后跟 - 选项列表
+  const match = content.match(/\*\*问题：\*\*\s*(.+?)((?:\n- [^\n]+)+)/s)
+  if (!match || !match[1] || !match[2]) return null
+
+  const question = match[1].trim()
+  const options = match[2]
+    .split('\n')
+    .filter((line) => /^- /.test(line))
+    .map((line) => line.replace(/^- /, '').trim())
+    .filter(Boolean)
+
+  if (options.length === 0) return null
+  return { question, options }
+}
+
+/** 从内容中移除选项列表部分，得到纯文本 */
+function stripOptions(content: string): string {
+  // 移除 - 选项列表（**问题：** 之后的 - 行）
+  const idx = content.indexOf('**问题：**')
+  if (idx === -1) return content
+
+  const before = content.slice(0, idx)
+  const after = content.slice(idx)
+  // 保留问题文本但去掉选项行
+  const cleaned = after.replace(/\n- [^\n]+/g, '').replace(/\n- [^\n]+/g, '')
+  return (before + cleaned).trim()
+}
+
+/** 判断消息是否有可交互的选项（最后一条 assistant 消息，流式结束，有选项） */
+const interactiveOptions = computed<ParsedQuestion | null>(() => {
+  const last = store.lastAssistantMessage
+  if (!last || last.role !== 'assistant' || last.isStreaming) return null
+  // 只在需求分析阶段且非 id 为 null 的情况
+  if (store.stage !== 'analysis') return null
+  return parseQuestion(last.content)
+})
+
+function handleOptionClick(option: string): void {
+  if (store.isStreaming) return
+  // 将选项文本作为用户回复发送
+  continueAnalysis(option)
+}
+
 function handleConfirm(): void {
   if (store.stage === 'analysis') {
     confirmAnalysis()
@@ -164,12 +216,29 @@ function formatDuration(ms?: number): string {
           <div
             v-else
             class="message-content prose prose-sm max-w-none"
-            v-html="msg.content
+            v-html="stripOptions(msg.content)
               .replace(/```[\s\S]*?```/g, '')
               .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
               .replace(/\n/g, '<br>')
             "
           />
+
+          <!-- 选项按钮（最后一条 assistant 消息，流式结束，有可交互选项） -->
+          <div
+            v-if="msg === store.lastAssistantMessage && interactiveOptions"
+            class="mt-2 space-y-1"
+          >
+            <div class="text-[10px] text-gray-400 mb-1">点击选择：</div>
+            <button
+              v-for="(opt, i) in interactiveOptions.options"
+              :key="i"
+              class="block w-full text-left px-3 py-1.5 text-xs border border-blue-200 rounded-lg bg-blue-50 text-blue-700 hover:bg-blue-100 hover:border-blue-300 transition-colors"
+              :disabled="store.isStreaming"
+              @click="handleOptionClick(opt)"
+            >
+              {{ opt }}
+            </button>
+          </div>
 
           <!-- 代码生成卡片 -->
           <div
