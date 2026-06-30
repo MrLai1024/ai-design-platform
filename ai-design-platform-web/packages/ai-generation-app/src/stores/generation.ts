@@ -1,7 +1,7 @@
 // src/stores/generation.ts
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { ChatMessage, FileEntry, ComponentLibrary } from '@/types/generation'
+import type { ChatMessage, FileEntry, ComponentLibrary, Stage, StageStatus, StageOutputs, CodeViewTab, RightPanelView, StepNode } from '@/types/generation'
 
 export const useGenerationStore = defineStore('generation', () => {
   // ── State ──
@@ -12,6 +12,20 @@ export const useGenerationStore = defineStore('generation', () => {
   const compiledOutput = ref<string>('')
   const compileError = ref<string | null>(null)
   const currentLib = ref<ComponentLibrary>('tailwind')
+
+  // ── 多智能体阶段状态 ──
+  const stage = ref<Stage>('idle')
+  const stageStatus = ref<Record<string, StageStatus>>({
+    analysis: 'pending',
+    design: 'pending',
+    code: 'pending',
+  })
+  const stageOutputs = ref<StageOutputs>({
+    analysis: null,
+    design: null,
+  })
+  const codeViewTab = ref<CodeViewTab>('preview')
+  const rightPanelView = ref<RightPanelView>('preview')
 
   // ── Getters ──
   const lastAssistantMessage = computed(() => {
@@ -34,6 +48,23 @@ export const useGenerationStore = defineStore('generation', () => {
   const activeFileEntry = computed(() => {
     if (!activeFile.value) return null
     return files.value.get(activeFile.value) ?? null
+  })
+
+  const currentStepNodes = computed<StepNode[]>(() => {
+    const stages: Array<{ key: 'analysis' | 'design' | 'code'; label: string }> = [
+      { key: 'analysis', label: '需求分析' },
+      { key: 'design', label: '详细设计' },
+      { key: 'code', label: '代码实现' },
+    ]
+    return stages.map((s) => ({
+      key: s.key,
+      label: s.label,
+      status: stageStatus.value[s.key] as StageStatus,
+    }))
+  })
+
+  const isStageDone = computed(() => (s: 'analysis' | 'design' | 'code') => {
+    return stageStatus.value[s] === 'done'
   })
 
   // ── Actions ──
@@ -126,6 +157,41 @@ export const useGenerationStore = defineStore('generation', () => {
     currentLib.value = lib
   }
 
+  function setStage(s: Stage): void {
+    stage.value = s
+  }
+
+  function setStageStatus(key: string, status: StageStatus): void {
+    stageStatus.value[key] = status
+  }
+
+  function setStageOutput(stageKey: 'analysis' | 'design', content: string): void {
+    stageOutputs.value[stageKey] = content
+  }
+
+  function setCodeViewTab(tab: CodeViewTab): void {
+    codeViewTab.value = tab
+    rightPanelView.value = tab
+  }
+
+  function setRightPanelView(view: RightPanelView): void {
+    rightPanelView.value = view
+  }
+
+  function enterCodeStage(): void {
+    stage.value = 'code'
+    stageStatus.value.code = 'active'
+    rightPanelView.value = 'preview'
+    codeViewTab.value = 'preview'
+  }
+
+  function completeCurrentStage(): void {
+    const current = stage.value
+    if (current === 'analysis' || current === 'design') {
+      stageStatus.value[current] = 'done'
+    }
+  }
+
   function resetAll(): void {
     messages.value = []
     files.value = new Map()
@@ -133,16 +199,26 @@ export const useGenerationStore = defineStore('generation', () => {
     isStreaming.value = false
     compiledOutput.value = ''
     compileError.value = null
+    stage.value = 'idle'
+    stageStatus.value = { analysis: 'pending', design: 'pending', code: 'pending' }
+    stageOutputs.value = { analysis: null, design: null }
+    codeViewTab.value = 'preview'
+    rightPanelView.value = 'preview'
   }
 
   return {
     // state
     messages, files, activeFile, isStreaming, compiledOutput, compileError, currentLib,
+    stage, stageStatus, stageOutputs, codeViewTab, rightPanelView,
     // getters
     lastAssistantMessage, dirtyFiles, fileList, activeFileEntry,
+    currentStepNodes, isStageDone,
     // actions
     addMessage, appendToLastMessage, finalizeLastMessage,
     setFile, updateFileContent, setActiveFile, removeFile, addNewFile,
-    markFileClean, setCompiledOutput, setCompileError, setCurrentLib, resetAll,
+    markFileClean, setCompiledOutput, setCompileError, setCurrentLib,
+    setStage, setStageStatus, setStageOutput, setCodeViewTab, setRightPanelView,
+    enterCodeStage, completeCurrentStage,
+    resetAll,
   }
 })
