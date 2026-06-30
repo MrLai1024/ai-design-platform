@@ -8,26 +8,41 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 9)
 }
 
+export interface StreamSendOptions {
+  /** 用户输入的文本内容（需求分析阶段使用） */
+  content?: string
+  /** 组件库 */
+  lib?: ComponentLibrary
+  /** 外部传入的完整 messages 数组（详细设计/代码实现阶段使用），优先级高于 content */
+  messages?: Array<{ role: string; content: string }>
+  /** 消息所属阶段 */
+  stage?: 'analysis' | 'design' | 'code'
+}
+
 export function useStreamChat() {
   const store = useGenerationStore()
   const { getSystemPrompt } = useComponentDocs()
   const error = ref<string | null>(null)
   let abortController: AbortController | null = null
 
-  async function send(content: string, lib?: ComponentLibrary): Promise<void> {
+  async function send(opts: StreamSendOptions): Promise<void> {
+    const { content, lib, messages: externalMessages, stage: msgStage } = opts
     error.value = null
     if (lib) store.setCurrentLib(lib)
 
-    // 1. 添加用户消息
-    const userMsg: ChatMessage = {
-      id: generateId(),
-      role: 'user',
-      content,
-      codeBlocks: [],
-      timestamp: Date.now(),
-      isStreaming: false,
+    // 1. 添加用户消息（仅当有 content 时）
+    if (content) {
+      const userMsg: ChatMessage = {
+        id: generateId(),
+        role: 'user',
+        content,
+        codeBlocks: [],
+        timestamp: Date.now(),
+        isStreaming: false,
+        stage: msgStage,
+      }
+      store.addMessage(userMsg)
     }
-    store.addMessage(userMsg)
 
     // 2. 创建空的 assistant 消息
     const assistantMsg: ChatMessage = {
@@ -37,6 +52,7 @@ export function useStreamChat() {
       codeBlocks: [],
       timestamp: Date.now(),
       isStreaming: true,
+      stage: msgStage,
     }
     store.addMessage(assistantMsg)
     store.isStreaming = true
@@ -45,7 +61,7 @@ export function useStreamChat() {
     abortController = new AbortController()
     const systemPrompt = getSystemPrompt()
 
-    const requestMessages = [
+    const requestMessages = externalMessages ?? [
       { role: 'system', content: systemPrompt },
       ...store.messages
         .filter((m) => !m.isStreaming)
