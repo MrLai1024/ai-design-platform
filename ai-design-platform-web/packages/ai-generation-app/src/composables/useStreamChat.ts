@@ -157,10 +157,15 @@ export function useStreamChat() {
       }
     } catch (e: unknown) {
       if (e instanceof DOMException && e.name === 'AbortError') {
-        return // 用户取消
+        return // 用户取消，不标记中断
       }
       error.value = e instanceof Error ? e.message : '未知错误'
-      store.appendToLastMessage(`\n\n> ⚠️ 生成失败: ${error.value}`)
+      // 标记消息为中断，后续可续写
+      const last = store.lastAssistantMessage
+      if (last) {
+        last.interrupted = true
+      }
+      store.appendToLastMessage(`\n\n> ⚠️ 生成中断: ${error.value}`)
     } finally {
       store.finalizeLastMessage()
       abortController = null

@@ -22,6 +22,7 @@ export interface ChatMessage {
   stage?: Stage
   reasoningContent?: string
   reasoningDurationMs?: number
+  interrupted?: boolean
 }
 
 /** 生成的文件条目 */
