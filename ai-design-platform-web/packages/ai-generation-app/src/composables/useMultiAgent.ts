@@ -33,15 +33,12 @@ export function useMultiAgent() {
 
   /** 需求分析阶段继续对话（用户回答 Agent 的提问） */
   async function continueAnalysis(userContent: string): Promise<void> {
+    // 不传 messages — 让 send() 在添加完用户消息后从 store 构建完整消息列表
+    // systemPrompt 确保后续轮次也使用需求分析角色
     await send({
       content: userContent,
       lib: store.currentLib,
-      messages: [
-        { role: 'system', content: getAnalysisPrompt() },
-        ...store.messages
-          .filter((m) => !m.isStreaming)
-          .map((m) => ({ role: m.role, content: m.content })),
-      ],
+      systemPrompt: getAnalysisPrompt(),
       stage: 'analysis',
     })
   }

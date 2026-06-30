@@ -55,7 +55,7 @@ function handleStageOutputSave(content: string): void {
 <template>
   <div class="generation-view flex h-[calc(100vh-80px)]">
     <!-- 左侧：聊天面板 -->
-    <div class="w-[40%] min-w-[320px] border-r border-gray-200">
+    <div class="w-[30%] min-w-[320px] border-r border-gray-200">
       <ChatPanel />
     </div>
 

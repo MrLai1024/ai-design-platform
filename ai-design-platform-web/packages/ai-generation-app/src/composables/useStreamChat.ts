@@ -15,6 +15,8 @@ export interface StreamSendOptions {
   lib?: ComponentLibrary
   /** 外部传入的完整 messages 数组（详细设计/代码实现阶段使用），优先级高于 content */
   messages?: Array<{ role: string; content: string }>
+  /** 自定义系统提示词（需求分析等阶段使用），仅在未传 messages 时生效 */
+  systemPrompt?: string
   /** 消息所属阶段 */
   stage?: 'analysis' | 'design' | 'code'
 }
@@ -26,7 +28,7 @@ export function useStreamChat() {
   let abortController: AbortController | null = null
 
   async function send(opts: StreamSendOptions): Promise<void> {
-    const { content, lib, messages: externalMessages, stage: msgStage } = opts
+    const { content, lib, messages: externalMessages, systemPrompt: customSystemPrompt, stage: msgStage } = opts
     error.value = null
     if (lib) store.setCurrentLib(lib)
 
@@ -59,10 +61,9 @@ export function useStreamChat() {
 
     // 3. 构建请求 body
     abortController = new AbortController()
-    const systemPrompt = getSystemPrompt()
 
     const requestMessages = externalMessages ?? [
-      { role: 'system', content: systemPrompt },
+      { role: 'system', content: customSystemPrompt || getSystemPrompt() },
       ...store.messages
         .filter((m) => !m.isStreaming)
         .map((m) => ({ role: m.role, content: m.content })),
