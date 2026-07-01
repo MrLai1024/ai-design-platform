@@ -3,19 +3,20 @@
 import { ref, watch, nextTick, computed } from 'vue'
 import { useGenerationStore } from '@/stores/generation'
 import { useMultiAgent } from '@/composables/useMultiAgent'
+import { useStreamChat } from '@/composables/useStreamChat'
+import { useStagePrompts } from '@/composables/useStagePrompts'
 import ChatInput from './ChatInput.vue'
 import type { ComponentLibrary } from '@/types/generation'
 
 const store = useGenerationStore()
 const {
-  startAnalysis,
-  continueAnalysis,
-  confirmAnalysis,
-  confirmDesign,
+  startGeneration,
+  confirmStage,
   cancel: cancelAgent,
   isTransitioning,
-  isCurrentStageFinished,
 } = useMultiAgent()
+const { send: sendStream } = useStreamChat()
+const { getAnalysisPrompt } = useStagePrompts()
 
 const messagesContainer = ref<HTMLElement | null>(null)
 
@@ -29,6 +30,14 @@ watch(
     }
   },
 )
+
+// 判断当前阶段是否完成
+function isCurrentStageFinished(): boolean {
+  if (store.isStreaming) return false
+  const last = store.lastAssistantMessage
+  if (!last || last.isStreaming) return false
+  return last.content.length > 0 || (last.reasoningContent?.length ?? 0) > 0
+}
 
 // 是否可以确认当前阶段（需求分析/设计阶段完成且不在流式中）
 const canConfirm = computed(() => {
@@ -44,10 +53,19 @@ const confirmLabel = computed(() => {
   return '确认'
 })
 
+async function continueAnalysis(userContent: string): Promise<void> {
+  await sendStream({
+    content: userContent,
+    lib: store.currentLib,
+    systemPrompt: getAnalysisPrompt(),
+    stage: 'analysis',
+  })
+}
+
 function handleSend(content: string, lib: ComponentLibrary): void {
   if (store.stage === 'idle' || store.stage === 'analysis') {
     if (store.stage === 'idle') {
-      startAnalysis(content, lib)
+      startGeneration(content, lib)
     } else {
       continueAnalysis(content)
     }
@@ -108,9 +126,9 @@ function handleOptionClick(option: string): void {
 
 function handleConfirm(): void {
   if (store.stage === 'analysis') {
-    confirmAnalysis()
+    confirmStage('analysis')
   } else if (store.stage === 'design') {
-    confirmDesign()
+    confirmStage('design')
   }
 }
 

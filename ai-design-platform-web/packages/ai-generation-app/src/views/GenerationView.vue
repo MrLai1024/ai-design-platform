@@ -3,7 +3,6 @@
 import { onMounted, computed } from 'vue'
 import { useGenerationStore } from '@/stores/generation'
 import { useCodeParser } from '@/composables/useCodeParser'
-import { useMultiAgent } from '@/composables/useMultiAgent'
 import ChatPanel from '@/components/ChatPanel.vue'
 import StepProgress from '@/components/StepProgress.vue'
 import StageOutput from '@/components/StageOutput.vue'
@@ -12,8 +11,37 @@ import PreviewFrame from '@/components/PreviewFrame.vue'
 import FileExplorer from '@/components/FileExplorer.vue'
 
 const store = useGenerationStore()
-const { viewStageOutput, backToCurrentStage } = useMultiAgent()
 useCodeParser()
+
+function viewStageOutput(stageKey: 'analysis' | 'design'): void {
+  store.setStage(stageKey)
+  store.setRightPanelView('stage-output')
+}
+
+function backToCurrentStage(): void {
+  const statuses = store.stageStatus
+  for (const key of ['analysis', 'design', 'code', 'review', 'e2e'] as const) {
+    if (statuses[key] === 'active') {
+      store.setStage(key)
+      if (key === 'code') {
+        store.setRightPanelView(store.codeViewTab)
+      } else {
+        store.setRightPanelView('stage-output')
+      }
+      return
+    }
+  }
+  if (statuses['code'] === 'done') {
+    store.setStage('code')
+    store.setRightPanelView(store.codeViewTab)
+  } else if (statuses['design'] === 'done') {
+    store.setStage('design')
+    store.setRightPanelView('stage-output')
+  } else if (statuses['analysis'] === 'done') {
+    store.setStage('analysis')
+    store.setRightPanelView('stage-output')
+  }
+}
 
 onMounted(() => {
   store.resetAll()
