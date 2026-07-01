@@ -2,9 +2,11 @@
 <script setup lang="ts">
 import type { StepNode, Stage } from '@/types/generation'
 
-defineProps<{
+const props = defineProps<{
   nodes: StepNode[]
   currentStage: Stage
+  isRollingBack?: boolean
+  rollbackTarget?: string
 }>()
 
 const emit = defineEmits<{
@@ -22,6 +24,7 @@ const emit = defineEmits<{
         :class="{
           'bg-green-400': nodes[index - 1]!.status === 'done' && (node.status === 'done' || node.status === 'active'),
           'bg-gray-300': !(nodes[index - 1]!.status === 'done' && (node.status === 'done' || node.status === 'active')),
+          'connector-rollback': props.isRollingBack,
         }"
       />
       <!-- 节点 -->
@@ -37,6 +40,7 @@ const emit = defineEmits<{
             'bg-green-500 border-green-500': node.status === 'done',
             'bg-blue-500 border-blue-500 animate-pulse': node.status === 'active',
             'bg-gray-300 border-gray-300': node.status === 'pending',
+            'node-rollback': props.rollbackTarget === node.key,
           }"
         >
           <span v-if="node.status === 'done'">✓</span>
@@ -56,3 +60,26 @@ const emit = defineEmits<{
     </template>
   </div>
 </template>
+
+<style scoped>
+.connector-rollback {
+  background: linear-gradient(90deg, #f87171, #fbbf24);
+  animation: rollback-pulse 0.6s ease-in-out infinite alternate;
+}
+
+.node-rollback {
+  border-color: #f59e0b !important;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
+  animation: rollback-blink 0.5s ease-in-out infinite alternate;
+}
+
+@keyframes rollback-pulse {
+  0% { opacity: 0.6; }
+  100% { opacity: 1; }
+}
+
+@keyframes rollback-blink {
+  0% { transform: scale(1); }
+  100% { transform: scale(1.15); }
+}
+</style>
