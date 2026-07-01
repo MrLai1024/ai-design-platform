@@ -1,17 +1,41 @@
 <!-- src/views/GenerationView.vue -->
 <script setup lang="ts">
-import { onMounted, computed } from 'vue'
+import { onMounted, computed, ref, watch } from 'vue'
 import { useGenerationStore } from '@/stores/generation'
 import { useCodeParser } from '@/composables/useCodeParser'
+import { useE2ERunner } from '@/composables/useE2ERunner'
+import { useMultiAgent } from '@/composables/useMultiAgent'
 import ChatPanel from '@/components/ChatPanel.vue'
 import StepProgress from '@/components/StepProgress.vue'
 import StageOutput from '@/components/StageOutput.vue'
 import TabBar from '@/components/TabBar.vue'
 import PreviewFrame from '@/components/PreviewFrame.vue'
 import FileExplorer from '@/components/FileExplorer.vue'
+import E2EPanel from '@/components/E2EPanel.vue'
 
 const store = useGenerationStore()
 useCodeParser()
+
+const { submitE2EResults } = useMultiAgent()
+const previewFrameRef = ref<HTMLIFrameElement | null>(null)
+const { currentCaseIndex, executeAll } = useE2ERunner(previewFrameRef)
+
+const e2eCurrentIndex = computed(() => currentCaseIndex.value)
+
+// Watch for e2e_start event to trigger E2E execution
+watch(
+  () => store.e2eTestCases,
+  async (cases) => {
+    if (cases.length > 0 && store.stage === 'e2e') {
+      store.e2eRunning = true
+      const allResults = await executeAll(cases, (result) => {
+        store.addE2EResult(result)
+      })
+      store.e2eRunning = false
+      await submitE2EResults(allResults)
+    }
+  },
+)
 
 function viewStageOutput(stageKey: 'analysis' | 'design'): void {
   store.setStage(stageKey)
@@ -138,6 +162,22 @@ function handleStageOutputSave(content: string): void {
         </div>
       </template>
 
+      <!-- E2E Stage: show test panel -->
+      <div v-if="store.stage === 'e2e'" class="flex-1 e2e-container">
+        <E2EPanel
+          :test-cases="store.e2eTestCases"
+          :results="store.e2eResults"
+          :current-case-index="e2eCurrentIndex"
+          :is-running="store.e2eRunning"
+        />
+      </div>
+
+      <!-- Manual review banner -->
+      <div v-if="store.needsManualReview" class="manual-review-banner">
+        自动流程已熔断，请人工复核
+        <span v-if="store.loopBreakReason">原因：{{ store.loopBreakReason }}</span>
+      </div>
+
       <!-- 初始状态占位 -->
       <div
         v-if="store.stage === 'idle'"
@@ -150,3 +190,28 @@ function handleStageOutputSave(content: string): void {
     </div>
   </div>
 </template>
+
+<style scoped>
+.manual-review-banner {
+  margin: 0 16px 8px;
+  padding: 10px 14px;
+  background: #fef3c7;
+  border: 1px solid #f59e0b;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #92400e;
+}
+
+.manual-review-banner span {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #a16207;
+}
+
+.e2e-container {
+  overflow-y: auto;
+}
+</style>
