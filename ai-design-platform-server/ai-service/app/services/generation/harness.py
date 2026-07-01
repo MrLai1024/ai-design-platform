@@ -5,6 +5,7 @@ import time
 import asyncio
 from dataclasses import dataclass, field
 from typing import Callable, Any
+from collections.abc import Awaitable
 import structlog
 
 from .state import GenerationState, RollbackRecord
@@ -67,11 +68,12 @@ class AgentHarness:
         self,
         node_name: str,
         state: GenerationState,
-        handler: Callable[[GenerationState], GenerationState],
+        handler: Callable[[GenerationState], Awaitable[GenerationState]],
     ) -> GenerationState:
         span = self.tracer.span(node_name)
         span.set_attribute("input_hash", self._hash_state(state))
         t0 = time.time()
+        span.start_time = t0
 
         last_error = None
         for attempt in range(self.retry_config.max_retries):
@@ -150,8 +152,8 @@ class LoopControl:
 
         return True, ""
 
+    @staticmethod
     def record_rollback(
-        self,
         from_node: str,
         to_node: str,
         reason: str,
@@ -167,8 +169,9 @@ class LoopControl:
             token_cost=token_cost,
         )
 
+    @staticmethod
     def apply_rollback(
-        self, state: GenerationState, record: RollbackRecord
+        state: GenerationState, record: RollbackRecord
     ) -> GenerationState:
         counts = state.get("rollback_count", {})
         target = record["to_node"]
