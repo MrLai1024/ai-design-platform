@@ -143,6 +143,11 @@ class GraphRunner:
                         "test_cases": test_cases,
                         "total": len(test_cases),
                     })
+                    yield self._make_event("e2e_complete", "e2e", {
+                        "passed": False,
+                        "failed_count": 0,
+                        "total_count": len(test_cases),
+                    })
 
     async def resume_after_e2e(
         self,
@@ -151,9 +156,23 @@ class GraphRunner:
     ) -> AsyncIterator[dict]:
         """Resume graph with E2E results and continue execution."""
         config = {"configurable": {"thread_id": generation_id}}
-        current_state = self.app.get_state(config)
+        try:
+            current_state = self.app.get_state(config)
+        except Exception as e:
+            logger.error("get_state_failed", error=str(e))
+            yield self._make_event("error", "e2e", {
+                "reason": f"Failed to retrieve state: {str(e)}",
+            })
+            return
+
         passed = all(r.get("passed", False) for r in e2e_results)
         failed = [r for r in e2e_results if not r.get("passed", False)]
+
+        yield self._make_event("e2e_complete", "e2e", {
+            "passed": passed,
+            "failed_count": len(failed),
+            "total_count": len(e2e_results),
+        })
 
         if not passed:
             failed_text = "\n".join(
