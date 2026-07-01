@@ -46,8 +46,7 @@ func main() {
 	chatH := handler.NewChatHandler(aiClient)
 	convH := handler.NewConversationHandler(aiClient)
 	graphHandler := handler.NewGraphSSEHandler(aiClient)
-	// TODO(Task 7): e2eHandler 将在 e2e.go 中实现
-	// e2eHandler := handler.NewE2EHandler(graphHandler)
+	e2eHandler := handler.NewE2EHandler(graphHandler)
 
 	// Gin 路由器
 	gin.SetMode(gin.ReleaseMode)
@@ -75,9 +74,8 @@ func main() {
 
 		// LangGraph 流式生成
 		api.POST("/generation/stream", graphHandler.StreamGeneration)
-		// TODO(Task 7): E2E 相关路由
-		// api.POST("/e2e/result", e2eHandler.SubmitE2EResult)
-		// api.POST("/generation/confirm", e2eHandler.ConfirmStage)
+		api.POST("/e2e/result", e2eHandler.SubmitE2EResult)
+		api.POST("/generation/confirm", e2eHandler.ConfirmStage)
 	}
 
 	// HTTP 服务器
