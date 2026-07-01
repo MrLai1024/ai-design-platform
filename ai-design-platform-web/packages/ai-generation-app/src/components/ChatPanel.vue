@@ -4,7 +4,6 @@ import { ref, watch, nextTick, computed } from 'vue'
 import { useGenerationStore } from '@/stores/generation'
 import { useMultiAgent } from '@/composables/useMultiAgent'
 import { useStreamChat } from '@/composables/useStreamChat'
-import { useStagePrompts } from '@/composables/useStagePrompts'
 import ChatInput from './ChatInput.vue'
 import type { ComponentLibrary } from '@/types/generation'
 
@@ -16,7 +15,6 @@ const {
   isTransitioning,
 } = useMultiAgent()
 const { send: sendStream } = useStreamChat()
-const { getAnalysisPrompt } = useStagePrompts()
 
 const messagesContainer = ref<HTMLElement | null>(null)
 
@@ -57,7 +55,6 @@ async function continueAnalysis(userContent: string): Promise<void> {
   await sendStream({
     content: userContent,
     lib: store.currentLib,
-    systemPrompt: getAnalysisPrompt(),
     stage: 'analysis',
   })
 }
