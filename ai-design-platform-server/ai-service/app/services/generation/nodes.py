@@ -4,8 +4,7 @@ from typing import Any
 
 import structlog
 
-from ..llm.provider import LLMProvider, TokenEvent, CompleteEvent
-from ..llm.router import resolve_provider
+from ..llm.provider import LLMProvider, TokenEvent
 from .state import GenerationState
 from .harness import EvalHarness
 
@@ -34,7 +33,7 @@ async def _llm_generate(
     ]
     full_text = ""
     async for event in _provider.stream_generate(model, messages):
-        if hasattr(event, "text"):
+        if isinstance(event, TokenEvent):
             full_text += event.text
     return full_text
 
@@ -54,11 +53,24 @@ async def _llm_generate_structured(
     full_prompt = system_prompt + schema_hint
     raw = await _llm_generate(full_prompt, user_content, model)
     # Extract JSON from response (handle markdown code blocks)
-    if "```json" in raw:
-        raw = raw.split("```json")[1].split("```")[0]
+    raw_lower = raw.lower()
+    if "```json" in raw_lower:
+        idx = raw_lower.index("```json")
+        fence_tag = raw[idx : idx + len("```json") + 2]  # capture exact tag incl. any trailing ws
+        raw = raw.split(fence_tag, 1)[1].split("```")[0]
     elif "```" in raw:
-        raw = raw.split("```")[1].split("```")[0]
-    return json.loads(raw.strip())
+        raw = raw.split("```", 1)[1].split("```")[0]
+    try:
+        return json.loads(raw.strip())
+    except json.JSONDecodeError:
+        logger.error(
+            "structured_parse_failed",
+            raw_text=raw[:500],
+        )
+        raise ValueError(
+            f"Failed to parse structured JSON from LLM response. "
+            f"Raw text (first 500 chars): {raw[:500]}"
+        )
 
 
 # ---- Analysis Node ----
@@ -332,8 +344,9 @@ async def e2e_node(state: GenerationState) -> GenerationState:
 
     test_cases = state.get("e2e_test_cases", [])
     if not test_cases:
-        logger.warning("e2e_no_test_cases")
-        return {**state, "e2e_passed": True, "e2e_results": []}
+        raise ValueError(
+            "E2E node reached with no test cases — analysis stage may have failed"
+        )
 
     # Results are collected by the GraphRunner which sends e2e_execute
     # events and waits for HTTP callbacks from the frontend
