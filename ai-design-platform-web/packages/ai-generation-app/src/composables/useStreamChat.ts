@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { useGenerationStore } from '@/stores/generation'
 import { useComponentDocs } from './useComponentDocs'
-import type { ChatMessage, ComponentLibrary } from '@/types/generation'
+import type { ChatMessage, ComponentLibrary, Stage } from '@/types/generation'
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 9)
@@ -119,6 +119,9 @@ export function useStreamChat() {
 
             switch (eventType) {
               case 'meta':
+                if (event.generation_id) {
+                  store.setGenerationId(event.generation_id)
+                }
                 break
 
               case 'token':
@@ -148,6 +151,62 @@ export function useStreamChat() {
 
               case 'error':
                 error.value = event.message || event.error || '未知错误'
+                break
+
+              case 'stage_start':
+                store.setStageStatus(event.stage, 'active')
+                store.setStage(event.stage as Stage)
+                break
+
+              case 'stage_complete':
+                store.setStageStatus(event.stage, 'done')
+                if (event.summary) {
+                  store.setStageOutput(event.stage as Stage, event.summary)
+                }
+                break
+
+              case 'stage_rollback':
+                store.addRollbackEvent({
+                  from: event.from,
+                  to: event.to,
+                  reason: event.reason,
+                  failedCases: event.failed_cases,
+                })
+                store.setStage(event.to as Stage)
+                store.setStageStatus(event.to, 'active')
+                break
+
+              case 'e2e_start':
+                store.setE2ETestCases(event.test_cases || [])
+                store.clearE2EResults()
+                store.setStageStatus('e2e', 'active')
+                break
+
+              case 'e2e_case_result':
+                store.addE2EResult({
+                  caseId: event.case_id,
+                  passed: event.passed,
+                  error: event.error,
+                  screenshot: event.screenshot,
+                })
+                break
+
+              case 'e2e_complete':
+                store.setStageStatus('e2e', event.passed ? 'done' : 'pending')
+                store.e2eRunning = false
+                break
+
+              case 'human_confirm_required':
+                // Paused — UI shows confirm button
+                break
+
+              case 'loop_warning':
+                console.warn(`Loop warning: ${event.reason}`)
+                break
+
+              case 'loop_break':
+                store.setNeedsManualReview(true)
+                store.setLoopBreakReason(event.reason)
                 break
             }
           } catch {
