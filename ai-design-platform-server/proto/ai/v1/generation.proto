@@ -40,6 +40,7 @@ message GenerateResponse {
     ToolCall tool_call = 2;
     GenerationComplete complete = 3;
     GenerationError error = 4;
+    GraphEvent graph_event = 5;
   }
 }
 
@@ -69,6 +70,14 @@ message Usage {
 message GenerationError {
   string code = 1;
   string message = 2;
+}
+
+message GraphEvent {
+  string event_type = 1;    // "stage_start" | "stage_complete" | "stage_rollback"
+                            // | "e2e_execute" | "e2e_case_result" | "e2e_complete"
+                            // | "human_confirm_required" | "loop_warning" | "loop_break"
+  string stage = 2;         // "analysis" | "design" | "code" | "review" | "e2e"
+  string data = 3;          // JSON-encoded payload (varies by event_type)
 }
 
 message CancelRequest {
