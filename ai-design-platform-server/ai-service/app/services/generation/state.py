@@ -1,8 +1,8 @@
-from typing import TypedDict, Literal, NotRequired
+from typing import TypedDict, Literal
 
 
 class E2ETestStep(TypedDict):
-    action: str          # 'click' | 'input' | 'assert' | 'wait'
+    action: Literal["click", "input", "assert", "wait"]
     target: str          # CSS selector
     value: str | None    # input value / expected text / wait ms
     description: str
@@ -56,7 +56,7 @@ class GenerationState(TypedDict):
 
     # Review status
     review_passed: bool
-    review_severity: str | None   # "minor" | "moderate" | "critical"
+    review_severity: Literal["minor", "moderate", "critical"] | None
 
     # E2E status
     e2e_passed: bool
