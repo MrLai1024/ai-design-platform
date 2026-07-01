@@ -8,6 +8,7 @@ dependencies = [
     "protobuf>=5.26",
     "openai>=1.30",
     "zai-sdk>=0.1",
+    "langgraph>=0.2",
     "structlog>=24.1",
 ]
 
