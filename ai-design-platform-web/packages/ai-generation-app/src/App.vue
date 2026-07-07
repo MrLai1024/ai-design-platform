@@ -1,9 +1,5 @@
 <template>
   <div class="ai-generation-app">
-    <header class="flex items-center justify-between px-6 py-3 bg-gray-900 text-white">
-      <h1 class="text-lg font-bold">AI 代码生成</h1>
-      <span class="text-xs text-gray-400">Vue SFC + 实时预览</span>
-    </header>
     <router-view />
   </div>
 </template>

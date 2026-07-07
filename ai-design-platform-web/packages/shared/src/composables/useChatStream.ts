@@ -3,6 +3,7 @@ import { streamChat, cancelGeneration } from '../api/chat';
 
 export interface StreamCallbacks {
   onToken: (text: string, index: number) => void;
+  onReasoning?: (text: string, index: number) => void;
   onMeta: (meta: { generation_id: string; conversation_id?: string; message_id?: string }) => void;
   onToolCall: (tool: { id: string; name: string; arguments: string }) => void;
   onComplete: (finishReason: string) => void;
@@ -25,19 +26,19 @@ export function useChatStream(callbacks: StreamCallbacks) {
   let abortController: AbortController | null = null;
   let retryCount = 0;
 
-  async function start(conversationId: string, model: string, content: string) {
+  async function start(conversationId: string, model: string, content: string, enableThinking: boolean = false) {
     isStreaming.value = true;
     error.value = null;
     retryCount = 0;
 
-    await connect(conversationId, model, content);
+    await connect(conversationId, model, content, enableThinking);
   }
 
-  async function connect(conversationId: string, model: string, content: string) {
+  async function connect(conversationId: string, model: string, content: string, enableThinking: boolean = false) {
     abortController = new AbortController();
 
     try {
-      const response = await streamChat(conversationId, model, content);
+      const response = await streamChat(conversationId, model, content, enableThinking);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
@@ -47,6 +48,8 @@ export function useChatStream(callbacks: StreamCallbacks) {
 
       const decoder = new TextDecoder();
       let buffer = '';
+
+      let streamFinishedNormally = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -72,6 +75,11 @@ export function useChatStream(callbacks: StreamCallbacks) {
               break;
             case 'token':
               callbacks.onToken(event.text as string, event.index as number);
+              // 让出主线程，使 Vue 有机会渲染本次 token 再处理下一个
+              await new Promise((r) => setTimeout(r, 0));
+              break;
+            case 'reasoning':
+              callbacks.onReasoning?.(event.text as string, event.index as number);
               break;
             case 'tool_call':
               callbacks.onToolCall({
@@ -82,22 +90,30 @@ export function useChatStream(callbacks: StreamCallbacks) {
               break;
             case 'complete':
               callbacks.onComplete(event.finish_reason as string);
+              streamFinishedNormally = true;
               break;
             case 'error':
               callbacks.onError(event.message as string, event.code as string | undefined);
               break;
             case 'done':
+              streamFinishedNormally = true;
               callbacks.onDone();
               break;
           }
         }
       }
+
+      // 安全兜底：流自然结束时，如果没有收到 done 事件，主动触发
+      if (!streamFinishedNormally) {
+        callbacks.onDone();
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
+      console.error('[SSE] error:', msg);
       if (retryCount < MAX_RETRIES) {
         retryCount++;
         await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-        await connect(conversationId, model, content);
+        await connect(conversationId, model, content, enableThinking);
         return;
       }
       error.value = msg;
@@ -134,25 +150,32 @@ interface ParsedSSEEvent {
 }
 
 export function parseSSEEvent(raw: string): ParsedSSEEvent | null {
-  let eventType = '';
   let dataStr = '';
 
   for (const line of raw.split('\n')) {
-    if (line.startsWith('event: ')) {
-      eventType = line.slice(7).trim();
-    } else if (line.startsWith('data: ')) {
-      dataStr = line.slice(6);
+    const trimmedLine = line.trimEnd();
+    // 优先匹配 data: 行（支持 data: 和 data:xxx 两种格式）
+    if (trimmedLine.startsWith('data:')) {
+      dataStr = trimmedLine.slice(5).trimStart();
+    }
+    // 向后兼容：如果还有 event: 行也解析
+    else if (trimmedLine.startsWith('event:')) {
+      // event 行忽略，事件类型从 JSON _t 字段提取
     }
   }
 
-  if (!eventType || !dataStr) return null;
+  if (!dataStr) return null;
 
-  if (eventType === 'done') {
+  // [DONE] 表示流结束
+  if (dataStr === '[DONE]') {
     return { type: 'done' };
   }
 
   try {
     const parsed = JSON.parse(dataStr);
+    // 事件类型从 JSON 的 _t 字段提取
+    const eventType = parsed._t;
+    if (!eventType) return null;
     return { type: eventType, ...parsed };
   } catch {
     return null;

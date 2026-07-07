@@ -1,5 +1,6 @@
 <template>
-  <div :id="containerId" class="sub-app-container min-h-full" />
+  <!-- qiankun mounts into the pre-rendered container in App.vue -->
+  <div />
 </template>
 
 <script setup lang="ts">
@@ -7,9 +8,3 @@ defineProps<{
   containerId: string;
 }>();
 </script>
-
-<style scoped>
-.sub-app-container {
-  min-height: 400px;
-}
-</style>

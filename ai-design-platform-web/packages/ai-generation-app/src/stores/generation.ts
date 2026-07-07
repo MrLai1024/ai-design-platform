@@ -1,7 +1,7 @@
 // src/stores/generation.ts
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { ChatMessage, FileEntry, ComponentLibrary } from '@/types/generation'
+import type { ChatMessage, FileEntry, ComponentLibrary, Stage, StageStatus, StageOutputs, CodeViewTab, RightPanelView, StepNode, E2ETestCase, E2ECaseResult, RollbackEvent } from '@/types/generation'
 
 export const useGenerationStore = defineStore('generation', () => {
   // ── State ──
@@ -12,6 +12,34 @@ export const useGenerationStore = defineStore('generation', () => {
   const compiledOutput = ref<string>('')
   const compileError = ref<string | null>(null)
   const currentLib = ref<ComponentLibrary>('tailwind')
+
+  // ── 多智能体阶段状态 ──
+  const stage = ref<Stage>('idle')
+  const stageStatus = ref<Record<string, StageStatus>>({
+    analysis: 'pending',
+    design: 'pending',
+    code: 'pending',
+    review: 'pending',
+    e2e: 'pending',
+  })
+  const stageOutputs = ref<StageOutputs>({
+    analysis: null,
+    design: null,
+    code: null,
+    review: null,
+    e2e: null,
+  })
+  const codeViewTab = ref<CodeViewTab>('preview')
+  const rightPanelView = ref<RightPanelView>('preview')
+
+  // ── E2E & 回滚 & 审核 ──
+  const e2eTestCases = ref<E2ETestCase[]>([])
+  const e2eResults = ref<E2ECaseResult[]>([])
+  const e2eRunning = ref(false)
+  const rollbackEvents = ref<RollbackEvent[]>([])
+  const needsManualReview = ref(false)
+  const loopBreakReason = ref<string | null>(null)
+  const currentGenerationId = ref<string | null>(null)
 
   // ── Getters ──
   const lastAssistantMessage = computed(() => {
@@ -36,6 +64,25 @@ export const useGenerationStore = defineStore('generation', () => {
     return files.value.get(activeFile.value) ?? null
   })
 
+  const currentStepNodes = computed<StepNode[]>(() => {
+    const stages: Array<{ key: Stage; label: string }> = [
+      { key: 'analysis', label: '需求分析' },
+      { key: 'design', label: '方案设计' },
+      { key: 'code', label: '代码生成' },
+      { key: 'review', label: '质量校验' },
+      { key: 'e2e', label: 'E2E验证' },
+    ]
+    return stages.map((s) => ({
+      key: s.key,
+      label: s.label,
+      status: stageStatus.value[s.key] as StageStatus,
+    }))
+  })
+
+  const isStageDone = computed(() => (s: Stage) => {
+    return stageStatus.value[s] === 'done'
+  })
+
   // ── Actions ──
   function addMessage(msg: ChatMessage): void {
     messages.value.push(msg)
@@ -47,6 +94,21 @@ export const useGenerationStore = defineStore('generation', () => {
       last.content += content
     } else if (import.meta.env.DEV) {
       console.warn('[generation] appendToLastMessage: last message is not from assistant')
+    }
+  }
+
+  function appendReasoning(text: string): void {
+    const last = messages.value[messages.value.length - 1]
+    if (last && last.role === 'assistant') {
+      if (!last.reasoningContent) last.reasoningContent = ''
+      last.reasoningContent += text
+    }
+  }
+
+  function finishReasoning(): void {
+    const last = messages.value[messages.value.length - 1]
+    if (last && last.role === 'assistant') {
+      last.reasoningDurationMs = Date.now() - (last.timestamp || Date.now())
     }
   }
 
@@ -126,6 +188,69 @@ export const useGenerationStore = defineStore('generation', () => {
     currentLib.value = lib
   }
 
+  function setStage(s: Stage): void {
+    stage.value = s
+  }
+
+  function setStageStatus(key: string, status: StageStatus): void {
+    stageStatus.value[key] = status
+  }
+
+  function setStageOutput(stageKey: string, content: string): void {
+    if (stageKey in stageOutputs.value) {
+      ;(stageOutputs.value as Record<string, string | null>)[stageKey] = content
+    } else if (import.meta.env.DEV) {
+      console.warn(`[generation] setStageOutput: unknown stage key "${stageKey}"`)
+    }
+  }
+
+  function setCodeViewTab(tab: CodeViewTab): void {
+    codeViewTab.value = tab
+    rightPanelView.value = tab
+  }
+
+  function setRightPanelView(view: RightPanelView): void {
+    rightPanelView.value = view
+  }
+
+  function enterCodeStage(): void {
+    stage.value = 'code'
+    stageStatus.value.code = 'active'
+    rightPanelView.value = 'preview'
+    codeViewTab.value = 'preview'
+  }
+
+  function completeCurrentStage(): void {
+    const current = stage.value
+    if (current && current !== 'idle') {
+      stageStatus.value[current] = 'done'
+    }
+  }
+
+  // ── E2E & 回滚 Actions ──
+  function setE2ETestCases(cases: E2ETestCase[]): void {
+    e2eTestCases.value = cases
+  }
+  function addE2EResult(result: E2ECaseResult): void {
+    e2eResults.value.push(result)
+  }
+  function clearE2EResults(): void {
+    e2eResults.value = []
+    e2eRunning.value = false
+  }
+  function addRollbackEvent(event: RollbackEvent): void {
+    rollbackEvents.value.push(event)
+  }
+  function setNeedsManualReview(needs: boolean): void {
+    needsManualReview.value = needs
+  }
+  function setLoopBreakReason(reason: string | null): void {
+    loopBreakReason.value = reason
+  }
+  function setGenerationId(id: string): void {
+    currentGenerationId.value = id
+  }
+
   function resetAll(): void {
     messages.value = []
     files.value = new Map()
@@ -133,16 +258,36 @@ export const useGenerationStore = defineStore('generation', () => {
     isStreaming.value = false
     compiledOutput.value = ''
     compileError.value = null
+    stage.value = 'idle'
+    stageStatus.value = { analysis: 'pending', design: 'pending', code: 'pending', review: 'pending', e2e: 'pending' }
+    stageOutputs.value = { analysis: null, design: null, code: null, review: null, e2e: null }
+    codeViewTab.value = 'preview'
+    rightPanelView.value = 'preview'
+    // E2E & 回滚 & 审核
+    e2eTestCases.value = []
+    e2eResults.value = []
+    e2eRunning.value = false
+    rollbackEvents.value = []
+    needsManualReview.value = false
+    loopBreakReason.value = null
+    currentGenerationId.value = null
   }
 
   return {
     // state
     messages, files, activeFile, isStreaming, compiledOutput, compileError, currentLib,
+    stage, stageStatus, stageOutputs, codeViewTab, rightPanelView,
+    e2eTestCases, e2eResults, e2eRunning, rollbackEvents, needsManualReview, loopBreakReason, currentGenerationId,
     // getters
     lastAssistantMessage, dirtyFiles, fileList, activeFileEntry,
+    currentStepNodes, isStageDone,
     // actions
-    addMessage, appendToLastMessage, finalizeLastMessage,
+    addMessage, appendToLastMessage, appendReasoning, finishReasoning, finalizeLastMessage,
     setFile, updateFileContent, setActiveFile, removeFile, addNewFile,
-    markFileClean, setCompiledOutput, setCompileError, setCurrentLib, resetAll,
+    markFileClean, setCompiledOutput, setCompileError, setCurrentLib,
+    setStage, setStageStatus, setStageOutput, setCodeViewTab, setRightPanelView,
+    enterCodeStage, completeCurrentStage,
+    setE2ETestCases, addE2EResult, clearE2EResults, addRollbackEvent, setNeedsManualReview, setLoopBreakReason, setGenerationId,
+    resetAll,
   }
 })

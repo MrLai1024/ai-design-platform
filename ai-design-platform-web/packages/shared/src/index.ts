@@ -7,4 +7,5 @@ export type { StreamCallbacks } from './composables/useChatStream';
 export { parseSSEEvent } from './composables/useChatStream';
 export { useConversation } from './composables/useConversation';
 export { useMarkdown } from './composables/useMarkdown';
-export { default as MarkdownRenderer } from './components/MarkdownRenderer.vue';
+// MarkdownRenderer is a Vue SFC — import it directly:
+//   import MarkdownRenderer from '@ai-design/shared/components/MarkdownRenderer.vue';

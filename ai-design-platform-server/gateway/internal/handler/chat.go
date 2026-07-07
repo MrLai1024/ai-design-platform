@@ -15,8 +15,9 @@ import (
 
 // ChatRequest 是聊天流端点的 JSON 请求体。
 type ChatRequest struct {
-	Model    string        `json:"model" binding:"required"`
-	Messages []ChatMessage `json:"messages" binding:"required"`
+	Model          string        `json:"model" binding:"required"`
+	Messages       []ChatMessage `json:"messages" binding:"required"`
+	EnableThinking bool          `json:"enable_thinking"`
 }
 
 // ChatMessage 表示对话中的单条消息。
@@ -60,8 +61,9 @@ func (h *ChatHandler) StreamChat(c *gin.Context) {
 		Model:        req.Model,
 		Messages:     pbMessages,
 		Config: &pb.GenerationConfig{
-			Temperature: 0.7,
-			MaxTokens:   4096,
+			Temperature:    0.7,
+			MaxTokens:      2048,
+			EnableThinking: req.EnableThinking,
 		},
 	}
 
@@ -75,45 +77,60 @@ func (h *ChatHandler) StreamChat(c *gin.Context) {
 
 	// 设置 SSE 头部
 	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
+	c.Header("Cache-Control", "no-cache, no-transform")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
 
 	// 发送 generation_id 作为第一个事件，以便客户端可以取消
-	c.SSEvent("meta", gin.H{"generation_id": generationID})
+	writeSSE(c, "meta", gin.H{"_t": "meta", "generation_id": generationID})
 	c.Writer.Flush()
 
 	// 将 gRPC 流转发为 SSE
 	c.Stream(func(w io.Writer) bool {
 		resp, err := stream.Recv()
 		if err == io.EOF {
-			c.SSEvent("done", "[DONE]")
+			writeSSE(c, "done", "[DONE]")
 			return false
 		}
 		if err != nil {
 			slog.Error("gRPC stream error", "error", err)
-			c.SSEvent("error", gin.H{"message": err.Error()})
+			writeSSE(c, "error", gin.H{"_t": "error", "message": err.Error()})
 			return false
 		}
 
 		switch payload := resp.Payload.(type) {
 		case *pb.GenerateResponse_Token:
-			c.SSEvent("token", gin.H{"text": payload.Token.Text, "index": payload.Token.Index})
+			if payload.Token.ReasoningContent != "" {
+				writeSSE(c, "reasoning", gin.H{
+					"_t":    "reasoning",
+					"text":  payload.Token.ReasoningContent,
+					"index": payload.Token.Index,
+				})
+			}
+			if payload.Token.Text != "" {
+				writeSSE(c, "token", gin.H{
+					"_t":    "token",
+					"text":  payload.Token.Text,
+					"index": payload.Token.Index,
+				})
+			}
 		case *pb.GenerateResponse_ToolCall:
-			c.SSEvent("tool_call", gin.H{
+			writeSSE(c, "tool_call", gin.H{
+				"_t":        "tool_call",
 				"id":        payload.ToolCall.Id,
 				"name":      payload.ToolCall.Name,
 				"arguments": payload.ToolCall.Arguments,
 			})
 		case *pb.GenerateResponse_Complete:
 			completeJSON, _ := json.Marshal(gin.H{
+				"_t":            "complete",
 				"finish_reason": payload.Complete.FinishReason,
 			})
-			c.SSEvent("complete", string(completeJSON))
+			writeSSE(c, "complete", string(completeJSON))
 			return false
 		case *pb.GenerateResponse_Error:
-			c.SSEvent("error", gin.H{"code": payload.Error.Code, "message": payload.Error.Message})
+			writeSSE(c, "error", gin.H{"_t": "error", "code": payload.Error.Code, "message": payload.Error.Message})
 			return false
 		default:
 			slog.Warn("Unknown response payload type", "type", fmt.Sprintf("%T", resp.Payload))

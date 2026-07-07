@@ -29,13 +29,17 @@ const emit = defineEmits<{
     >
       <span class="font-mono">{{ file.filename }}</span>
       <span v-if="file.isDirty" class="w-2 h-2 rounded-full bg-orange-400" title="未保存的更改" />
-      <button
+      <span
         @click.stop="emit('close', file.filename)"
-        class="ml-1 text-gray-400 hover:text-red-500 text-lg leading-none"
+        class="ml-1 text-gray-400 hover:text-red-500 text-lg leading-none cursor-pointer"
         title="关闭文件"
+        role="button"
+        tabindex="0"
+        @keydown.enter.stop="emit('close', file.filename)"
+        @keydown.space.prevent.stop="emit('close', file.filename)"
       >
         &times;
-      </button>
+      </span>
     </button>
     <button
       @click="emit('add')"

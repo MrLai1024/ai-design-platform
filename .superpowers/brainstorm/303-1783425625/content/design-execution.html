@@ -1,0 +1,183 @@
+<h2>设计 Part 4: 执行引擎与 SSE 通信协议</h2>
+<p class="subtitle">Workflow IR → LangGraph StateGraph 编译 + 运行时 SSE 事件流</p>
+
+<div class="section">
+  <h3>编译流程：Workflow IR → StateGraph</h3>
+  <div class="mockup">
+    <div class="mockup-header">WorkflowCompiler.compile() 的五步转换</div>
+    <div class="mockup-body">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;overflow-x:auto;padding:8px 0">
+        <div style="text-align:center;min-width:100px">
+          <div style="font-size:24px">📋</div>
+          <b>Step 1</b><br/>
+          解析 state_variables<br/>
+          → GenerationState fields
+        </div>
+        <div style="font-size:20px;color:#94a3b8">→</div>
+        <div style="text-align:center;min-width:100px">
+          <div style="font-size:24px">🔧</div>
+          <b>Step 2</b><br/>
+          遍历 nodes, 每个 node<br/>
+          → registry.lookup(type)
+        </div>
+        <div style="font-size:20px;color:#94a3b8">→</div>
+        <div style="text-align:center;min-width:100px">
+          <div style="font-size:24px">🧩</div>
+          <b>Step 3</b><br/>
+          handler.compile(node)<br/>
+          → add_node(id, fn)
+        </div>
+        <div style="font-size:20px;color:#94a3b8">→</div>
+        <div style="text-align:center;min-width:100px">
+          <div style="font-size:24px">🔗</div>
+          <b>Step 4</b><br/>
+          遍历 edges, 普通边→add_edge<br/>
+          条件边→add_conditional_edges
+        </div>
+        <div style="font-size:20px;color:#94a3b8">→</div>
+        <div style="text-align:center;min-width:100px">
+          <div style="font-size:24px">✅</div>
+          <b>Step 5</b><br/>
+          compile(checkpointer,<br/>
+          interrupt_before=[...])
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>每种节点类型的编译策略</h3>
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <tr style="background:#f0f4f8">
+      <th style="text-align:left;padding:8px">节点类型</th>
+      <th style="text-align:left;padding:8px">编译为 LangGraph 的什么</th>
+      <th style="text-align:left;padding:8px">关键处理</th>
+    </tr>
+    <tr>
+      <td style="padding:8px;font-weight:600">🧠 LLM</td>
+      <td style="padding:8px;font-family:monospace;font-size:12px">add_node(id, llm_handler)</td>
+      <td style="padding:8px">handler 内调用 _llm_generate，prompt 模板变量从 state 解析</td>
+    </tr>
+    <tr style="background:#fafbfc">
+      <td style="padding:8px;font-weight:600">🔀 Router</td>
+      <td style="padding:8px;font-family:monospace;font-size:12px">add_conditional_edges(source, router_fn, mapping)</td>
+      <td style="padding:8px">每出边 condition → mapping key，router_fn 根据 state 返回匹配的 key，default 走默认分支</td>
+    </tr>
+    <tr>
+      <td style="padding:8px;font-weight:600">✋ Human Confirm</td>
+      <td style="padding:8px;font-family:monospace;font-size:12px">interrupt_before=[node_id]</td>
+      <td style="padding:8px">编译时收集所有 human_confirm 节点 id，加入 interrupt_before 列表。暂停 → SSE 推送 → 等 HTTP resume</td>
+    </tr>
+    <tr style="background:#fafbfc">
+      <td style="padding:8px;font-weight:600">⚡ Code</td>
+      <td style="padding:8px;font-family:monospace;font-size:12px">add_node(id, sandbox_handler)</td>
+      <td style="padding:8px">subprocess 沙箱执行，超时 kill，stdout/stderr 回传。模板变量注入 → 执行 → 捕获返回值写回 state</td>
+    </tr>
+  </table>
+</div>
+
+<div class="section">
+  <h3>SSE 事件协议（扩展现有 GraphEvent）</h3>
+  <div class="mockup">
+    <div class="mockup-header">运行时 SSE 事件流时序</div>
+    <div class="mockup-body">
+<pre style="font-size:12px;line-height:1.8;overflow-x:auto">
+<b>客户端</b>                          <b>SSE 事件流</b>                         <b>服务端</b>
+───────                            ────────────                           ───────
+POST /api/v1/workflow/run ─────────────────────────────────────▶ GraphRunner.run(workflow_ir)
+  {workflow_ir}                                                      │
+                                                                     compiler.compile(ir)
+  ◀── SSE: workflow_start ──────────────────────────────────────    app.astream(state)
+  ◀── SSE: stage_start {node_id, label} ────────────────────────
+  ◀── SSE: stage_complete {node_id, summary, output_preview} ───    (每个节点完成时)
+
+  ◀── SSE: human_confirm_required {node_id, message, fields} ──    (遇到 human_confirm 节点)
+  POST /api/v1/workflow/resume ─────────────────────────────────▶   app.update_state() + 继续
+  {node_id, response}
+
+  ◀── SSE: node_log {node_id, level, message} ──────────────────    (代码节点的 stdout/stderr)
+
+  ◀── SSE: workflow_complete {status, total_tokens, duration} ──
+  ◀── SSE: loop_break {reason, node_id} ───────────────────────     (熔断时)
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>SSE 事件类型定义</h3>
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <tr style="background:#f0f4f8">
+      <th style="text-align:left;padding:8px">事件</th>
+      <th style="text-align:left;padding:8px">方向</th>
+      <th style="text-align:left;padding:8px">载荷</th>
+      <th style="text-align:left;padding:8px">前端行为</th>
+    </tr>
+    <tr>
+      <td style="padding:8px"><code>workflow_start</code></td>
+      <td style="padding:8px">←</td>
+      <td style="padding:8px;font-size:12px">{workflow_id, nodes_count}</td>
+      <td style="padding:8px">画布进入 RunOverlay 模式，所有节点置为 pending</td>
+    </tr>
+    <tr style="background:#fafbfc">
+      <td style="padding:8px"><code>stage_start</code></td>
+      <td style="padding:8px">←</td>
+      <td style="padding:8px;font-size:12px">{node_id, label, timestamp}</td>
+      <td style="padding:8px">节点高亮为 running 状态（脉冲动画）</td>
+    </tr>
+    <tr>
+      <td style="padding:8px"><code>stage_complete</code></td>
+      <td style="padding:8px">←</td>
+      <td style="padding:8px;font-size:12px">{node_id, summary, output_preview}</td>
+      <td style="padding:8px">节点变绿 ✓，在节点下方显示 output_preview 摘要</td>
+    </tr>
+    <tr style="background:#fafbfc">
+      <td style="padding:8px"><code>human_confirm_required</code></td>
+      <td style="padding:8px">←</td>
+      <td style="padding:8px;font-size:12px">{node_id, message, fields}</td>
+      <td style="padding:8px">节点闪烁，弹出确认对话框</td>
+    </tr>
+    <tr>
+      <td style="padding:8px"><code>node_log</code></td>
+      <td style="padding:8px">←</td>
+      <td style="padding:8px;font-size:12px">{node_id, level, message}</td>
+      <td style="padding:8px">追加到运行日志面板</td>
+    </tr>
+    <tr style="background:#fafbfc">
+      <td style="padding:8px"><code>node_error</code></td>
+      <td style="padding:8px">←</td>
+      <td style="padding:8px;font-size:12px">{node_id, error, retry_count}</td>
+      <td style="padding:8px">节点变红 ✗，显示错误信息</td>
+    </tr>
+    <tr>
+      <td style="padding:8px"><code>workflow_complete</code></td>
+      <td style="padding:8px">←</td>
+      <td style="padding:8px;font-size:12px">{status, total_tokens, duration_ms}</td>
+      <td style="padding:8px">退出 RunOverlay，弹出汇总（耗时/token/通过率）</td>
+    </tr>
+    <tr style="background:#fafbfc">
+      <td style="padding:8px"><code>workflow_resume</code></td>
+      <td style="padding:8px">→</td>
+      <td style="padding:8px;font-size:12px">POST {node_id, response}</td>
+      <td style="padding:8px">用户在确认框填写后发送</td>
+    </tr>
+  </table>
+</div>
+
+<div class="section">
+  <h3>后端 HTTP API（新增）</h3>
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <tr style="background:#f0f4f8">
+      <th style="text-align:left;padding:8px">方法</th>
+      <th style="text-align:left;padding:8px">路径</th>
+      <th style="text-align:left;padding:8px">说明</th>
+    </tr>
+    <tr><td style="padding:8px">POST</td><td style="padding:8px;font-family:monospace;font-size:12px">/api/v1/workflow/save</td><td style="padding:8px">保存工作流定义（Workflow IR JSON）</td></tr>
+    <tr style="background:#fafbfc"><td style="padding:8px">GET</td><td style="padding:8px;font-family:monospace;font-size:12px">/api/v1/workflow/list</td><td style="padding:8px">列出所有工作流</td></tr>
+    <tr><td style="padding:8px">GET</td><td style="padding:8px;font-family:monospace;font-size:12px">/api/v1/workflow/{id}</td><td style="padding:8px">获取工作流详情</td></tr>
+    <tr style="background:#fafbfc"><td style="padding:8px">POST</td><td style="padding:8px;font-family:monospace;font-size:12px">/api/v1/workflow/{id}/run</td><td style="padding:8px">运行工作流（返回 SSE 流）</td></tr>
+    <tr><td style="padding:8px">POST</td><td style="padding:8px;font-family:monospace;font-size:12px">/api/v1/workflow/{id}/resume</td><td style="padding:8px">恢复暂停的工作流（human_confirm 后）</td></tr>
+    <tr style="background:#fafbfc"><td style="padding:8px">POST</td><td style="padding:8px;font-family:monospace;font-size:12px">/api/v1/workflow/{id}/cancel</td><td style="padding:8px">取消运行</td></tr>
+  </table>
+</div>

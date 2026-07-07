@@ -45,6 +45,8 @@ func main() {
 	healthH := handler.NewHealthHandler()
 	chatH := handler.NewChatHandler(aiClient)
 	convH := handler.NewConversationHandler(aiClient)
+	graphHandler := handler.NewGraphSSEHandler(aiClient)
+	e2eHandler := handler.NewE2EHandler(graphHandler)
 
 	// Gin 路由器
 	gin.SetMode(gin.ReleaseMode)
@@ -69,15 +71,20 @@ func main() {
 		api.GET("/conversations/:id", convH.GetConversation)
 		api.POST("/conversations/:id/messages", convH.SendMessage)
 		api.DELETE("/conversations/:id", convH.DeleteConversation)
+
+		// LangGraph 流式生成
+		api.POST("/generation/stream", graphHandler.StreamGeneration)
+		api.POST("/e2e/result", e2eHandler.SubmitE2EResult)
+		api.POST("/generation/confirm", e2eHandler.ConfirmStage)
 	}
 
 	// HTTP 服务器
 	srv := &http.Server{
 		Addr:         ":" + cfg.ServerPort,
 		Handler:      r,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 5 * time.Minute, // SSE 连接是长连接
-		IdleTimeout:  2 * time.Minute,
+		ReadTimeout:  30 * time.Second,    // 读取请求体
+		WriteTimeout: 10 * time.Minute,    // SSE 长连接，匹配 AI 服务 600s 超时
+		IdleTimeout:  5 * time.Minute,     // Keep-alive 空闲超时
 	}
 
 	// 优雅关闭

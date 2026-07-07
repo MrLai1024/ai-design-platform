@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>SSE 诊断测试</title>
+<style>
+  body { font-family: monospace; background: #1a1a2e; color: #e0e0e0; padding: 20px; }
+  .section { margin: 16px 0; padding: 12px; background: #16213e; border-radius: 8px; }
+  .ok { color: #4ade80; } .err { color: #f87171; } .info { color: #60a5fa; }
+  button { padding: 8px 16px; margin: 4px; cursor: pointer; border-radius: 4px; border: none; }
+  .primary { background: #3b82f6; color: white; }
+  .danger { background: #ef4444; color: white; }
+  pre { background: #0f0f23; padding: 8px; border-radius: 4px; overflow-x: auto; max-height: 300px; }
+  #output { white-space: pre-wrap; }
+  input { padding: 8px; border-radius: 4px; border: 1px solid #333; background: #0f0f23; color: #e0e0e0; width: 100%; box-sizing: border-box; margin: 4px 0; }
+</style>
+</head>
+<body>
+<h1>SSE 诊断测试</h1>
+
+<div class="section">
+  <h3>1. 后端直连测试 (绕过 webpack 代理)</h3>
+  <p id="status-direct" class="info">未测试</p>
+  <button class="primary" onclick="testDirect()">测试直连 :8080</button>
+  <pre id="output-direct" style="display:none"></pre>
+</div>
+
+<div class="section">
+  <h3>2. 通过 webpack 代理测试</h3>
+  <p>当前页面 origin: <span id="origin"></span></p>
+  <input id="conv-id-proxy" placeholder="输入 conversation ID (先点「创建对话」)" />
+  <button class="primary" onclick="testProxy()">测试代理 SSE</button>
+  <button class="primary" onclick="createAndTest()">创建对话 + 测试 SSE</button>
+  <p id="status-proxy" class="info">未测试</p>
+  <pre id="output-proxy" style="display:none"></pre>
+</div>
+
+<div class="section">
+  <h3>3. 手动 fetch 测试</h3>
+  <p>查看浏览器控制台和网络面板 (F12 → Network → 筛选 "messages")</p>
+  <button class="primary" onclick="manualFetchTest()">手动 fetch 测试</button>
+  <pre id="output-manual" style="display:none"></pre>
+</div>
+
+<script>
+document.getElementById('origin').textContent = location.origin;
+
+async function createConversation(baseUrl) {
+  const resp = await fetch(`${baseUrl}/api/v1/conversations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: 'sse-test' }),
+  });
+  const data = await resp.json();
+  return data.id;
+}
+
+function log(elId, msg, cls) {
+  const el = document.getElementById(elId);
+  el.style.display = 'block';
+  el.innerHTML += `<span class="${cls || ''}">${msg}</span>\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+async function testDirect() {
+  const output = 'output-direct';
+  const status = 'status-direct';
+  document.getElementById(output).style.display = 'block';
+  document.getElementById(output).innerHTML = '';
+
+  try {
+    log(output, '创建对话...', 'info');
+    const convId = await createConversation('http://localhost:8080');
+    log(output, `对话ID: ${convId}`, 'ok');
+
+    log(output, '发起 SSE 请求...', 'info');
+    const resp = await fetch(`http://localhost:8080/api/v1/conversations/${convId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'glm-5.2', content: 'say hi in 3 words' }),
+    });
+
+    log(output, `HTTP ${resp.status} ${resp.statusText}`, resp.ok ? 'ok' : 'err');
+    log(output, `Content-Type: ${resp.headers.get('Content-Type')}`, 'info');
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let eventCount = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) { log(output, '✅ 流结束, 共收到 ' + eventCount + ' 个事件', 'ok'); break; }
+
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() || '';
+
+      for (const part of parts) {
+        if (!part.trim()) continue;
+        eventCount++;
+        // Parse event type
+        const match = part.match(/^event: (\w+)/m);
+        const type = match ? match[1] : 'unknown';
+        log(output, `📨 [${type}] ${part.replace(/\n/g, '↵')}`, type === 'error' ? 'err' : 'ok');
+      }
+    }
+    document.getElementById(status).innerHTML = `<span class="ok">✅ 直连成功! 收到 ${eventCount} 个 SSE 事件</span>`;
+  } catch(e) {
+    document.getElementById(status).innerHTML = `<span class="err">❌ 失败: ${e.message}</span>`;
+    log(output, `错误: ${e.message}`, 'err');
+  }
+}
+
+async function testProxy() {
+  const output = 'output-proxy';
+  const status = 'status-proxy';
+  const convId = document.getElementById('conv-id-proxy').value.trim();
+
+  document.getElementById(output).style.display = 'block';
+  document.getElementById(output).innerHTML = '';
+
+  if (!convId) {
+    document.getElementById(status).innerHTML = '<span class="err">请先输入 conversation ID</span>';
+    return;
+  }
+
+  try {
+    log(output, `使用对话: ${convId}`, 'info');
+
+    const resp = await fetch(`/api/v1/conversations/${convId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'glm-5.2', content: 'say hi in 3 words' }),
+    });
+
+    log(output, `HTTP ${resp.status} ${resp.statusText}`, resp.ok ? 'ok' : 'err');
+    log(output, `Content-Type: ${resp.headers.get('Content-Type')}`, 'info');
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      log(output, `响应体: ${text}`, 'err');
+      document.getElementById(status).innerHTML = `<span class="err">❌ HTTP ${resp.status}</span>`;
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let eventCount = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) { log(output, '✅ 流结束, 共收到 ' + eventCount + ' 个事件', 'ok'); break; }
+
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() || '';
+
+      for (const part of parts) {
+        if (!part.trim()) continue;
+        eventCount++;
+        const match = part.match(/^event: (\w+)/m);
+        const type = match ? match[1] : 'unknown';
+        log(output, `📨 [${type}] ${part.replace(/\n/g, '↵')}`, type === 'error' ? 'err' : 'ok');
+      }
+    }
+    document.getElementById(status).innerHTML = `<span class="ok">✅ 代理成功! 收到 ${eventCount} 个 SSE 事件</span>`;
+  } catch(e) {
+    document.getElementById(status).innerHTML = `<span class="err">❌ 失败: ${e.message}</span>`;
+    log(output, `错误: ${e.message}`, 'err');
+  }
+}
+
+async function createAndTest() {
+  const output = 'output-proxy';
+  const status = 'status-proxy';
+  document.getElementById(output).style.display = 'block';
+  document.getElementById(output).innerHTML = '';
+
+  try {
+    log(output, '通过代理创建对话...', 'info');
+    const convId = await createConversation('');
+    log(output, `对话ID: ${convId}`, 'ok');
+    document.getElementById('conv-id-proxy').value = convId;
+
+    // Now test
+    log(output, '发起 SSE 请求...', 'info');
+    const resp = await fetch(`/api/v1/conversations/${convId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'glm-5.2', content: 'say hi in 3 words' }),
+    });
+
+    log(output, `HTTP ${resp.status}`, resp.ok ? 'ok' : 'err');
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let eventCount = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) { log(output, '✅ 流结束, 共收到 ' + eventCount + ' 个事件', 'ok'); break; }
+
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() || '';
+
+      for (const part of parts) {
+        if (!part.trim()) continue;
+        eventCount++;
+        const match = part.match(/^event: (\w+)/m);
+        const type = match ? match[1] : 'unknown';
+        log(output, `📨 [${type}] ${part.replace(/\n/g, '↵')}`, 'ok');
+      }
+    }
+    document.getElementById(status).innerHTML = `<span class="ok">✅ 成功! 收到 ${eventCount} 个 SSE 事件</span>`;
+  } catch(e) {
+    document.getElementById(status).innerHTML = `<span class="err">❌ 失败: ${e.message}</span>`;
+    log(output, `错误: ${e.message}`, 'err');
+  }
+}
+
+async function manualFetchTest() {
+  const output = 'output-manual';
+  document.getElementById(output).style.display = 'block';
+  document.getElementById(output).innerHTML = '';
+
+  log(output, '打开 F12 → Network 标签，筛选 "messages"，观察请求', 'info');
+  log(output, '同时查看 Console 标签的日志', 'info');
+
+  try {
+    // Use the existing app's flow
+    const convId = await createConversation('');
+    log(output, `创建对话: ${convId}`, 'ok');
+
+    const resp = await fetch(`/api/v1/conversations/${convId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'glm-5.2', content: 'say hi' }),
+    });
+
+    log(output, `响应状态: ${resp.status}`, 'ok');
+    log(output, `Content-Type: ${resp.headers.get('Content-Type')}`, 'info');
+    log(output, `bodyUsed: ${resp.bodyUsed}`, 'info');
+    log(output, `body 类型: ${resp.body?.constructor?.name || 'null'}`, 'info');
+
+    if (!resp.body) {
+      log(output, '❌ response.body 为 null — ReadableStream 不可用!', 'err');
+      return;
+    }
+
+    const reader = resp.body.getReader();
+    log(output, `reader 已获取`, 'ok');
+
+    const { done, value } = await reader.read();
+    log(output, `第一次 read: done=${done}, bytes=${value?.length || 0}`, 'info');
+
+    if (value) {
+      const text = new TextDecoder().decode(value);
+      log(output, `数据: ${text.substring(0, 200)}`, 'ok');
+    }
+
+    reader.cancel();
+  } catch(e) {
+    log(output, `❌ 错误: ${e.message}`, 'err');
+    log(output, `错误栈: ${e.stack}`, 'err');
+  }
+}
+</script>
+</body>
+</html>

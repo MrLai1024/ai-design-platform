@@ -9,8 +9,15 @@ module.exports = merge(common, {
     hot: true,
     open: false,
     historyApiFallback: true,
+    compress: false,
     headers: {
       'Access-Control-Allow-Origin': '*',
+    },
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
     },
   },
 });

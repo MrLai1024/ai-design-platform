@@ -45,6 +45,9 @@ const callbacks: StreamCallbacks = {
   onToken(text) {
     chatStore.appendToken(text);
   },
+  onReasoning(text) {
+    chatStore.appendReasoning(text);
+  },
   onToolCall(tool) {
     console.log('[chat] tool_call:', tool);
   },
@@ -106,7 +109,7 @@ async function handleSend(content: string) {
   });
 
   chatStore.startStreaming();
-  startStream(convId, MODEL, content);
+  startStream(convId, MODEL, content, chatStore.enableThinking);
 }
 
 function handleStop() {
@@ -132,7 +135,7 @@ async function handleRetry() {
   if (lastUserMsg && chatStore.currentConversationId) {
     chatStore.streamError = null as any;
     chatStore.startStreaming();
-    startStream(chatStore.currentConversationId!, MODEL, lastUserMsg.content);
+    startStream(chatStore.currentConversationId!, MODEL, lastUserMsg.content, chatStore.enableThinking);
   }
 }
 
@@ -148,7 +151,7 @@ async function handleRegenerate(msgId: string) {
   }
   if (lastUserMsg && chatStore.currentConversationId) {
     chatStore.startStreaming();
-    startStream(chatStore.currentConversationId!, MODEL, lastUserMsg.content);
+    startStream(chatStore.currentConversationId!, MODEL, lastUserMsg.content, chatStore.enableThinking);
   }
 }
 

@@ -37,16 +37,6 @@
   scroll-behavior: smooth;
 }
 
-/* Monaco 编辑器容器 */
-.code-editor .relative {
-  position: relative;
-}
-.code-editor .monaco-editor {
-  position: absolute !important;
-  top: 0;
-  left: 0;
-}
-
 /* FileTabBar 滚动条 */
 .file-tab-bar::-webkit-scrollbar {
   height: 2px;
