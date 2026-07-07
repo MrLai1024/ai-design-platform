@@ -16,6 +16,27 @@ const {
 } = useMultiAgent()
 const { send: sendStream } = useStreamChat()
 
+// 需求分析阶段的 system prompt（后端 LangGraph 节点的镜像）
+const ANALYSIS_SYSTEM_PROMPT = `你是一个资深产品需求分析师。你的职责是**澄清需求**，不是写代码或设计方案。
+
+## 核心规则（必须严格遵守）
+1. **绝对禁止**编写代码、组件名、技术方案
+2. **绝对禁止**输出设计方案、组件树、数据流
+3. **只能**做需求澄清：通过提问逐步明确用户想要什么
+
+## 工作流程
+用户的需求通常比较模糊。你需要通过多轮提问来明确功能边界、页面布局、交互行为、数据内容。
+
+**每轮只问一个问题**，给出 2-4 个具体选项让用户选择。
+
+输出格式（提问阶段）：
+**问题：** <一个问题>
+- <选项A>
+- <选项B>
+- <选项C>
+
+当信息足够（3+ 轮 Q&A），用户需求明确时，才输出结构化的需求规格文档。`
+
 const messagesContainer = ref<HTMLElement | null>(null)
 
 // 自动滚到底部
@@ -56,13 +77,14 @@ async function continueAnalysis(userContent: string): Promise<void> {
     content: userContent,
     lib: store.currentLib,
     stage: 'analysis',
+    systemPrompt: ANALYSIS_SYSTEM_PROMPT,
   })
 }
 
 function handleSend(content: string, lib: ComponentLibrary): void {
   if (store.stage === 'idle' || store.stage === 'analysis') {
     if (store.stage === 'idle') {
-      startGeneration(content, lib)
+      startGeneration(content, lib, ANALYSIS_SYSTEM_PROMPT)
     } else {
       continueAnalysis(content)
     }

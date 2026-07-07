@@ -4,7 +4,7 @@ from typing import Any
 
 import structlog
 
-from ..llm.provider import LLMProvider, TokenEvent
+from ..llm.provider import LLMConfig, LLMProvider, ReasoningEvent, TokenEvent
 from .state import GenerationState
 from .harness import EvalHarness
 
@@ -23,18 +23,35 @@ async def _llm_generate(
     system_prompt: str,
     user_content: str,
     model: str = "glm-5.2",
+    enable_thinking: bool = False,
 ) -> str:
-    """Call LLM and collect full response as string."""
+    """Call LLM and collect full response as string.
+
+    By default disables thinking mode — the analysis/design/review prompts
+    already instruct the model to produce structured output, and enabling
+    thinking can cause the model to emit all content as reasoning_content
+    with an empty content field.
+    """
     if _provider is None:
         raise RuntimeError("LLM provider not set. Call set_provider() first.")
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
     ]
+    config = LLMConfig(enable_thinking=enable_thinking)
     full_text = ""
-    async for event in _provider.stream_generate(model, messages):
+    async for event in _provider.stream_generate(model, messages, config):
         if isinstance(event, TokenEvent):
             full_text += event.text
+        elif isinstance(event, ReasoningEvent):
+            # GLM may emit content as reasoning even with thinking disabled;
+            # collect it as fallback to avoid empty responses
+            full_text += event.text
+    logger.debug(
+        "_llm_generate_result",
+        text_len=len(full_text),
+        text_preview=full_text[:200] if full_text else "(empty)",
+    )
     return full_text
 
 
@@ -75,39 +92,95 @@ async def _llm_generate_structured(
 
 # ---- Analysis Node ----
 
-ANALYSIS_SYSTEM_PROMPT = """你是一个资深产品需求分析师。请分析用户需求，产出两部分内容：
+ANALYSIS_SYSTEM_PROMPT = """你是一个资深产品需求分析师。你的职责是**澄清需求**，不是写代码或设计方案。
 
-## 1. 需求分析文档
-- 功能概述
-- 页面布局描述
-- 交互行为说明
-- 数据展示需求
-- 技术要求
+## 核心规则（必须严格遵守）
+1. **绝对禁止**编写代码、组件名、技术方案
+2. **绝对禁止**输出设计方案、组件树、数据流
+3. **只能**做需求澄清：通过提问逐步明确用户想要什么
 
-## 2. E2E 测试用例（JSON 数组）
-每个用例包含：
-- id: 用例编号 (如 "TC-001")
-- name: 用例名称
-- description: 测试目标
-- steps: 步骤数组，每步包含:
-  - action: "click" | "input" | "assert" | "wait"
-  - target: CSS 选择器或元素文本
-  - value: 输入值/期望文本/等待毫秒数
-  - description: 步骤的人类可读说明
+## 工作流程
 
-核心规则：
-- 不要编写代码，只分析需求
-- 测试用例应覆盖所有核心交互路径
-- 测试步骤要具体、可执行，选择器要明确"""
+### 第一阶段：需求澄清（至少 3 轮 Q&A）
+用户的需求通常比较模糊。你需要通过多轮提问来明确：
+- 功能边界（具体要哪些功能，不要哪些）
+- 页面布局（列表页/详情页/表单页，页面结构）
+- 交互行为（点击、弹窗、跳转、状态切换）
+- 数据内容（展示哪些字段，数据从哪里来）
+
+**每轮只问一个问题**，给出 2-4 个具体选项让用户选择。
+
+输出格式（提问阶段）：
+```
+**问题：** <一个问题>
+- <选项A>
+- <选项B>
+- <选项C>
+```
+
+### 第二阶段：输出需求规格（当信息足够时）
+当完成了至少 3 轮 Q&A，用户需求已经明确时，输出结构化的需求规格文档。
+
+输出格式（规格阶段）：
+以 JSON 格式输出：
+{
+  "analysis_doc": "markdown 格式的需求分析文档（## 功能概述、页面布局、交互行为、数据展示、技术要求）",
+  "e2e_test_cases": [...]
+}
+
+### 判断规则
+- 用户需求模糊（如"做一个管理系统"）→ 第一阶段，提问
+- 已经有 3+ 轮有效问答 → 第二阶段，输出规格
+- 即使用户直接说需求，也至少要问 2 个澄清问题再出规格"""
 
 
 async def analysis_node(state: GenerationState) -> GenerationState:
-    """需求分析节点：产出需求文档 + E2E 测试用例。"""
-    logger.info("analysis_node_start")
+    """需求分析节点：多轮 Q&A 澄清需求后，产出需求文档 + E2E 测试用例。"""
+    logger.info("analysis_node_start", qa_rounds=state.get("qa_rounds", 0))
+
+    qa_rounds = state.get("qa_rounds", 0)
+    messages = state.get("messages", [])
+
+    # Build conversation context from accumulated messages
+    conversation = ""
+    for m in messages:
+        conversation += f"\n[{m.get('role', '?')}]: {m.get('content', '')}"
+
+    if qa_rounds < 3:
+        # --- Q&A Phase: ask one clarifying question ---
+        user_prompt = (
+            f"用户原始需求：{state['requirement']}\n"
+            f"当前问答历史：{conversation}\n"
+            f"已完成问答轮数：{qa_rounds}\n\n"
+            f"请针对用户需求提出第 {qa_rounds + 1} 个澄清问题。"
+            f"只输出一个问题加选项，不要输出其他内容。"
+            f"严格遵循 **问题：** ... - 选项 的格式。"
+        )
+
+        question_text = await _llm_generate(
+            system_prompt=ANALYSIS_SYSTEM_PROMPT,
+            user_content=user_prompt,
+        )
+
+        logger.info("analysis_question", qa_rounds=qa_rounds + 1, question_preview=question_text[:200])
+
+        return {
+            **state,
+            "analysis_result": question_text,
+            "qa_rounds": qa_rounds + 1,
+            "e2e_test_cases": None,
+        }
+
+    # --- Spec Phase: enough Q&A, produce structured spec ---
+    user_prompt = (
+        f"用户原始需求：{state['requirement']}\n"
+        f"问答历史：{conversation}\n\n"
+        f"已完成 {qa_rounds} 轮需求澄清。现在请输出完整的需求规格文档和 E2E 测试用例。"
+    )
 
     result = await _llm_generate_structured(
         system_prompt=ANALYSIS_SYSTEM_PROMPT,
-        user_content=f"用户需求：{state['requirement']}\n组件库：{state['component_lib']}",
+        user_content=user_prompt,
         output_schema={
             "analysis_doc": "string (markdown 格式的需求分析文档)",
             "e2e_test_cases": [
@@ -128,10 +201,13 @@ async def analysis_node(state: GenerationState) -> GenerationState:
         },
     )
 
+    logger.info("analysis_spec_complete")
+
     return {
         **state,
         "analysis_result": result.get("analysis_doc", ""),
         "e2e_test_cases": result.get("e2e_test_cases", []),
+        "qa_rounds": qa_rounds + 1,
     }
 
 

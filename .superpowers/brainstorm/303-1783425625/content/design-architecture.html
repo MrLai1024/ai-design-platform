@@ -1,0 +1,116 @@
+<h2>设计 Part 2: 系统架构与组件映射</h2>
+<p class="subtitle">三层架构：前端画布层 → 后端编译/执行层 → 基础设施层</p>
+
+<div class="section">
+  <h3>整体架构拓扑</h3>
+  <div class="mockup">
+    <div class="mockup-header">数据流：设计时（上） → 运行时（下）</div>
+    <div class="mockup-body">
+<pre style="font-size:12px;line-height:1.8;overflow-x:auto">
+┌─────────────────────────────────────────────────────────────────┐
+│  <b>ai-workflow (React + React Flow)</b>                          │
+│                                                                 │
+│  ┌──────────────┐  ┌────────────┐  ┌──────────────────────┐    │
+│  │ WorkflowCanvas│  │ NodePanel  │  │ RunMonitor           │    │
+│  │ (拖拽/连线)   │  │ (节点配置) │  │ (执行状态/日志/预览) │    │
+│  └──────┬───────┘  └─────┬──────┘  └──────────┬───────────┘    │
+│         │                │                    │                │
+│    Workflow IR ←─────────┘                    │ SSE 消费        │
+│         │                                     │ (复用现有        │
+│    POST /api/v1/workflow/save                 │  GraphSSEHandler)│
+│    POST /api/v1/workflow/run   ───────────────┘                │
+└─────────┼─────────────────────────────────────┼────────────────┘
+          │                                     │
+┌─────────┼─────────────────────────────────────┼────────────────┐
+│  <b>ai-service (Python)</b>                      │                │
+│         │                                     │                │
+│  ┌──────▼──────────┐  ┌──────────────────┐    │                │
+│  │ WorkflowCompiler │  │ GraphRunner      │────┘                │
+│  │ (IR→StateGraph)  │  │ (执行+SSE推送)   │                     │
+│  └─────────────────┘  └────────┬─────────┘                     │
+│                                │                               │
+│  ┌─────────────────────────────▼──────────────────────────┐    │
+│  │  Node Registry (节点类型注册表)                         │    │
+│  │  ┌──────────┬──────────┬──────────┬──────────────┐    │    │
+│  │  │LLMHandler│RouterHandler│HumanHandler│CodeHandler │    │    │
+│  │  │(复用     │(编译为    │(interrupt │(沙箱执行)    │    │    │
+│  │  │ _llm_    │ conditional│ _before)  │              │    │    │
+│  │  │ generate)│ edge)     │           │              │    │    │
+│  │  └──────────┴──────────┴──────────┴──────────────┘    │    │
+│  └───────────────────────────────────────────────────────┘    │
+│                                                                │
+│  ┌───────────────────────────────────────────────────────┐    │
+│  │  复用现有基础设施                                      │    │
+│  │  AgentHarness (重试/追踪)  LoopControl (收敛/熔断)     │    │
+│  │  EvalHarness (校验)       LLMProvider (多模型)        │    │
+│  └───────────────────────────────────────────────────────┘    │
+└────────────────────────────────────────────────────────────────┘
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>关键设计决策</h3>
+</div>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">新增模块</div>
+    <div class="mockup-body">
+      <table style="width:100%;font-size:13px">
+        <tr><th style="text-align:left;padding:4px">模块</th><th style="text-align:left;padding:4px">职责</th></tr>
+        <tr><td style="padding:4px"><code>compiler.py</code></td><td style="padding:4px">Workflow IR → LangGraph StateGraph</td></tr>
+        <tr><td style="padding:4px"><code>registry.py</code></td><td style="padding:4px">节点类型 → Handler 映射</td></tr>
+        <tr><td style="padding:4px"><code>handlers/</code></td><td style="padding:4px">每种节点类型的执行逻辑</td></tr>
+        <tr><td style="padding:4px"><code>sandbox.py</code></td><td style="padding:4px">Python/JS 代码安全执行</td></tr>
+        <tr><td style="padding:4px"><code>components/</code></td><td style="padding:4px">React Flow 节点/边/面板</td></tr>
+        <tr><td style="padding:4px"><code>composables/</code></td><td style="padding:4px">useWorkflow, useWorkflowRun</td></tr>
+      </table>
+    </div>
+  </div>
+  <div class="mockup">
+    <div class="mockup-header">修改现有模块</div>
+    <div class="mockup-body">
+      <table style="width:100%;font-size:13px">
+        <tr><th style="text-align:left;padding:4px">模块</th><th style="text-align:left;padding:4px">变更</th></tr>
+        <tr><td style="padding:4px"><code>graph.py</code></td><td style="padding:4px">从硬编码5节点 → 接受动态 node/edge 构建</td></tr>
+        <tr><td style="padding:4px"><code>nodes.py</code></td><td style="padding:4px">现有节点逻辑提取为 Handler 基类</td></tr>
+        <tr><td style="padding:4px"><code>servicer.py</code></td><td style="padding:4px">新增 save/run/list 接口</td></tr>
+        <tr><td style="padding:4px"><code>workflowSlice</code></td><td style="padding:4px">扩展 state 支持画布数据</td></tr>
+        <tr><td style="padding:4px"><code>ai-workflow/</code></td><td style="padding:4px">完整重写，从空壳→核心应用</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>节点 Handler 注册机制</h3>
+  <div class="mockup">
+    <div class="mockup-header">registry.py: 新节点类型只需注册一个 handler</div>
+    <div class="mockup-body">
+<pre style="font-size:12px;line-height:1.6"><code># registry.py
+class NodeHandler(ABC):
+    """节点处理器基类"""
+    node_type: str
+
+    @abstractmethod
+    async def execute(self, state: dict, config: dict) -> dict:
+        """执行节点逻辑，返回 state 更新"""
+
+    @abstractmethod
+    def compile_to_langgraph(self, node: NodeDef) -&gt; Callable:
+        """将节点定义编译为 LangGraph node function"""
+
+# 注册
+NodeRegistry.register(LLMHandler())        # 复用 _llm_generate
+NodeRegistry.register(RouterHandler())     # 编译为 conditional edge
+NodeRegistry.register(HumanConfirmHandler()) # interrupt_before
+NodeRegistry.register(CodeHandler())       # 沙箱执行
+
+# 编译
+compiler = WorkflowCompiler(registry)
+app = compiler.compile(workflow_ir)  # → StateGraph</code></pre>
+    </div>
+  </div>
+</div>

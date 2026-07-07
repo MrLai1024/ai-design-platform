@@ -64,6 +64,9 @@ class GenerationState(TypedDict):
     # Failure details for rollback
     failure_details: FailureDetails | None
 
+    # Analysis Q&A rounds (multi-turn clarification before spec output)
+    qa_rounds: int
+
     # Loop control
     rollback_records: list[RollbackRecord]
     rollback_count: dict[str, int]

@@ -1,0 +1,129 @@
+<h2>设计 Part 3: 前端画布与 UI 组件</h2>
+<p class="subtitle">ai-workflow 微应用的页面布局和核心组件树</p>
+
+<div class="section">
+  <h3>页面布局（三栏结构）</h3>
+  <div style="display:flex;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;min-height:400px">
+    <div style="width:200px;background:#f8fafc;padding:12px;border-right:1px solid #e2e8f0">
+      <div class="label">节点工具箱</div>
+      <div style="margin-top:12px">
+        <div class="placeholder" style="margin-bottom:8px">🧠 LLM 调用</div>
+        <div class="placeholder" style="margin-bottom:8px">🔀 条件路由</div>
+        <div class="placeholder" style="margin-bottom:8px">✋ 人工确认</div>
+        <div class="placeholder" style="margin-bottom:8px">⚡ 代码执行</div>
+        <div class="placeholder" style="margin-bottom:8px">📦 子工作流</div>
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid #e2e8f0">
+          <div class="label">工作流列表</div>
+          <div class="placeholder" style="margin-top:8px">最近工作流-1</div>
+          <div class="placeholder">最近工作流-2</div>
+        </div>
+      </div>
+    </div>
+    <div style="flex:1;background:#fff;position:relative;min-height:400px">
+      <div style="position:absolute;top:12px;left:50%;transform:translateX(-50%);display:flex;gap:8px">
+        <button class="mock-button" style="margin:0">▶ 运行</button>
+        <button class="mock-button" style="margin:0;background:#f1f5f9;color:#475569">💾 保存</button>
+        <button class="mock-button" style="margin:0;background:#f1f5f9;color:#475569">↩ 撤销</button>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;font-size:14px">
+        <div style="text-align:center">
+          <div style="font-size:48px;margin-bottom:12px">⬡</div>
+          <p>从左侧拖拽节点到画布<br/>或点击节点开始连线</p>
+        </div>
+      </div>
+    </div>
+    <div style="width:320px;background:#f8fafc;padding:12px;border-left:1px solid #e2e8f0;overflow-y:auto">
+      <div class="label">节点配置面板</div>
+      <div style="margin-top:12px">
+        <div class="placeholder" style="margin-bottom:4px">节点名称: <span style="color:#94a3b8">未选择</span></div>
+        <div class="placeholder" style="margin-bottom:4px">节点类型</div>
+        <div class="placeholder" style="margin-bottom:4px">Model 选择</div>
+        <div class="placeholder" style="margin-bottom:4px">System Prompt (textarea)</div>
+        <div class="placeholder" style="margin-bottom:4px">User Prompt (textarea)</div>
+        <div class="placeholder">Temperature 滑块</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>组件树</h3>
+  <div class="mockup">
+    <div class="mockup-header">React 组件层级结构</div>
+    <div class="mockup-body">
+<pre style="font-size:12px;line-height:1.8">
+WorkflowView (页面容器)
+├── WorkflowToolbar       — 运行/保存/撤销/缩放控制
+├── WorkflowLayout        — 三栏布局容器
+│   ├── NodePalette       — 左侧：可拖拽节点类型列表 + 工作流列表
+│   ├── WorkflowCanvas    — 中间：React Flow 画布
+│   │   ├── BaseNode      — 通用节点渲染（图标/标签/状态灯/输入输出handle）
+│   │   ├── WorkflowEdge  — 自定义边（条件标签/动画/删除按钮）
+│   │   └── Minimap       — 画布缩略图
+│   └── NodeConfigPanel   — 右侧：节点配置表单（按 type 动态渲染）
+└── RunOverlay            — 运行时覆盖层（节点状态高亮/动画/日志流）
+</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>交互设计关键点</h3>
+  <div class="cards">
+    <div class="card">
+      <div class="card-body">
+        <h4>🖱 拖拽添加节点</h4>
+        <p style="font-size:13px">从 NodePalette 拖拽到画布，自动生成唯一 id 和默认位置。React Flow 原生支持 drag &amp; drop。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h4>🔗 连线交互</h4>
+        <p style="font-size:13px">从节点 output handle 拖线到目标节点 input handle。连线后可点击边设置 condition label（条件路由节点出边）。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h4>⚙ 节点配置</h4>
+        <p style="font-size:13px">点击节点 → 右侧面板动态渲染对应的配置表单。按节点 type 查找 form schema。</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h4>▶ 运行反馈</h4>
+        <p style="font-size:13px">执行时画布显示节点状态（idle→running→done→error），高亮当前执行节点，SSE 事件驱动状态更新。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>技术选型</h3>
+  <table style="width:100%;border-collapse:collapse;font-size:13px">
+    <tr style="background:#f0f4f8">
+      <th style="text-align:left;padding:8px">层</th>
+      <th style="text-align:left;padding:8px">选型</th>
+      <th style="text-align:left;padding:8px">理由</th>
+    </tr>
+    <tr>
+      <td style="padding:8px;font-weight:600">画布引擎</td>
+      <td style="padding:8px"><b>React Flow</b> (@xyflow/react)</td>
+      <td style="padding:8px">最成熟的 React 节点编辑器库，内置 drag/drop/zoom/minimap/auto-layout</td>
+    </tr>
+    <tr style="background:#fafbfc">
+      <td style="padding:8px;font-weight:600">状态管理</td>
+      <td style="padding:8px"><b>Redux Toolkit</b> (已有)</td>
+      <td style="padding:8px">ai-workflow 已用 Redux，扩展 workflowSlice 即可</td>
+    </tr>
+    <tr>
+      <td style="padding:8px;font-weight:600">UI 组件库</td>
+      <td style="padding:8px"><b>Tailwind CSS</b> (已有)</td>
+      <td style="padding:8px">项目已用 Tailwind，节点配置表单用手写组件</td>
+    </tr>
+    <tr style="background:#fafbfc">
+      <td style="padding:8px;font-weight:600">SSE 客户端</td>
+      <td style="padding:8px"><b>复用 event-source-polyfill</b></td>
+      <td style="padding:8px">与 ai-generation-app 保持一致</td>
+    </tr>
+  </table>
+</div>

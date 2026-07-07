@@ -1,0 +1,121 @@
+<h2>设计 Part 1: Workflow IR 数据模型</h2>
+<p class="subtitle">这是前后端之间的契约——前端画布产出这份 JSON，后端编译器消费它生成 LangGraph StateGraph</p>
+
+<div class="section">
+  <h3>核心概念层次</h3>
+  <div class="mockup">
+    <div class="mockup-header">Workflow IR = Graph( Nodes + Edges ) + Schema + Metadata</div>
+    <div class="mockup-body">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <tr style="background:#f0f4f8">
+          <th style="text-align:left;padding:8px">层次</th>
+          <th style="text-align:left;padding:8px">字段</th>
+          <th style="text-align:left;padding:8px">说明</th>
+        </tr>
+        <tr>
+          <td style="padding:8px;font-weight:600">Metadata</td>
+          <td style="padding:8px;font-family:monospace;font-size:12px">id, name, description, version, created_at</td>
+          <td style="padding:8px">工作流元信息</td>
+        </tr>
+        <tr style="background:#fafbfc">
+          <td style="padding:8px;font-weight:600">Schema</td>
+          <td style="padding:8px;font-family:monospace;font-size:12px">input_schema, output_schema, state_variables</td>
+          <td style="padding:8px">工作流入参/出参/共享状态的 JSON Schema</td>
+        </tr>
+        <tr>
+          <td style="padding:8px;font-weight:600">Nodes[]</td>
+          <td style="padding:8px;font-family:monospace;font-size:12px">id, type, label, position, config</td>
+          <td style="padding:8px">节点列表，每个节点的 type 决定 config schema</td>
+        </tr>
+        <tr style="background:#fafbfc">
+          <td style="padding:8px;font-weight:600">Edges[]</td>
+          <td style="padding:8px;font-family:monospace;font-size:12px">id, source, target, condition</td>
+          <td style="padding:8px">source→target 连线，可选 condition 做条件路由</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>MVP 节点类型 &amp; 配置 Schema</h3>
+  <div class="cards">
+    <div class="card">
+      <div class="card-body">
+        <h4>🧠 LLM 节点</h4>
+        <small style="font-family:monospace;background:#e8f0fe;padding:2px 6px;border-radius:3px">type: "llm"</small>
+        <p style="font-size:13px;margin-top:8px">
+          <b>config:</b><br/>
+          model, system_prompt, user_prompt (支持 <code>{'{state.xxx}'}</code> 模板), temperature, max_tokens
+        </p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h4>🔀 条件路由节点</h4>
+        <small style="font-family:monospace;background:#e8f0fe;padding:2px 6px;border-radius:3px">type: "router"</small>
+        <p style="font-size:13px;margin-top:8px">
+          <b>config:</b><br/>
+          多条分支规则 (if/then/else)，出边各带 condition label
+        </p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h4>✋ 人工确认节点</h4>
+        <small style="font-family:monospace;background:#e8f0fe;padding:2px 6px;border-radius:3px">type: "human_confirm"</small>
+        <p style="font-size:13px;margin-top:8px">
+          <b>config:</b><br/>
+          message (展示给用户的提示), timeout (超时默认动作), fields (待填写的表单字段)
+        </p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-body">
+        <h4>⚡ 代码执行节点</h4>
+        <small style="font-family:monospace;background:#e8f0fe;padding:2px 6px;border-radius:3px">type: "code"</small>
+        <p style="font-size:13px;margin-top:8px">
+          <b>config:</b><br/>
+          language (python/js), code (支持模板), timeout, env_vars
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>完整 IR 示例（简化）</h3>
+  <div class="mockup">
+    <div class="mockup-header">一个 "需求分析 → LLM生成 → 人工审核 → 条件路由" 的工作流</div>
+    <div class="mockup-body">
+<pre style="font-size:12px;line-height:1.6;overflow-x:auto"><code>{
+  "id": "wf-001",
+  "name": "AI代码生成管线",
+  "version": "1.0",
+  "schema": {
+    "input_schema": { "requirement": "string", "component_lib": "string" },
+    "state_variables": ["analysis_doc", "code", "review_comment"]
+  },
+  "nodes": [
+    { "id": "n1", "type": "llm", "label": "需求分析", "position": {"x":100,"y":50},
+      "config": { "model": "glm-5.2", "system_prompt": "你是需求分析师...", "user_prompt": "分析: {state.requirement}" } },
+    { "id": "n2", "type": "llm", "label": "代码生成", "position": {"x":100,"y":200},
+      "config": { "model": "deepseek-v4", "system_prompt": "你是Vue3工程师...", "user_prompt": "根据设计生成代码:\n{state.analysis_doc}" } },
+    { "id": "n3", "type": "human_confirm", "label": "人工审核", "position": {"x":100,"y":350},
+      "config": { "message": "请审核生成的代码", "fields": ["通过", "需要修改(请输入修改意见)"] } },
+    { "id": "n4", "type": "router", "label": "判断结果", "position": {"x":100,"y":500},
+      "config": { "branches": [ {"label":"通过","condition":"state.review_approved"}, {"label":"需修改","condition":"default"} ] } },
+    { "id": "n5", "type": "code", "label": "格式化输出", "position": {"x":400,"y":500},
+      "config": { "language": "python", "code": "import json\nresult = {'code': state['code']}\nreturn result" } }
+  ],
+  "edges": [
+    { "id": "e1", "source": "n1", "target": "n2" },
+    { "id": "e2", "source": "n2", "target": "n3" },
+    { "id": "e3", "source": "n3", "target": "n4" },
+    { "id": "e4", "source": "n4", "target": "n5", "condition": "通过" },
+    { "id": "e5", "source": "n4", "target": "n2", "condition": "需修改" }
+  ]
+}</code></pre>
+    </div>
+  </div>
+</div>

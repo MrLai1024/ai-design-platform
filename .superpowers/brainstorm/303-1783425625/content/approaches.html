@@ -1,0 +1,87 @@
+<h2>三种架构方案对比</h2>
+<p class="subtitle">在 ai-workflow 微应用中实现可视化 AI Agent 工作流编排</p>
+
+<div class="section">
+  <h3>需求确认</h3>
+  <ul>
+    <li>可视化工作流设计器（拖拽节点 + 连线）风格类似 Dify/Coze</li>
+    <li>节点类型（MVP）: LLM调用、条件路由、人工确认、代码执行</li>
+    <li>执行引擎: LangGraph 为主 + 自定义扩展</li>
+    <li>MVP策略: 前后端并行推进，React Flow + LangGraph 编译执行器</li>
+  </ul>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>深度 LangGraph 集成</h3>
+      <p>画布上的节点和连线直接映射为 LangGraph StateGraph 的 state/edge。用户在设计器里的每个操作都对应 LangGraph 的一个 API 概念。</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>优势</h4>
+          <ul>
+            <li>完整的 LangGraph 能力：checkpoint、interrupt、subgraph、streaming</li>
+            <li>可直接复用现有的 harness.py、nodes.py</li>
+            <li>不用造执行引擎的轮子</li>
+          </ul>
+        </div>
+        <div class="cons"><h4>代价</h4>
+          <ul>
+            <li>前端设计器受 LangGraph 概念约束（state schema、reducer等）</li>
+            <li>LangGraph 版本升级可能导致破坏性变更</li>
+            <li>节点实现必须用 Python，不够灵活</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>抽象工作流模型 + LangGraph 适配器 <span class="label">推荐</span></h3>
+      <p>定义平台无关的 Workflow IR（中间表示），前端画布产生 Workflow JSON → 后端适配器编译为 LangGraph StateGraph 执行。</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>优势</h4>
+          <ul>
+            <li>前端和后端解耦，双方独立演进</li>
+            <li>Workflow IR 可版本化、可持久化、可复用</li>
+            <li>未来可换执行引擎（Dify DSL、AWS Step Functions 等）</li>
+            <li>自定义节点类型通过注册机制插入，不硬编码</li>
+          </ul>
+        </div>
+        <div class="cons"><h4>代价</h4>
+          <ul>
+            <li>多一层抽象，初期设计工作量更大</li>
+            <li>Workflow IR 到 LangGraph 的编译需要仔细处理语义映射</li>
+            <li>不是所有 LangGraph 能力都能通过 IR 暴露（选重点暴露）</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>最小可行方案：JSON 配置 + 固定模板</h3>
+      <p>先不做可视画布。提供预置工作流模板（如现有的5节点管线），用户通过 JSON/YAML 配置节点参数。前端用表单界面 + 静态拓扑图展示。</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>优势</h4>
+          <ul>
+            <li>最快上线（2周内）</li>
+            <li>风险最低，可验证后端执行链路</li>
+            <li>可作为可视化设计器的数据格式基础</li>
+          </ul>
+        </div>
+        <div class="cons"><h4>代价</h4>
+          <ul>
+            <li>不是可视化设计器，体验差距大</li>
+            <li>用户不能自由设计拓扑</li>
+            <li>之后需要重写前端交互层</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

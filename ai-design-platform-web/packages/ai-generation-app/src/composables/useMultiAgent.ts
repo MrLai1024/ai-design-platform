@@ -11,7 +11,7 @@ export function useMultiAgent() {
   const isTransitioning = ref(false)
   const streamError = ref<string | null>(null)
 
-  async function startGeneration(content: string, lib: ComponentLibrary) {
+  async function startGeneration(content: string, lib: ComponentLibrary, systemPrompt?: string) {
     store.resetAll()
     store.setCurrentLib(lib)
     store.setStage('analysis')
@@ -24,6 +24,7 @@ export function useMultiAgent() {
         content,
         lib,
         stage: 'analysis',
+        systemPrompt,
       })
     } catch (e: any) {
       streamError.value = e.message || 'Generation failed'
