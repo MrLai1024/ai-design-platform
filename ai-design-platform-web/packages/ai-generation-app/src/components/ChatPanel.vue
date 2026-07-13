@@ -5,7 +5,6 @@ import { useGenerationStore } from '@/stores/generation'
 import { useMultiAgent } from '@/composables/useMultiAgent'
 import { useStreamChat } from '@/composables/useStreamChat'
 import ChatInput from './ChatInput.vue'
-import type { ComponentLibrary } from '@/types/generation'
 
 const store = useGenerationStore()
 const {
@@ -68,7 +67,7 @@ const canConfirm = computed(() => {
 // 按钮文案
 const confirmLabel = computed(() => {
   if (store.stage === 'analysis') return '确认需求 → 进入详细设计'
-  if (store.stage === 'design') return '确认方案 → 进入代码实现'
+  if (store.stage === 'design') return '确认方案 → 进入功能开发'
   return '确认'
 })
 
@@ -81,10 +80,10 @@ async function continueAnalysis(userContent: string): Promise<void> {
   })
 }
 
-function handleSend(content: string, lib: ComponentLibrary): void {
+function handleSend(content: string): void {
   if (store.stage === 'idle' || store.stage === 'analysis') {
     if (store.stage === 'idle') {
-      startGeneration(content, lib, ANALYSIS_SYSTEM_PROMPT)
+      startGeneration(content, store.currentLib, ANALYSIS_SYSTEM_PROMPT)
     } else {
       continueAnalysis(content)
     }
@@ -156,7 +155,7 @@ function stageLabel(stage?: string): string {
   const map: Record<string, string> = {
     analysis: '需求分析',
     design: '详细设计',
-    code: '代码实现',
+    code: '功能开发',
   }
   return stage ? map[stage] || '' : ''
 }
@@ -186,14 +185,10 @@ function formatDuration(ms?: number): string {
 
 <template>
   <div class="chat-panel flex flex-col h-full bg-white">
-    <div class="px-4 py-3 border-b border-gray-200 bg-gray-50">
-      <h2 class="text-sm font-semibold text-gray-700">AI 代码生成</h2>
-    </div>
-
     <div ref="messagesContainer" class="flex-1 overflow-y-auto px-4 py-3 space-y-4">
       <div v-if="store.messages.length === 0" class="text-center text-gray-400 mt-8">
-        <p class="text-lg mb-2">👋 描述你想要生成的组件</p>
-        <p class="text-xs">例如："用表格展示用户列表，包含姓名、邮箱、状态列"</p>
+        <p class="text-lg mb-2">👋 描述你的需求</p>
+        <p class="text-xs">例如："生成XX系统;实现XX功能需求"</p>
       </div>
 
       <div
@@ -319,11 +314,9 @@ function formatDuration(ms?: number): string {
 
     <ChatInput
       :is-streaming="store.isStreaming"
-      :current-lib="store.currentLib"
       :current-stage="store.stage"
       @send="handleSend"
       @cancel="cancelAgent"
-      @update:current-lib="store.setCurrentLib($event)"
     />
   </div>
 </template>

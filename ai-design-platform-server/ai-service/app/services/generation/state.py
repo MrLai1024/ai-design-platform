@@ -44,6 +44,9 @@ class GenerationState(TypedDict):
     component_lib: str
     messages: list[dict]
 
+    # Requirements analysis structured state (JSON-serialized RequirementsState)
+    requirements_state_json: str | None
+
     # Stage outputs
     analysis_result: str | None
     design_result: str | None

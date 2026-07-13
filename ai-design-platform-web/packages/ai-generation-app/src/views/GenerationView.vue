@@ -12,6 +12,7 @@ import TabBar from '@/components/TabBar.vue'
 import PreviewFrame from '@/components/PreviewFrame.vue'
 import FileExplorer from '@/components/FileExplorer.vue'
 import E2EPanel from '@/components/E2EPanel.vue'
+import AnalysisPanel from '@/components/AnalysisPanel.vue'
 
 const store = useGenerationStore()
 useCodeParser()
@@ -118,6 +119,9 @@ function handleStageOutputSave(content: string): void {
         :current-stage="store.stage"
         @node-click="handleNodeClick"
       />
+
+      <!-- 需求分析阶段：展示3层卡片界面 -->
+      <AnalysisPanel v-if="store.stage === 'analysis'" />
 
       <!-- 需求分析/详细设计阶段：展示 StageOutput -->
       <div

@@ -128,6 +128,36 @@ class GraphRunner:
             for node_name, node_output in event.items():
                 yield self._make_event("stage_start", node_name, {})
 
+                if node_name == "analysis":
+                    analysis_result = node_output.get("analysis_result", "")
+                    # Detect requirements engine metadata
+                    if analysis_result and analysis_result.startswith("__REQ_EVENT__:"):
+                        for evt in self._emit_requirement_events(analysis_result):
+                            yield evt
+                    elif analysis_result:
+                        # PRD text — stream in chunks for frontend rendering
+                        yield self._make_event("prd_generate_start", "analysis", {
+                            "mode": "full",
+                            "sections_count": 5,
+                            "parent_version": None,
+                        })
+                        # Chunk the PRD text for streaming effect
+                        chunk_size = 80
+                        for i in range(0, len(analysis_result), chunk_size):
+                            chunk = analysis_result[i:i + chunk_size]
+                            yield self._make_event("prd_section", "analysis", {
+                                "section_key": "content",
+                                "content": chunk,
+                            })
+                        yield self._make_event("prd_section_complete", "analysis", {
+                            "section_key": "content",
+                        })
+                        yield self._make_event("prd_generate_done", "analysis", {
+                            "version": 1,
+                            "full_content": analysis_result,
+                            "duration_ms": 0,
+                        })
+
                 if node_name in ("analysis", "design"):
                     yield self._make_event("human_confirm_required", node_name, {
                         "message": f"Please review the {node_name} output and confirm to continue.",
@@ -235,3 +265,47 @@ class GraphRunner:
             "e2e": f"E2E: {'pass' if output.get('e2e_passed') else 'fail'}",
         }
         return summaries.get(node_name, "")
+
+    def _emit_requirement_events(self, analysis_result: str):
+        """Parse __REQ_EVENT__ metadata and yield requirement-specific events."""
+        import json as _json
+        try:
+            meta_str = analysis_result[len("__REQ_EVENT__:"):]
+            meta = _json.loads(meta_str)
+        except Exception:
+            return  # Not valid REQ_EVENT, skip
+
+        layer_event = meta.get("layer_event", "")
+
+        if layer_event == "requirement_layer_start":
+            yield self._make_event("requirement_layer_start", "analysis", {
+                "layer": meta.get("layer", 1),
+                "label": meta.get("layer_label", ""),
+                "total_layers": 3,
+            })
+        elif layer_event == "requirement_layer_done":
+            yield self._make_event("requirement_layer_done", "analysis", {
+                "layer": meta.get("completed_layer", 0),
+                "summary": f"Layer {meta.get('completed_layer', 0)} completed — advancing to {meta.get('next_layer_label', '')}",
+            })
+
+        # Always emit card_update if there are questions (layer is active)
+        questions = meta.get("questions", [])
+        if questions:
+            yield self._make_event("requirement_question", "analysis", {
+                "questions": questions,
+                "progress": meta.get("progress", {}),
+            })
+
+        # Always emit card_update with the full state
+        yield self._make_event("requirement_card_update", "analysis", {
+            "layer": meta.get("layer", 1),
+            "mode": meta.get("mode", "new"),
+            "version": meta.get("version", 0),
+        })
+
+        # Emit mode_set for tracking
+        yield self._make_event("requirement_mode_set", "analysis", {
+            "mode": meta.get("mode", "new"),
+            "version": meta.get("version", 0),
+        })

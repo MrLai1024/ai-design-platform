@@ -90,125 +90,56 @@ async def _llm_generate_structured(
         )
 
 
-# ---- Analysis Node ----
+# ---- Analysis Node (direct PRD generation) ----
 
-ANALYSIS_SYSTEM_PROMPT = """你是一个资深产品需求分析师。你的职责是**澄清需求**，不是写代码或设计方案。
+ANALYSIS_PRD_PROMPT = """你是一个资深产品需求分析师。根据用户的原始需求，直接生成一份完整的需求规格文档（PRD）。
 
-## 核心规则（必须严格遵守）
-1. **绝对禁止**编写代码、组件名、技术方案
-2. **绝对禁止**输出设计方案、组件树、数据流
-3. **只能**做需求澄清：通过提问逐步明确用户想要什么
+## 文档结构（严格按此顺序输出）
+1. **# 需求规格文档** — 文档标题
+2. **## 1. 功能概述** — 项目背景、目标用户、核心问题、成功标准
+3. **## 2. 功能模块** — 按优先级排列的功能清单（必须有/应该有/锦上添花）
+4. **## 3. 页面结构** — 页面树形结构，标注页面类型
+5. **## 4. 数据模型** — 核心数据实体及字段定义
+6. **## 5. 交互行为** — 关键交互流程说明
 
-## 工作流程
-
-### 第一阶段：需求澄清（至少 3 轮 Q&A）
-用户的需求通常比较模糊。你需要通过多轮提问来明确：
-- 功能边界（具体要哪些功能，不要哪些）
-- 页面布局（列表页/详情页/表单页，页面结构）
-- 交互行为（点击、弹窗、跳转、状态切换）
-- 数据内容（展示哪些字段，数据从哪里来）
-
-**每轮只问一个问题**，给出 2-4 个具体选项让用户选择。
-
-输出格式（提问阶段）：
-```
-**问题：** <一个问题>
-- <选项A>
-- <选项B>
-- <选项C>
-```
-
-### 第二阶段：输出需求规格（当信息足够时）
-当完成了至少 3 轮 Q&A，用户需求已经明确时，输出结构化的需求规格文档。
-
-输出格式（规格阶段）：
-以 JSON 格式输出：
-{
-  "analysis_doc": "markdown 格式的需求分析文档（## 功能概述、页面布局、交互行为、数据展示、技术要求）",
-  "e2e_test_cases": [...]
-}
-
-### 判断规则
-- 用户需求模糊（如"做一个管理系统"）→ 第一阶段，提问
-- 已经有 3+ 轮有效问答 → 第二阶段，输出规格
-- 即使用户直接说需求，也至少要问 2 个澄清问题再出规格"""
+## 规则
+- 用简洁专业的语言
+- 不确定的地方合理推测并标注（待确认）
+- 不写代码、不写技术实现、不写组件选择
+- 输出纯 Markdown，不要 JSON 包裹"""
 
 
 async def analysis_node(state: GenerationState) -> GenerationState:
-    """需求分析节点：多轮 Q&A 澄清需求后，产出需求文档 + E2E 测试用例。"""
-    logger.info("analysis_node_start", qa_rounds=state.get("qa_rounds", 0))
+    """需求分析节点：直接根据用户需求生成 PRD 文档."""
+    logger.info("analysis_node_start")
 
-    qa_rounds = state.get("qa_rounds", 0)
+    requirement = state.get("requirement", "")
     messages = state.get("messages", [])
 
-    # Build conversation context from accumulated messages
-    conversation = ""
+    # Collect conversation context
+    context = ""
     for m in messages:
-        conversation += f"\n[{m.get('role', '?')}]: {m.get('content', '')}"
+        context += f"\n[{m.get('role', '?')}]: {m.get('content', '')}"
 
-    if qa_rounds < 3:
-        # --- Q&A Phase: ask one clarifying question ---
-        user_prompt = (
-            f"用户原始需求：{state['requirement']}\n"
-            f"当前问答历史：{conversation}\n"
-            f"已完成问答轮数：{qa_rounds}\n\n"
-            f"请针对用户需求提出第 {qa_rounds + 1} 个澄清问题。"
-            f"只输出一个问题加选项，不要输出其他内容。"
-            f"严格遵循 **问题：** ... - 选项 的格式。"
-        )
+    user_prompt = f"用户需求：{requirement}\n\n对话上下文：{context}\n\n请生成完整的需求规格文档。"
 
-        question_text = await _llm_generate(
-            system_prompt=ANALYSIS_SYSTEM_PROMPT,
-            user_content=user_prompt,
-        )
-
-        logger.info("analysis_question", qa_rounds=qa_rounds + 1, question_preview=question_text[:200])
-
-        return {
-            **state,
-            "analysis_result": question_text,
-            "qa_rounds": qa_rounds + 1,
-            "e2e_test_cases": None,
-        }
-
-    # --- Spec Phase: enough Q&A, produce structured spec ---
-    user_prompt = (
-        f"用户原始需求：{state['requirement']}\n"
-        f"问答历史：{conversation}\n\n"
-        f"已完成 {qa_rounds} 轮需求澄清。现在请输出完整的需求规格文档和 E2E 测试用例。"
-    )
-
-    result = await _llm_generate_structured(
-        system_prompt=ANALYSIS_SYSTEM_PROMPT,
+    prd_text = await _llm_generate(
+        system_prompt=ANALYSIS_PRD_PROMPT,
         user_content=user_prompt,
-        output_schema={
-            "analysis_doc": "string (markdown 格式的需求分析文档)",
-            "e2e_test_cases": [
-                {
-                    "id": "TC-001",
-                    "name": "用例名称",
-                    "description": "测试目标",
-                    "steps": [
-                        {
-                            "action": "click",
-                            "target": "css选择器",
-                            "value": "可选值",
-                            "description": "步骤说明",
-                        }
-                    ],
-                }
-            ],
-        },
     )
 
-    logger.info("analysis_spec_complete")
+    e2e_cases = _extract_e2e_cases(prd_text)
 
     return {
         **state,
-        "analysis_result": result.get("analysis_doc", ""),
-        "e2e_test_cases": result.get("e2e_test_cases", []),
-        "qa_rounds": qa_rounds + 1,
+        "analysis_result": prd_text,
+        "e2e_test_cases": e2e_cases,
+        "qa_rounds": 1,
     }
+
+
+# Remove old helper functions — no longer needed
+# _emit_requirements_state, _handle_prd_generation, _user_wants_prd, _strategist, etc.
 
 
 # ---- Design Node ----

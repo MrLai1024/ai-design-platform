@@ -208,6 +208,69 @@ export function useStreamChat() {
                 store.setNeedsManualReview(true)
                 store.setLoopBreakReason(event.reason)
                 break
+
+              // --- 需求分析事件 ---
+
+              case 'requirement_mode_set':
+                if (event.mode && store.requirementsState) {
+                  store.requirementsState.mode = event.mode
+                  store.requirementsState.version = event.version ?? 0
+                }
+                break
+
+              case 'requirement_layer_start':
+                if (store.requirementsState) {
+                  store.requirementsState.layer = event.layer
+                  if (event.layer) {
+                    store.requirementsState.layer_status[String(event.layer)] = 'active'
+                  }
+                }
+                break
+
+              case 'requirement_card_update':
+                if (event.fields) {
+                  store.setRequirementsState(event.fields)
+                }
+                break
+
+              case 'requirement_question':
+                // Questions are rendered via ChatPanel messages + card_update data
+                break
+
+              case 'requirement_layer_done':
+                if (store.requirementsState && event.layer) {
+                  store.requirementsState.layer_status[String(event.layer)] = 'done'
+                }
+                break
+
+              case 'prd_generate_start':
+                store.setAnalysisPanelMode('prd')
+                store.prdStreamingContent = ''
+                break
+
+              case 'prd_section':
+                store.appendPRDContent(event.content || '')
+                break
+
+              case 'prd_section_complete':
+                store.setPRDCurrentSection(null)
+                break
+
+              case 'prd_diff':
+                store.appendPRDDiff(event.change || 'added', event.section || '', event.content || '')
+                break
+
+              case 'prd_diff_done':
+                store.setPRDVersion(event.version ?? 0)
+                break
+
+              case 'prd_generate_done':
+                store.setPRDVersion(event.version ?? 0)
+                store.setPRDComplete(event.full_content || '')
+                if (event.full_content) {
+                  store.setStageOutput('analysis', event.full_content)
+                }
+                break
             }
           } catch {
             // JSON 解析失败，跳过该帧

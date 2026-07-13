@@ -2,6 +2,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { ChatMessage, FileEntry, ComponentLibrary, Stage, StageStatus, StageOutputs, CodeViewTab, RightPanelView, StepNode, E2ETestCase, E2ECaseResult, RollbackEvent } from '@/types/generation'
+import type { RequirementsState, AnalysisPanelMode, AnalysisMode } from '@/types/requirements'
 
 export const useGenerationStore = defineStore('generation', () => {
   // ── State ──
@@ -41,6 +42,13 @@ export const useGenerationStore = defineStore('generation', () => {
   const loopBreakReason = ref<string | null>(null)
   const currentGenerationId = ref<string | null>(null)
 
+  // ── 需求分析面板状态 ──
+  const requirementsState = ref<RequirementsState | null>(null)
+  const analysisPanelMode = ref<AnalysisPanelMode>('prd')
+  const prdStreamingContent = ref('')
+  const prdCurrentSection = ref<string | null>(null)
+  const prdVersion = ref(0)
+
   // ── Getters ──
   const lastAssistantMessage = computed(() => {
     for (let i = messages.value.length - 1; i >= 0; i--) {
@@ -68,7 +76,7 @@ export const useGenerationStore = defineStore('generation', () => {
     const stages: Array<{ key: Stage; label: string }> = [
       { key: 'analysis', label: '需求分析' },
       { key: 'design', label: '方案设计' },
-      { key: 'code', label: '代码生成' },
+      { key: 'code', label: '功能开发' },
       { key: 'review', label: '质量校验' },
       { key: 'e2e', label: 'E2E验证' },
     ]
@@ -251,6 +259,45 @@ export const useGenerationStore = defineStore('generation', () => {
     currentGenerationId.value = id
   }
 
+  // ── 需求分析 Actions ──
+
+  function setRequirementsState(s: RequirementsState): void {
+    requirementsState.value = s
+  }
+
+  function patchRequirementsState(fields: Partial<RequirementsState>): void {
+    if (!requirementsState.value) {
+      requirementsState.value = fields as RequirementsState
+    } else {
+      Object.assign(requirementsState.value, fields)
+    }
+  }
+
+  function setAnalysisPanelMode(mode: AnalysisPanelMode): void {
+    analysisPanelMode.value = mode
+  }
+
+  function appendPRDContent(content: string): void {
+    prdStreamingContent.value += content
+  }
+
+  function appendPRDDiff(change: string, section: string, content: string): void {
+    const prefix = change === 'added' ? '\n\n🆕 **新增** ' : change === 'modified' ? '\n\n✏️ **修改** ' : '\n\n'
+    prdStreamingContent.value += `${prefix}${section}: ${content}`
+  }
+
+  function setPRDCurrentSection(section: string | null): void {
+    prdCurrentSection.value = section
+  }
+
+  function setPRDComplete(fullContent: string): void {
+    prdStreamingContent.value = fullContent
+  }
+
+  function setPRDVersion(version: number): void {
+    prdVersion.value = version
+  }
+
   function resetAll(): void {
     messages.value = []
     files.value = new Map()
@@ -271,6 +318,11 @@ export const useGenerationStore = defineStore('generation', () => {
     needsManualReview.value = false
     loopBreakReason.value = null
     currentGenerationId.value = null
+    requirementsState.value = null
+    analysisPanelMode.value = 'prd'
+    prdStreamingContent.value = ''
+    prdCurrentSection.value = null
+    prdVersion.value = 0
   }
 
   return {
@@ -278,6 +330,8 @@ export const useGenerationStore = defineStore('generation', () => {
     messages, files, activeFile, isStreaming, compiledOutput, compileError, currentLib,
     stage, stageStatus, stageOutputs, codeViewTab, rightPanelView,
     e2eTestCases, e2eResults, e2eRunning, rollbackEvents, needsManualReview, loopBreakReason, currentGenerationId,
+    // 需求分析
+    requirementsState, analysisPanelMode, prdStreamingContent, prdCurrentSection, prdVersion,
     // getters
     lastAssistantMessage, dirtyFiles, fileList, activeFileEntry,
     currentStepNodes, isStageDone,
@@ -288,6 +342,8 @@ export const useGenerationStore = defineStore('generation', () => {
     setStage, setStageStatus, setStageOutput, setCodeViewTab, setRightPanelView,
     enterCodeStage, completeCurrentStage,
     setE2ETestCases, addE2EResult, clearE2EResults, addRollbackEvent, setNeedsManualReview, setLoopBreakReason, setGenerationId,
+    setRequirementsState, patchRequirementsState, setAnalysisPanelMode,
+    appendPRDContent, appendPRDDiff, setPRDCurrentSection, setPRDComplete, setPRDVersion,
     resetAll,
   }
 })
