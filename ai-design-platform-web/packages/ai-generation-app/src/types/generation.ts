@@ -57,7 +57,7 @@ export interface CompileOptions {
 }
 
 /** 工作流阶段 */
-export type Stage = 'idle' | 'analysis' | 'design' | 'code' | 'review' | 'e2e'
+export type Stage = 'idle' | 'analysis' | 'design' | 'code' | 'review' | 'e2e' | 'done'
 
 /** 阶段状态 */
 export type StageStatus = 'pending' | 'active' | 'done'
@@ -72,10 +72,10 @@ export interface StageOutputs {
 }
 
 /** 代码实现阶段 Tab */
-export type CodeViewTab = 'preview' | 'files'
+export type CodeViewTab = 'preview' | 'files' | 'trace'
 
 /** 右侧面板视图 */
-export type RightPanelView = 'stage-output' | 'preview' | 'files'
+export type RightPanelView = 'stage-output' | 'preview' | 'files' | 'trace'
 
 /** 步骤条节点定义 */
 export interface StepNode {
@@ -127,3 +127,51 @@ export interface RollbackEvent {
   reason: string
   failedCases?: E2ECaseResult[]
 }
+
+// ── 阶段 Phase ──
+export type StagePhase = 'idle' | 'qa' | 'generating' | 'reviewing' | 'complete'
+
+// ── Tool Trace ──
+export interface ToolTraceEntry {
+  id: string
+  type: 'call' | 'result'
+  tool: string
+  args?: Record<string, any>
+  status: 'running' | 'done' | 'error'
+  summary?: string
+  timestamp: number
+}
+
+// ── Review Agent ──
+export interface ReviewFinding {
+  severity: 'critical' | 'high' | 'medium' | 'low'
+  file: string
+  line: number
+  title: string
+  description: string
+  fix: string
+}
+
+export interface ReviewAgentState {
+  key: string
+  name: string
+  icon: string
+  status: 'pending' | 'running' | 'done'
+  findings: ReviewFinding[]
+  totalIssues: number
+}
+
+// ── Graph Event Types 扩展 ──
+export type GraphEventTypeExtended =
+  | GraphEventType
+  | 'doc_chunk'
+  | 'prd_generate_start' | 'prd_generate_done'
+  | 'design_gen_start' | 'design_gen_done'
+  | 'code_gen_start' | 'code_gen_done'
+  | 'file_start' | 'file_chunk' | 'file_complete'
+  | 'tool_call' | 'tool_result'
+  | 'review_agents_start' | 'review_agent_chunk' | 'review_agent_done'
+  | 'review_report_ready' | 'review_fix_start' | 'review_fix_done'
+  | 'e2e_cases_gen_start' | 'e2e_cases_gen_done'
+  | 'e2e_execute_start' | 'e2e_case_start' | 'e2e_execute_done'
+  | 'graph_complete'

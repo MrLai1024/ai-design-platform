@@ -156,10 +156,14 @@ export function useStreamChat() {
               case 'stage_start':
                 store.setStageStatus(event.stage, 'active')
                 store.setStage(event.stage as Stage)
+                if (event.phase) {
+                  store.setStagePhase(event.phase)
+                }
                 break
 
               case 'stage_complete':
                 store.setStageStatus(event.stage, 'done')
+                store.setStagePhase('complete')
                 if (event.summary) {
                   store.setStageOutput(event.stage as Stage, event.summary)
                 }
@@ -197,7 +201,7 @@ export function useStreamChat() {
                 break
 
               case 'human_confirm_required':
-                // Paused — UI shows confirm button
+                store.setAwaitingConfirm(true)
                 break
 
               case 'loop_warning':
@@ -250,6 +254,7 @@ export function useStreamChat() {
 
               case 'prd_section':
                 store.appendPRDContent(event.content || '')
+                store.appendDocContent(event.content || '')
                 break
 
               case 'prd_section_complete':
@@ -267,9 +272,139 @@ export function useStreamChat() {
               case 'prd_generate_done':
                 store.setPRDVersion(event.version ?? 0)
                 store.setPRDComplete(event.full_content || '')
+                store.setDocComplete(event.full_content || '')
                 if (event.full_content) {
                   store.setStageOutput('analysis', event.full_content)
                 }
+                break
+
+              // ── 流式文档（统一 doc_chunk）──
+              case 'doc_chunk':
+                store.appendDocContent(event.content || '')
+                break
+
+              // ── Design 阶段 ──
+              case 'design_gen_start':
+                store.resetDocContent()
+                break
+
+              case 'design_gen_done':
+                store.setDocComplete(event.full_content || '')
+                if (event.full_content) {
+                  store.setStageOutput('design', event.full_content)
+                }
+                break
+
+              // ── Code 阶段 ──
+              case 'code_gen_start':
+                store.initFileTree(event.files || [])
+                store.docIsStreaming = true
+                break
+
+              case 'file_start':
+                store.setCurrentGeneratingFile(event.path)
+                break
+
+              case 'file_chunk':
+                store.appendFileContent(event.path, event.content || '')
+                break
+
+              case 'file_complete':
+                store.finalizeFile(event.path)
+                store.setCurrentGeneratingFile(null)
+                break
+
+              case 'tool_call': {
+                store.addToolTrace({
+                  type: 'call',
+                  tool: event.tool,
+                  args: event.args,
+                  status: 'running',
+                })
+                break
+              }
+
+              case 'tool_result': {
+                const traces = store.toolTraces
+                for (let i = traces.length - 1; i >= 0; i--) {
+                  if (traces[i]!.tool === event.tool && traces[i]!.status === 'running') {
+                    store.updateToolTrace(traces[i]!.id, {
+                      type: 'result',
+                      status: event.ok ? 'done' : 'error',
+                      summary: event.summary || (event.ok ? 'Done' : 'Error'),
+                    })
+                    break
+                  }
+                }
+                break
+              }
+
+              case 'code_gen_done':
+                store.setCodeGenDone(event.total_files || 0, event.compile_errors || 0)
+                break
+
+              // ── Review 阶段 ──
+              case 'review_agents_start':
+                store.initReviewAgents(event.agents || [])
+                break
+
+              case 'review_agent_chunk':
+                store.setAgentRunning(event.agent)
+                store.appendAgentFinding(event.agent, {
+                  severity: event.issue?.severity || 'medium',
+                  file: event.issue?.file || '',
+                  line: event.issue?.line || 0,
+                  title: event.issue?.title || '',
+                  description: event.issue?.description || '',
+                  fix: event.issue?.fix || '',
+                })
+                break
+
+              case 'review_agent_done':
+                store.setAgentDone(event.agent)
+                break
+
+              case 'review_report_ready':
+                store.reviewReportHtml = event.report_html
+                store.docStreamingContent = event.report_html || ''
+                break
+
+              case 'review_fix_start':
+                // Auto-fixing — switching back to code stage
+                break
+
+              case 'review_fix_done':
+                // Fix complete
+                break
+
+              // ── E2E 阶段 ──
+              case 'e2e_cases_gen_start':
+                store.resetDocContent()
+                break
+
+              case 'e2e_cases_gen_done':
+                store.setE2ECasesDoc(event.full_content || '')
+                store.setDocComplete(event.full_content || '')
+                break
+
+              case 'e2e_execute_start':
+                store.clearE2EResults()
+                break
+
+              case 'e2e_case_start':
+                store.setCurrentE2ECase(event.case_id)
+                break
+
+              case 'e2e_execute_done':
+                store.setE2EComplete({
+                  total: event.total || 0,
+                  passed: event.passed || 0,
+                  failed: event.failed || 0,
+                })
+                break
+
+              case 'graph_complete':
+                store.setStage('done')
                 break
             }
           } catch {

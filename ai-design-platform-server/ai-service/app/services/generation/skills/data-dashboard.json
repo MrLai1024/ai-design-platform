@@ -1,0 +1,13 @@
+{
+  "name": "data-dashboard",
+  "description": "数据 Dashboard 仪表盘布局（统计卡片 + 图表区域）",
+  "parameters": {
+    "title": { "type": "string", "description": "仪表盘标题" }
+  },
+  "produces": [
+    {
+      "path": "pages/Dashboard.vue",
+      "template": "<script setup lang=\"ts\">\nimport { ref, onMounted } from 'vue'\n\nconst stats = ref([\n  { label: '总数', value: 0, color: 'bg-blue-500' },\n  { label: '今日', value: 0, color: 'bg-green-500' },\n  { label: '本月', value: 0, color: 'bg-purple-500' },\n  { label: '同比', value: '0%', color: 'bg-orange-500' },\n])\n\nonMounted(async () => {\n  // Fetch dashboard data\n})\n</script>\n\n<template>\n  <div class=\"p-4\">\n    <h1 class=\"text-xl font-bold mb-4\">{{title}}</h1>\n    <div class=\"grid grid-cols-4 gap-4 mb-6\">\n      <div v-for=\"s in stats\" :key=\"s.label\" class=\"rounded-lg p-4 text-white\" :class=\"s.color\">\n        <div class=\"text-sm opacity-80\">{{ s.label }}</div>\n        <div class=\"text-2xl font-bold mt-1\">{{ s.value }}</div>\n      </div>\n    </div>\n    <div class=\"grid grid-cols-2 gap-4\">\n      <div class=\"bg-white rounded-lg p-4 border\">\n        <h2 class=\"text-sm font-medium mb-2\">趋势图</h2>\n        <div class=\"h-48 bg-gray-50 rounded flex items-center justify-center text-gray-400 text-sm\">图表区域</div>\n      </div>\n      <div class=\"bg-white rounded-lg p-4 border\">\n        <h2 class=\"text-sm font-medium mb-2\">分布图</h2>\n        <div class=\"h-48 bg-gray-50 rounded flex items-center justify-center text-gray-400 text-sm\">图表区域</div>\n      </div>\n    </div>\n  </div>\n</template>\n"
+    }
+  ]
+}

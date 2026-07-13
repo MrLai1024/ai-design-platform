@@ -9,6 +9,7 @@ import ChatInput from './ChatInput.vue'
 const store = useGenerationStore()
 const {
   startGeneration,
+  startGraphGeneration,
   confirmStage,
   cancel: cancelAgent,
   isTransitioning,
@@ -34,7 +35,10 @@ const ANALYSIS_SYSTEM_PROMPT = `你是一个资深产品需求分析师。你的
 - <选项B>
 - <选项C>
 
-当信息足够（3+ 轮 Q&A），用户需求明确时，才输出结构化的需求规格文档。`
+当你认为信息已经足够（通常 3+ 轮 Q&A），输出：
+**准备就绪！** 请点击下方的「🚀 开始设计」按钮，我将为你生成完整的需求规格文档。
+
+注意：你绝对不能自己输出需求规格文档，PRD 将由后续流程生成。`
 
 const messagesContainer = ref<HTMLElement | null>(null)
 
@@ -57,18 +61,11 @@ function isCurrentStageFinished(): boolean {
   return last.content.length > 0 || (last.reasoningContent?.length ?? 0) > 0
 }
 
-// 是否可以确认当前阶段（需求分析/设计阶段完成且不在流式中）
-const canConfirm = computed(() => {
-  const stage = store.stage
-  if (stage !== 'analysis' && stage !== 'design') return false
-  return isCurrentStageFinished()
-})
-
-// 按钮文案
-const confirmLabel = computed(() => {
-  if (store.stage === 'analysis') return '确认需求 → 进入详细设计'
-  if (store.stage === 'design') return '确认方案 → 进入功能开发'
-  return '确认'
+// 反问完成后显示"开始设计"按钮
+const canStartDesign = computed(() => {
+  if (store.stage !== 'analysis') return false
+  if (store.stagePhase !== 'qa' && store.stagePhase !== 'idle') return false
+  return isCurrentStageFinished() && store.messages.length >= 2
 })
 
 async function continueAnalysis(userContent: string): Promise<void> {
@@ -142,12 +139,11 @@ function handleOptionClick(option: string): void {
   continueAnalysis(option)
 }
 
-function handleConfirm(): void {
-  if (store.stage === 'analysis') {
-    confirmStage('analysis')
-  } else if (store.stage === 'design') {
-    confirmStage('design')
-  }
+async function handleStartDesign(): Promise<void> {
+  // Collect the user's original requirement from first message
+  const firstUserMsg = store.messages.find(m => m.role === 'user')
+  const requirement = firstUserMsg?.content || ''
+  await startGraphGeneration(requirement, store.currentLib)
 }
 
 // 阶段标签
@@ -297,17 +293,17 @@ function formatDuration(ms?: number): string {
         </div>
       </div>
 
-      <!-- 确认推进按钮 -->
-      <div v-if="canConfirm" class="flex justify-center">
+      <!-- 开始设计按钮（反问完成时显示） -->
+      <div v-if="canStartDesign" class="flex justify-center pb-2">
         <button
-          class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition-colors"
           :disabled="isTransitioning"
-          @click="handleConfirm"
+          @click="handleStartDesign"
         >
           <span v-if="isTransitioning" class="inline-flex items-center gap-1">
-            <span class="animate-spin">⏳</span> 推进中...
+            <span class="animate-spin">⏳</span> 启动中...
           </span>
-          <span v-else>{{ confirmLabel }}</span>
+          <span v-else>🚀 开始设计</span>
         </button>
       </div>
     </div>

@@ -1,0 +1,23 @@
+# MCP 服务器白名单配置
+# 仅连接此列表中的服务器
+servers:
+  component-docs:
+    description: "Component library documentation and API reference"
+    transport: "stdio"
+    command: "npx"
+    args: ["-y", "@anthropic/mcp-server-component-docs"]
+    enabled: true
+
+  design-tokens:
+    description: "Design tokens provider (colors, spacing, typography)"
+    transport: "stdio"
+    command: "node"
+    args: ["./mcp/design-tokens-server.js"]
+    enabled: false
+
+  type-registry:
+    description: "TypeScript type definitions registry"
+    transport: "stdio"
+    command: "node"
+    args: ["./mcp/type-registry-server.js"]
+    enabled: false

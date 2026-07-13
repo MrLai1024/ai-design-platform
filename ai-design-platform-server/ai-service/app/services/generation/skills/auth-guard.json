@@ -1,0 +1,11 @@
+{
+  "name": "auth-guard",
+  "description": "路由守卫 + 登录拦截模式",
+  "parameters": {},
+  "produces": [
+    {
+      "path": "router/guards.ts",
+      "template": "import type { Router } from 'vue-router'\n\nexport function setupAuthGuard(router: Router) {\n  router.beforeEach((to, _from, next) => {\n    const token = localStorage.getItem('token')\n    if (to.meta.requiresAuth && !token) {\n      next('/login')\n    } else {\n      next()\n    }\n  })\n}\n"
+    }
+  ]
+}

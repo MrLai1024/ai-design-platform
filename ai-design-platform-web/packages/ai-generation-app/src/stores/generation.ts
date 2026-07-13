@@ -1,7 +1,7 @@
 // src/stores/generation.ts
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { ChatMessage, FileEntry, ComponentLibrary, Stage, StageStatus, StageOutputs, CodeViewTab, RightPanelView, StepNode, E2ETestCase, E2ECaseResult, RollbackEvent } from '@/types/generation'
+import type { ChatMessage, FileEntry, ComponentLibrary, Stage, StageStatus, StageOutputs, CodeViewTab, RightPanelView, StepNode, E2ETestCase, E2ECaseResult, RollbackEvent, StagePhase, ToolTraceEntry, ReviewAgentState, ReviewFinding } from '@/types/generation'
 import type { RequirementsState, AnalysisPanelMode, AnalysisMode } from '@/types/requirements'
 
 export const useGenerationStore = defineStore('generation', () => {
@@ -49,6 +49,28 @@ export const useGenerationStore = defineStore('generation', () => {
   const prdCurrentSection = ref<string | null>(null)
   const prdVersion = ref(0)
 
+  // ── 阶段控制 ──
+  const stagePhase = ref<StagePhase>('idle')
+  const awaitingConfirm = ref(false)
+
+  // ── 流式文档（analysis/design/e2e-testcases 共享）──
+  const docStreamingContent = ref('')
+  const docIsStreaming = ref(false)
+
+  // ── Code 阶段 ──
+  const generatedFiles = ref<Record<string, string>>({})
+  const currentGeneratingFile = ref<string | null>(null)
+  const toolTraces = ref<ToolTraceEntry[]>([])
+
+  // ── Review 阶段 ──
+  const reviewAgents = ref<ReviewAgentState[]>([])
+  const reviewReportHtml = ref<string | null>(null)
+
+  // ── E2E 阶段 ──
+  const e2eTestCasesMd = ref<string | null>(null)
+  const e2eUserConfirmed = ref(false)
+  const e2eCurrentCaseId = ref<string | null>(null)
+
   // ── Getters ──
   const lastAssistantMessage = computed(() => {
     for (let i = messages.value.length - 1; i >= 0; i--) {
@@ -89,6 +111,34 @@ export const useGenerationStore = defineStore('generation', () => {
 
   const isStageDone = computed(() => (s: Stage) => {
     return stageStatus.value[s] === 'done'
+  })
+
+  const showStreamDocument = computed(() => {
+    if (stage.value === 'analysis' || stage.value === 'design') return true
+    if (stage.value === 'e2e' && !e2eUserConfirmed.value) return true
+    return false
+  })
+
+  const showNextButton = computed(() =>
+    awaitingConfirm.value && stagePhase.value === 'complete'
+  )
+
+  const reviewIssueSummary = computed(() => {
+    const all = reviewAgents.value.flatMap(a => a.findings)
+    return {
+      total: all.length,
+      critical: all.filter(i => i.severity === 'critical').length,
+      high: all.filter(i => i.severity === 'high').length,
+    }
+  })
+
+  const compileStatus = computed(() => {
+    const compiles = toolTraces.value.filter(t => t.tool === 'compile_project')
+    const last = compiles.at(-1)
+    return {
+      hasErrors: last?.status === 'error',
+      lastCompileOk: last?.status === 'done',
+    }
   })
 
   // ── Actions ──
@@ -298,6 +348,107 @@ export const useGenerationStore = defineStore('generation', () => {
     prdVersion.value = version
   }
 
+  // ── 阶段 Phase Actions ──
+  function setStagePhase(phase: StagePhase): void {
+    stagePhase.value = phase
+  }
+  function setAwaitingConfirm(v: boolean): void {
+    awaitingConfirm.value = v
+  }
+
+  // ── 流式文档 Actions ──
+  function appendDocContent(content: string): void {
+    docStreamingContent.value += content
+  }
+  function setDocComplete(fullContent: string): void {
+    docStreamingContent.value = fullContent
+    docIsStreaming.value = false
+  }
+  function resetDocContent(): void {
+    docStreamingContent.value = ''
+    docIsStreaming.value = true
+  }
+
+  // ── Code 阶段 Actions ──
+  function initFileTree(files: string[]): void {
+    generatedFiles.value = {}
+    for (const f of files) {
+      generatedFiles.value[f] = ''
+    }
+    toolTraces.value = []
+  }
+  function setCurrentGeneratingFile(path: string | null): void {
+    currentGeneratingFile.value = path
+  }
+  function appendFileContent(path: string, content: string): void {
+    if (!generatedFiles.value[path]) {
+      generatedFiles.value[path] = ''
+    }
+    generatedFiles.value[path] += content
+  }
+  function finalizeFile(path: string): void {
+    setFile(path, {
+      filename: path,
+      content: generatedFiles.value[path] || '',
+      language: path.endsWith('.vue') ? 'vue' : path.endsWith('.ts') ? 'typescript' : 'javascript',
+      isDirty: false,
+      source: 'ai',
+    })
+  }
+  function addToolTrace(entry: Omit<ToolTraceEntry, 'id' | 'timestamp'>): string {
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
+    toolTraces.value.push({ ...entry, id, timestamp: Date.now() })
+    return id
+  }
+  function updateToolTrace(id: string, patch: Partial<ToolTraceEntry>): void {
+    const idx = toolTraces.value.findIndex(t => t.id === id)
+    if (idx >= 0) Object.assign(toolTraces.value[idx]!, patch)
+  }
+  function setCodeGenDone(_files: number, _errors: number): void {
+    // compile status tracked via compileStatus computed
+  }
+
+  // ── Review 阶段 Actions ──
+  function initReviewAgents(agents: Array<{ key: string; name: string; icon: string }>): void {
+    reviewAgents.value = agents.map(a => ({
+      key: a.key,
+      name: a.name,
+      icon: a.icon,
+      status: 'pending' as const,
+      findings: [],
+      totalIssues: 0,
+    }))
+  }
+  function appendAgentFinding(agentKey: string, issue: ReviewFinding): void {
+    const agent = reviewAgents.value.find(a => a.key === agentKey)
+    if (agent) {
+      agent.findings.push(issue)
+      agent.totalIssues = agent.findings.length
+    }
+  }
+  function setAgentDone(agentKey: string): void {
+    const agent = reviewAgents.value.find(a => a.key === agentKey)
+    if (agent) agent.status = 'done'
+  }
+  function setAgentRunning(agentKey: string): void {
+    const agent = reviewAgents.value.find(a => a.key === agentKey)
+    if (agent) agent.status = 'running'
+  }
+
+  // ── E2E 阶段 Actions ──
+  function setE2ECasesDoc(md: string): void {
+    e2eTestCasesMd.value = md
+  }
+  function confirmE2ECases(): void {
+    e2eUserConfirmed.value = true
+  }
+  function setCurrentE2ECase(caseId: string): void {
+    e2eCurrentCaseId.value = caseId
+  }
+  function setE2EComplete(_summary: { total: number; passed: number; failed: number }): void {
+    // handled by existing e2e logic
+  }
+
   function resetAll(): void {
     messages.value = []
     files.value = new Map()
@@ -323,6 +474,18 @@ export const useGenerationStore = defineStore('generation', () => {
     prdStreamingContent.value = ''
     prdCurrentSection.value = null
     prdVersion.value = 0
+    stagePhase.value = 'idle'
+    awaitingConfirm.value = false
+    docStreamingContent.value = ''
+    docIsStreaming.value = false
+    generatedFiles.value = {}
+    currentGeneratingFile.value = null
+    toolTraces.value = []
+    reviewAgents.value = []
+    reviewReportHtml.value = null
+    e2eTestCasesMd.value = null
+    e2eUserConfirmed.value = false
+    e2eCurrentCaseId.value = null
   }
 
   return {
@@ -344,6 +507,24 @@ export const useGenerationStore = defineStore('generation', () => {
     setE2ETestCases, addE2EResult, clearE2EResults, addRollbackEvent, setNeedsManualReview, setLoopBreakReason, setGenerationId,
     setRequirementsState, patchRequirementsState, setAnalysisPanelMode,
     appendPRDContent, appendPRDDiff, setPRDCurrentSection, setPRDComplete, setPRDVersion,
+    // 阶段控制
+    stagePhase, awaitingConfirm,
+    setStagePhase, setAwaitingConfirm,
+    // 流式文档
+    docStreamingContent, docIsStreaming,
+    appendDocContent, setDocComplete, resetDocContent,
+    // Code 阶段
+    generatedFiles, currentGeneratingFile, toolTraces,
+    initFileTree, setCurrentGeneratingFile, appendFileContent, finalizeFile,
+    addToolTrace, updateToolTrace, setCodeGenDone,
+    // Review 阶段
+    reviewAgents, reviewReportHtml,
+    initReviewAgents, appendAgentFinding, setAgentDone, setAgentRunning,
+    // E2E 阶段
+    e2eTestCasesMd, e2eUserConfirmed, e2eCurrentCaseId,
+    setE2ECasesDoc, confirmE2ECases, setCurrentE2ECase, setE2EComplete,
+    // Computed
+    showStreamDocument, showNextButton, reviewIssueSummary, compileStatus,
     resetAll,
   }
 })

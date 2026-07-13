@@ -65,22 +65,49 @@ class GenerationServicer(GenerationServiceServicer):
         request: GenerateRequest,
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[GenerateResponse]:
-        """Stream LangGraph pipeline events."""
+        """Stream LangGraph pipeline events. Auto-detects resume vs fresh start."""
         self._active_generations[generation_id] = "running"
         model = request.model or "glm-5.2"
+        mode = request.metadata.get("mode", "graph")
 
         # Set up LLM provider for the graph nodes
         provider = resolve_provider(model)
         set_provider(provider)
 
-        # Build initial state
-        user_messages = [
-            {"role": m.role, "content": m.content}
-            for m in request.messages
-        ]
-        user_content = next(
-            (m["content"] for m in user_messages if m["role"] == "user"), ""
-        )
+        # Check if this is a resume (existing runner has state)
+        existing_runner = self._active_runners.get(generation_id)
+
+        if mode == "resume" and existing_runner:
+            # Resume from checkpoint
+            runner = existing_runner
+            try:
+                async for event in runner.resume(generation_id):
+                    if context.cancelled() or self._active_generations.get(generation_id) == "cancelling":
+                        break
+                    yield self._event_to_response(event)
+
+                yield GenerateResponse(
+                    complete=GenerationComplete(finish_reason="stop", usage=None)
+                )
+            except Exception as e:
+                logger.exception("Graph resume failed: generation_id=%s", generation_id)
+                yield GenerateResponse(
+                    error=GenerationError(code="INTERNAL", message=str(e))
+                )
+            return
+
+        # Fresh start — build initial state
+        user_messages = []
+        user_content = ""
+        for m in request.messages:
+            try:
+                role, content = m.role, m.content
+            except AttributeError:
+                role = m.get("role", "")
+                content = m.get("content", "")
+            user_messages.append({"role": str(role), "content": str(content)})
+            if str(role) == "user" and not user_content:
+                user_content = str(content)
 
         state: GenerationState = {
             "requirement": user_content,
@@ -103,6 +130,16 @@ class GenerationServicer(GenerationServiceServicer):
             "max_rollback_per_node": 3,
             "max_rollback_total": 10,
             "needs_manual_review": False,
+            # New fields
+            "stage_phase": "generating",
+            "design_doc": None,
+            "generated_files": {},
+            "compile_errors": None,
+            "review_agent_results": None,
+            "review_report_html": None,
+            "review_issues": None,
+            "e2e_test_cases_md": None,
+            "e2e_user_confirmed": False,
         }
 
         runner = GraphRunner()
@@ -127,8 +164,10 @@ class GenerationServicer(GenerationServiceServicer):
                 error=GenerationError(code="INTERNAL", message=str(e))
             )
         finally:
-            self._active_generations.pop(generation_id, None)
-            self._active_runners.pop(generation_id, None)
+            # Only clean up if graph completed (not interrupted)
+            if context.cancelled():
+                self._active_generations.pop(generation_id, None)
+                self._active_runners.pop(generation_id, None)
 
     async def _stream_chat(
         self,

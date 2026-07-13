@@ -19,9 +19,11 @@ type GraphSSEHandler struct {
 // GenerationRequest 扩展 ChatRequest，增加 graph 专用字段。
 type GenerationRequest struct {
 	Model          string        `json:"model" binding:"required"`
-	Messages       []ChatMessage `json:"messages" binding:"required"`
+	Messages       []ChatMessage `json:"messages"`
 	EnableThinking bool          `json:"enable_thinking"`
 	ComponentLib   string        `json:"component_lib"`
+	GenerationID   string        `json:"generation_id"`
+	Mode           string        `json:"mode"` // "graph" (default) or "resume"
 }
 
 // NewGraphSSEHandler 创建一个新的 GraphSSEHandler。
@@ -38,7 +40,14 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 		return
 	}
 
-	generationID := newUUID()
+	mode := req.Mode
+	if mode == "" {
+		mode = "graph"
+	}
+	generationID := req.GenerationID
+	if generationID == "" {
+		generationID = newUUID()
+	}
 
 	// 构建 gRPC 请求
 	pbMessages := make([]*pb.Message, len(req.Messages))
@@ -59,7 +68,7 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 			EnableThinking: req.EnableThinking,
 		},
 		Metadata: map[string]string{
-			"mode":          "graph",
+			"mode":          mode,
 			"component_lib": req.ComponentLib,
 		},
 	}

@@ -13,14 +13,18 @@
     "@ai-design/micro-core": "workspace:*",
     "@ai-design/shared": "workspace:*",
     "@babel/standalone": "^8.0.2",
+    "@types/highlight.js": "^10.1.0",
     "@vue/repl": "^4.7.2",
+    "dompurify": "^3.4.12",
+    "highlight.js": "^11.11.1",
     "markdown-it": "^14.2.0",
-
     "pinia": "^2.1.7",
     "vue": "^3.4.15",
     "vue-router": "^4.2.5"
   },
   "devDependencies": {
+    "@types/dompurify": "^3.2.0",
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "^20.11.5",
     "@vitejs/plugin-vue": "^5.0.0",
     "@vue/compiler-sfc": "^3.4.15",
@@ -30,7 +34,6 @@
     "happy-dom": "^20.10.6",
     "html-webpack-plugin": "^5.6.0",
     "mini-css-extract-plugin": "^2.7.7",
-
     "postcss": "^8.4.33",
     "postcss-loader": "^8.1.0",
     "style-loader": "^3.3.4",

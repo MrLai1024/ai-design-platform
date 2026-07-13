@@ -14,6 +14,7 @@ Topology:
 from typing import AsyncIterator
 
 from langgraph.graph import StateGraph, END
+from langgraph.types import Command
 from langgraph.checkpoint.memory import MemorySaver
 
 from .state import GenerationState
@@ -87,11 +88,13 @@ def build_graph() -> StateGraph:
         },
     )
 
-    # Compile with checkpointing and human-in-the-loop
+    # Compile with checkpointing and human-in-the-loop.
+    # analysis runs immediately (user clicks "开始设计" to trigger graph start).
+    # design/code/review/e2e pause for user confirmation between stages.
     checkpointer = MemorySaver()
     app = workflow.compile(
         checkpointer=checkpointer,
-        interrupt_before=["analysis", "design"],  # Pause for user confirmation
+        interrupt_before=["design", "code", "review", "e2e"],
     )
 
     return app
@@ -126,7 +129,7 @@ class GraphRunner:
                 break
 
             for node_name, node_output in event.items():
-                yield self._make_event("stage_start", node_name, {})
+                yield self._make_event("stage_start", node_name, {"phase": "generating"})
 
                 if node_name == "analysis":
                     analysis_result = node_output.get("analysis_result", "")
@@ -141,12 +144,14 @@ class GraphRunner:
                             "sections_count": 5,
                             "parent_version": None,
                         })
-                        # Chunk the PRD text for streaming effect
                         chunk_size = 80
                         for i in range(0, len(analysis_result), chunk_size):
                             chunk = analysis_result[i:i + chunk_size]
                             yield self._make_event("prd_section", "analysis", {
                                 "section_key": "content",
+                                "content": chunk,
+                            })
+                            yield self._make_event("doc_chunk", "analysis", {
                                 "content": chunk,
                             })
                         yield self._make_event("prd_section_complete", "analysis", {
@@ -158,7 +163,21 @@ class GraphRunner:
                             "duration_ms": 0,
                         })
 
-                if node_name in ("analysis", "design"):
+                if node_name == "design":
+                    design_doc = node_output.get("design_doc", "")
+                    if design_doc:
+                        yield self._make_event("design_gen_start", "design", {})
+                        chunk_size = 80
+                        for i in range(0, len(design_doc), chunk_size):
+                            chunk = design_doc[i:i + chunk_size]
+                            yield self._make_event("doc_chunk", "design", {
+                                "content": chunk,
+                            })
+                        yield self._make_event("design_gen_done", "design", {
+                            "full_content": design_doc,
+                        })
+
+                if node_name in ("analysis", "design", "code", "review", "e2e"):
                     yield self._make_event("human_confirm_required", node_name, {
                         "message": f"Please review the {node_name} output and confirm to continue.",
                     })
@@ -168,16 +187,108 @@ class GraphRunner:
                 })
 
                 if node_name == "e2e":
-                    test_cases = node_output.get("e2e_test_cases", [])
-                    yield self._make_event("e2e_start", "e2e", {
-                        "test_cases": test_cases,
-                        "total": len(test_cases),
+                    e2e_cases_md = node_output.get("e2e_test_cases_md", "")
+                    if e2e_cases_md:
+                        yield self._make_event("e2e_cases_gen_start", "e2e", {})
+                        chunk_size = 80
+                        for i in range(0, len(e2e_cases_md), chunk_size):
+                            chunk = e2e_cases_md[i:i + chunk_size]
+                            yield self._make_event("doc_chunk", "e2e", {
+                                "content": chunk,
+                            })
+                        yield self._make_event("e2e_cases_gen_done", "e2e", {
+                            "full_content": e2e_cases_md,
+                        })
+                    elif node_output.get("e2e_user_confirmed"):
+                        test_cases = node_output.get("e2e_test_cases", [])
+                        yield self._make_event("e2e_execute_start", "e2e", {
+                            "test_cases": test_cases,
+                            "total": len(test_cases),
+                        })
+                        yield self._make_event("e2e_complete", "e2e", {
+                            "passed": False,
+                            "failed_count": 0,
+                            "total_count": len(test_cases),
+                        })
+
+    async def resume(
+        self,
+        generation_id: str,
+    ) -> AsyncIterator[dict]:
+        """Resume the graph from its last interrupt point.
+
+        Called after user clicks [下一步 ▸] to confirm a stage.
+        """
+        config = {"configurable": {"thread_id": generation_id}}
+        max_iterations = 50
+        iteration = 0
+
+        async for event in self.app.astream(Command(resume=True), config):
+            iteration += 1
+            if iteration > max_iterations:
+                yield self._make_event("loop_break", "", {
+                    "reason": f"Exceeded max iterations ({max_iterations})",
+                })
+                break
+
+            for node_name, node_output in event.items():
+                yield self._make_event("stage_start", node_name, {"phase": "generating"})
+
+                if node_name == "analysis":
+                    analysis_result = node_output.get("analysis_result", "")
+                    if analysis_result and not analysis_result.startswith("__REQ_EVENT__:"):
+                        yield self._make_event("prd_generate_start", "analysis", {
+                            "mode": "full", "sections_count": 5, "parent_version": None,
+                        })
+                        chunk_size = 80
+                        for i in range(0, len(analysis_result), chunk_size):
+                            chunk = analysis_result[i:i + chunk_size]
+                            yield self._make_event("prd_section", "analysis", {
+                                "section_key": "content", "content": chunk,
+                            })
+                            yield self._make_event("doc_chunk", "analysis", {
+                                "content": chunk,
+                            })
+                        yield self._make_event("prd_section_complete", "analysis", {
+                            "section_key": "content",
+                        })
+                        yield self._make_event("prd_generate_done", "analysis", {
+                            "version": 1, "full_content": analysis_result, "duration_ms": 0,
+                        })
+
+                if node_name == "design":
+                    design_doc = node_output.get("design_doc", "")
+                    if design_doc:
+                        yield self._make_event("design_gen_start", "design", {})
+                        chunk_size = 80
+                        for i in range(0, len(design_doc), chunk_size):
+                            chunk = design_doc[i:i + chunk_size]
+                            yield self._make_event("doc_chunk", "design", {
+                                "content": chunk,
+                            })
+                        yield self._make_event("design_gen_done", "design", {
+                            "full_content": design_doc,
+                        })
+
+                if node_name in ("analysis", "design", "code", "review", "e2e"):
+                    yield self._make_event("human_confirm_required", node_name, {
+                        "message": f"Please review the {node_name} output and confirm to continue.",
                     })
-                    yield self._make_event("e2e_complete", "e2e", {
-                        "passed": False,
-                        "failed_count": 0,
-                        "total_count": len(test_cases),
-                    })
+
+                yield self._make_event("stage_complete", node_name, {
+                    "summary": self._get_summary(node_name, node_output),
+                })
+
+                if node_name == "e2e":
+                    e2e_cases_md = node_output.get("e2e_test_cases_md", "")
+                    if e2e_cases_md:
+                        yield self._make_event("e2e_cases_gen_start", "e2e", {})
+                        for i in range(0, len(e2e_cases_md), 80):
+                            chunk = e2e_cases_md[i:i + 80]
+                            yield self._make_event("doc_chunk", "e2e", {"content": chunk})
+                        yield self._make_event("e2e_cases_gen_done", "e2e", {
+                            "full_content": e2e_cases_md,
+                        })
 
     async def resume_after_e2e(
         self,
