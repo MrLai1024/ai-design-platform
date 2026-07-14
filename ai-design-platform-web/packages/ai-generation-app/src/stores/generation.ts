@@ -48,6 +48,9 @@ export const useGenerationStore = defineStore('generation', () => {
   const prdStreamingContent = ref('')
   const prdCurrentSection = ref<string | null>(null)
   const prdVersion = ref(0)
+  const prdReasoningContent = ref('')
+  const prdReasoningStartTime = ref(0)
+  const prdReasoningDurationMs = ref(0)
 
   // ── 阶段控制 ──
   const stagePhase = ref<StagePhase>('idle')
@@ -348,6 +351,17 @@ export const useGenerationStore = defineStore('generation', () => {
     prdVersion.value = version
   }
 
+  function appendPRDReasoning(text: string): void {
+    if (!prdReasoningStartTime.value) prdReasoningStartTime.value = Date.now()
+    prdReasoningContent.value += text
+  }
+
+  function finishPRDReasoning(): void {
+    if (prdReasoningStartTime.value) {
+      prdReasoningDurationMs.value = Date.now() - prdReasoningStartTime.value
+    }
+  }
+
   // ── 阶段 Phase Actions ──
   function setStagePhase(phase: StagePhase): void {
     stagePhase.value = phase
@@ -474,6 +488,9 @@ export const useGenerationStore = defineStore('generation', () => {
     prdStreamingContent.value = ''
     prdCurrentSection.value = null
     prdVersion.value = 0
+    prdReasoningContent.value = ''
+    prdReasoningStartTime.value = 0
+    prdReasoningDurationMs.value = 0
     stagePhase.value = 'idle'
     awaitingConfirm.value = false
     docStreamingContent.value = ''
@@ -507,6 +524,7 @@ export const useGenerationStore = defineStore('generation', () => {
     setE2ETestCases, addE2EResult, clearE2EResults, addRollbackEvent, setNeedsManualReview, setLoopBreakReason, setGenerationId,
     setRequirementsState, patchRequirementsState, setAnalysisPanelMode,
     appendPRDContent, appendPRDDiff, setPRDCurrentSection, setPRDComplete, setPRDVersion,
+    prdReasoningContent, prdReasoningDurationMs, appendPRDReasoning, finishPRDReasoning,
     // 阶段控制
     stagePhase, awaitingConfirm,
     setStagePhase, setAwaitingConfirm,

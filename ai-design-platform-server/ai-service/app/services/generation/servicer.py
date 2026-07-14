@@ -186,12 +186,17 @@ class GenerationServicer(GenerationServiceServicer):
             for m in request.messages
         ]
 
+        # Support enable_thinking from both config and metadata
+        enable_thinking = (
+            request.config.enable_thinking
+            or request.metadata.get("enable_thinking") == "true"
+        )
         config = LLMConfig(
             temperature=request.config.temperature if request.config.temperature else 0.7,
             max_tokens=request.config.max_tokens if request.config.max_tokens else 4096,
             top_p=request.config.top_p if request.config.top_p else 1.0,
             stop_sequences=list(request.config.stop_sequences),
-            enable_thinking=request.config.enable_thinking,
+            enable_thinking=enable_thinking,
         )
 
         try:

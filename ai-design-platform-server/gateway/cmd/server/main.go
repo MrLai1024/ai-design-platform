@@ -47,6 +47,7 @@ func main() {
 	convH := handler.NewConversationHandler(aiClient)
 	graphHandler := handler.NewGraphSSEHandler(aiClient)
 	e2eHandler := handler.NewE2EHandler(graphHandler)
+	prdHandler := handler.NewPRDHandler(aiClient)
 
 	// Gin 路由器
 	gin.SetMode(gin.ReleaseMode)
@@ -62,7 +63,9 @@ func main() {
 	api := r.Group("/api/v1")
 	{
 		// 原始聊天
-		api.POST("/chat/stream", chatH.StreamChat)
+		api.POST("/prd/stream", prdHandler.StreamPRD)
+
+			api.POST("/chat/stream", chatH.StreamChat)
 		api.POST("/chat/cancel/:id", chatH.CancelChat)
 
 		// 对话管理

@@ -33,50 +33,41 @@ export function useMultiAgent() {
     }
   }
 
-  /** 启动 LangGraph 流水线 — 调用 /api/v1/generation/stream (graph 模式) */
+  /** 启动 PRD 文档流式生成 — 调用 /api/v1/prd/stream */
   async function startGraphGeneration(content: string, lib: ComponentLibrary) {
     store.setStage('analysis')
     store.setStageStatus('analysis', 'active')
     store.setStagePhase('generating')
     store.setCurrentLib(lib)
     store.docIsStreaming = true
+    store.docStreamingContent = ''
     store.isStreaming = true
 
-    // Collect all chat messages as context
     const chatMessages = store.messages
       .filter((m) => !m.isStreaming)
       .map((m) => ({ role: m.role, content: m.content }))
 
     isTransitioning.value = true
     try {
-      console.log('[startGraphGeneration] Sending to /api/v1/generation/stream with', chatMessages.length, 'messages')
-      const response = await fetch('/api/v1/generation/stream', {
+      console.log('[PRD] Sending', chatMessages.length, 'messages to /api/v1/prd/stream')
+      const response = await fetch('/api/v1/prd/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: chatMessages,
-          model: 'glm-5.2',
-          component_lib: lib,
-        }),
+        body: JSON.stringify({ messages: chatMessages, model: 'glm-5.2' }),
       })
 
       if (!response.ok) {
         const errText = await response.text()
-        console.error('[startGraphGeneration] HTTP error:', response.status, errText)
-        throw new Error(`后端返回错误: ${response.status} ${errText}`)
+        throw new Error(`PRD API error: ${response.status} ${errText}`)
       }
 
-      console.log('[startGraphGeneration] SSE stream opened, reading events...')
       const reader = response.body!.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
 
       while (true) {
         const { done, value } = await reader.read()
-        if (done) {
-          console.log('[startGraphGeneration] SSE stream ended')
-          break
-        }
+        if (done) break
 
         buffer += decoder.decode(value, { stream: true })
         const frames = buffer.split('\n\n')
@@ -91,14 +82,25 @@ export function useMultiAgent() {
 
           try {
             const event = JSON.parse(raw)
-            const eventType: string = event._t
-            dispatchGraphEvent(eventType, event)
-          } catch { /* skip malformed frames */ }
+            if (event._t === 'doc_chunk') {
+              store.appendDocContent(event.content || '')
+            } else if (event._t === 'reasoning') {
+              store.appendPRDReasoning(event.text || '')
+            } else if (event._t === 'prd_complete') {
+              store.finishPRDReasoning()
+              store.setDocComplete(store.docStreamingContent)
+              store.setStageOutput('analysis', store.docStreamingContent)
+              store.setStagePhase('complete')
+              store.setAwaitingConfirm(true)
+            } else if (event._t === 'error') {
+              streamError.value = event.message || 'PRD generation error'
+            }
+          } catch { /* skip */ }
         }
       }
     } catch (e: any) {
-      console.error('[startGraphGeneration] Error:', e.message || e)
-      streamError.value = e.message || 'Graph generation failed'
+      console.error('[PRD] Error:', e.message || e)
+      streamError.value = e.message || 'PRD generation failed'
     } finally {
       store.isStreaming = false
       store.docIsStreaming = false
