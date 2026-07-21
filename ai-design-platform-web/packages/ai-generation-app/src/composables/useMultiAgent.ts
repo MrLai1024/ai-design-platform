@@ -33,7 +33,7 @@ export function useMultiAgent() {
     }
   }
 
-  /** 启动 PRD 文档流式生成 — 调用 /api/v1/prd/stream */
+  /** 启动 graph 流水线 — /api/v1/generation/stream (PRD 在 graph 内流式生成) */
   async function startGraphGeneration(content: string, lib: ComponentLibrary) {
     store.setStage('analysis')
     store.setStageStatus('analysis', 'active')
@@ -49,16 +49,19 @@ export function useMultiAgent() {
 
     isTransitioning.value = true
     try {
-      console.log('[PRD] Sending', chatMessages.length, 'messages to /api/v1/prd/stream')
-      const response = await fetch('/api/v1/prd/stream', {
+      const response = await fetch('/api/v1/generation/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: chatMessages, model: 'glm-5.2' }),
+        body: JSON.stringify({
+          messages: chatMessages,
+          model: 'glm-5.2',
+          component_lib: lib,
+        }),
       })
 
       if (!response.ok) {
         const errText = await response.text()
-        throw new Error(`PRD API error: ${response.status} ${errText}`)
+        throw new Error(`Graph error: ${response.status} ${errText}`)
       }
 
       const reader = response.body!.getReader()
@@ -68,39 +71,23 @@ export function useMultiAgent() {
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-
         buffer += decoder.decode(value, { stream: true })
         const frames = buffer.split('\n\n')
         buffer = frames.pop() || ''
-
         for (const frame of frames) {
           if (!frame.trim()) continue
           const dataLine = frame.split('\n').find((l) => l.startsWith('data:'))
           if (!dataLine) continue
           const raw = dataLine.slice(5).trimStart()
           if (!raw || raw === '[DONE]') continue
-
           try {
             const event = JSON.parse(raw)
-            if (event._t === 'doc_chunk') {
-              store.appendDocContent(event.content || '')
-            } else if (event._t === 'reasoning') {
-              store.appendPRDReasoning(event.text || '')
-            } else if (event._t === 'prd_complete') {
-              store.finishPRDReasoning()
-              store.setDocComplete(store.docStreamingContent)
-              store.setStageOutput('analysis', store.docStreamingContent)
-              store.setStagePhase('complete')
-              store.setAwaitingConfirm(true)
-            } else if (event._t === 'error') {
-              streamError.value = event.message || 'PRD generation error'
-            }
+            dispatchGraphEvent(event._t, event)
           } catch { /* skip */ }
         }
       }
     } catch (e: any) {
-      console.error('[PRD] Error:', e.message || e)
-      streamError.value = e.message || 'PRD generation failed'
+      streamError.value = e.message || 'Graph generation failed'
     } finally {
       store.isStreaming = false
       store.docIsStreaming = false
@@ -118,6 +105,9 @@ export function useMultiAgent() {
         store.setStageStatus(event.stage, 'active')
         store.setStage(event.stage as Stage)
         if (event.phase) store.setStagePhase(event.phase)
+        if (event.stage === 'code') {
+          store.setCodeViewTab('files')
+        }
         break
       case 'stage_complete':
         store.setStageStatus(event.stage, 'done')
@@ -127,6 +117,9 @@ export function useMultiAgent() {
       case 'human_confirm_required':
         store.setAwaitingConfirm(true)
         break
+      case 'prd_reasoning':
+        store.appendPRDReasoning(event.text || '')
+        break
       case 'prd_generate_start':
         store.resetDocContent()
         break
@@ -135,6 +128,7 @@ export function useMultiAgent() {
         store.appendDocContent(event.content || '')
         break
       case 'prd_generate_done':
+        store.finishPRDReasoning()
         store.setDocComplete(event.full_content || '')
         if (event.full_content) store.setStageOutput('analysis', event.full_content)
         break
@@ -142,9 +136,12 @@ export function useMultiAgent() {
         store.appendDocContent(event.content || '')
         break
       case 'design_gen_start':
+        store.prdReasoningContent = ''
+        store.prdReasoningDurationMs = 0
         store.resetDocContent()
         break
       case 'design_gen_done':
+        store.finishPRDReasoning()
         store.setDocComplete(event.full_content || '')
         if (event.full_content) store.setStageOutput('design', event.full_content)
         break
@@ -252,43 +249,58 @@ export function useMultiAgent() {
   async function confirmStage(stage: Stage) {
     isTransitioning.value = true
     store.setAwaitingConfirm(false)
+
+    // First transitions: PRD done (analysis) or design done (design)
+    // Graph hasn't started yet, so send pre-filled state
+    const needsFreshStart = stage === 'analysis' || stage === 'design' || stage === 'code'
+    const body: Record<string, any> = {
+      model: 'glm-5.2',
+      component_lib: store.currentLib,
+      mode: 'graph',
+    }
+
+    if (needsFreshStart) {
+      // Pre-fill completed stages
+      const prefillMessages: Array<{role: string; content: string}> = []
+      prefillMessages.push({ role: 'user', content: store.stageOutputs.analysis || store.docStreamingContent })
+      if (store.stageOutputs.design) {
+        prefillMessages.push({ role: 'assistant', content: store.stageOutputs.design })
+      }
+      if (store.stageOutputs.code) {
+        prefillMessages.push({ role: 'assistant', content: store.stageOutputs.code })
+      }
+      body.messages = prefillMessages
+      body.skip_analysis = true
+    } else {
+      // Resume graph for code+
+      body.messages = []
+      body.generation_id = store.currentGenerationId
+      body.mode = 'resume'
+    }
+
     try {
       const response = await fetch('/api/v1/generation/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [],
-          model: 'glm-5.2',
-          generation_id: store.currentGenerationId,
-          mode: 'resume',
-          component_lib: store.currentLib,
-        }),
+        body: JSON.stringify(body),
       })
+      if (!response.ok) throw new Error(`Confirm failed: ${response.status}`)
 
-      if (!response.ok) {
-        throw new Error(`Resume failed: ${response.status}`)
-      }
-
-      // Read SSE stream for resumed graph events
       const reader = response.body!.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
-
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-
         buffer += decoder.decode(value, { stream: true })
         const frames = buffer.split('\n\n')
         buffer = frames.pop() || ''
-
         for (const frame of frames) {
           if (!frame.trim()) continue
           const dataLine = frame.split('\n').find((l) => l.startsWith('data:'))
           if (!dataLine) continue
           const raw = dataLine.slice(5).trimStart()
           if (!raw || raw === '[DONE]') continue
-
           try {
             const event = JSON.parse(raw)
             dispatchGraphEvent(event._t, event)

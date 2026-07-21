@@ -65,7 +65,7 @@ func main() {
 		// 原始聊天
 		api.POST("/prd/stream", prdHandler.StreamPRD)
 
-			api.POST("/chat/stream", chatH.StreamChat)
+		api.POST("/chat/stream", chatH.StreamChat)
 		api.POST("/chat/cancel/:id", chatH.CancelChat)
 
 		// 对话管理

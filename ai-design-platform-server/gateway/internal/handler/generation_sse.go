@@ -11,28 +11,27 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// GraphSSEHandler 处理基于 LangGraph 的流式生成事件，通过 SSE 转发给前端。
+// GraphSSEHandler handles LangGraph streaming via SSE.
 type GraphSSEHandler struct {
 	aiClient *client.AIClient
 }
 
-// GenerationRequest 扩展 ChatRequest，增加 graph 专用字段。
+// GenerationRequest with graph-specific fields.
 type GenerationRequest struct {
 	Model          string        `json:"model" binding:"required"`
 	Messages       []ChatMessage `json:"messages"`
 	EnableThinking bool          `json:"enable_thinking"`
 	ComponentLib   string        `json:"component_lib"`
 	GenerationID   string        `json:"generation_id"`
-	Mode           string        `json:"mode"` // "graph" (default) or "resume"
+	Mode           string        `json:"mode"`
+	SkipAnalysis   bool          `json:"skip_analysis"`
 }
 
-// NewGraphSSEHandler 创建一个新的 GraphSSEHandler。
 func NewGraphSSEHandler(aiClient *client.AIClient) *GraphSSEHandler {
 	return &GraphSSEHandler{aiClient: aiClient}
 }
 
-// StreamGeneration 处理基于 SSE 的流式 LangGraph 生成。
-// POST /api/v1/generation/stream
+// StreamGeneration handles POST /api/v1/generation/stream
 func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 	var req GenerationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -49,13 +48,20 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 		generationID = newUUID()
 	}
 
-	// 构建 gRPC 请求
 	pbMessages := make([]*pb.Message, len(req.Messages))
 	for i, m := range req.Messages {
 		pbMessages[i] = &pb.Message{
 			Role:    m.Role,
 			Content: m.Content,
 		}
+	}
+
+	metadata := map[string]string{
+		"mode":          mode,
+		"component_lib": req.ComponentLib,
+	}
+	if req.SkipAnalysis {
+		metadata["skip_analysis"] = "true"
 	}
 
 	grpcReq := &pb.GenerateRequest{
@@ -67,13 +73,9 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 			MaxTokens:      2048,
 			EnableThinking: req.EnableThinking,
 		},
-		Metadata: map[string]string{
-			"mode":          mode,
-			"component_lib": req.ComponentLib,
-		},
+		Metadata: metadata,
 	}
 
-	// 打开到 AI 服务的 gRPC 流
 	stream, err := h.aiClient.StreamGenerate(c.Request.Context(), grpcReq)
 	if err != nil {
 		slog.Error("Failed to start gRPC stream for graph generation", "error", err)
@@ -81,18 +83,15 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 		return
 	}
 
-	// 设置 SSE 头部
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache, no-transform")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
 
-	// 发送 generation_id 作为第一个事件，以便客户端可以追踪
 	writeSSE(c, "meta", gin.H{"_t": "meta", "generation_id": generationID})
 	c.Writer.Flush()
 
-	// 将 gRPC 流转发为 SSE
 	c.Stream(func(w io.Writer) bool {
 		resp, err := stream.Recv()
 		if err == io.EOF {
@@ -143,13 +142,10 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 			})
 			return false
 		case *pb.GenerateResponse_GraphEvent:
-			// 转发 GraphEvent：将 event_type 作为 _t，stage 作为独立字段，
-			// 并合并 data JSON 到顶层 payload
 			payloadMap := gin.H{
 				"_t":    payload.GraphEvent.EventType,
 				"stage": payload.GraphEvent.Stage,
 			}
-			// 将 data JSON 字符串解析并合并到 payload
 			var data map[string]interface{}
 			if err := json.Unmarshal([]byte(payload.GraphEvent.Data), &data); err == nil {
 				for k, v := range data {
@@ -157,8 +153,6 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 				}
 			}
 			writeSSE(c, "", payloadMap)
-		default:
-			slog.Warn("Unknown response payload type in graph stream", "type", resp.Payload)
 		}
 		return true
 	})

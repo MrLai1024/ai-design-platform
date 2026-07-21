@@ -40,23 +40,24 @@ const renderedContent = computed(() => {
   return DOMPurify.sanitize(md.render(props.content))
 })
 
-// Auto-scroll when streaming
-watch(
-  () => props.content,
-  async () => {
-    if (!props.isStreaming) return
-    await nextTick()
-    if (containerRef.value) {
-      containerRef.value.scrollTop = containerRef.value.scrollHeight
-    }
-  },
-)
+function scrollToBottom(): void {
+  if (containerRef.value) {
+    containerRef.value.scrollTop = containerRef.value.scrollHeight
+  }
+}
+
+// Auto-scroll to bottom whenever content changes (streaming or not)
+watch(() => props.content, async () => {
+  await nextTick()
+  scrollToBottom()
+})
 </script>
 
 <template>
   <div
     ref="containerRef"
-    class="stream-document flex-1 overflow-auto p-4"
+    class="stream-document overflow-y-auto p-4"
+    style="height: 0; flex: 1 1 0%;"
   >
     <div
       v-if="language === 'html'"
@@ -76,9 +77,3 @@ watch(
     </div>
   </div>
 </template>
-
-<style scoped>
-.stream-document {
-  scroll-behavior: smooth;
-}
-</style>

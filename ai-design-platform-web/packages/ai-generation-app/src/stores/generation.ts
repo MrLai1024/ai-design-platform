@@ -277,8 +277,8 @@ export const useGenerationStore = defineStore('generation', () => {
   function enterCodeStage(): void {
     stage.value = 'code'
     stageStatus.value.code = 'active'
-    rightPanelView.value = 'preview'
-    codeViewTab.value = 'preview'
+    rightPanelView.value = 'files'
+    codeViewTab.value = 'files'
   }
 
   function completeCurrentStage(): void {

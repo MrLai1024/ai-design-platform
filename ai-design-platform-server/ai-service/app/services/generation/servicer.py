@@ -96,6 +96,9 @@ class GenerationServicer(GenerationServiceServicer):
                 )
             return
 
+        # Check if we should skip analysis (PRD already generated via /api/v1/prd/stream)
+        skip_analysis = request.metadata.get("skip_analysis") == "true"
+
         # Fresh start — build initial state
         user_messages = []
         user_content = ""
@@ -109,14 +112,25 @@ class GenerationServicer(GenerationServiceServicer):
             if str(role) == "user" and not user_content:
                 user_content = str(content)
 
+        # If skip_analysis, pre-fill completed stages
+        pre_filled_analysis = user_content if skip_analysis else None
+        # Second message (assistant role) = pre-filled design_result
+        pre_filled_design = None
+        pre_filled_code = None
+        if skip_analysis:
+            if len(user_messages) >= 2 and user_messages[1].get("role") == "assistant":
+                pre_filled_design = user_messages[1].get("content")
+            if len(user_messages) >= 3 and user_messages[2].get("role") == "assistant":
+                pre_filled_code = user_messages[2].get("content")
+
         state: GenerationState = {
             "requirement": user_content,
             "component_lib": request.metadata.get("component_lib", "tailwind"),
             "messages": user_messages,
             "requirements_state_json": None,
-            "analysis_result": None,
-            "design_result": None,
-            "code_result": None,
+            "analysis_result": pre_filled_analysis,
+            "design_result": pre_filled_design,
+            "code_result": pre_filled_code,
             "review_result": None,
             "e2e_results": None,
             "e2e_test_cases": None,

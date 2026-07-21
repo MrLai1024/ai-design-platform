@@ -42,16 +42,29 @@ const ANALYSIS_SYSTEM_PROMPT = `你是一个资深产品需求分析师。你的
 
 const messagesContainer = ref<HTMLElement | null>(null)
 
-// 自动滚到底部
-watch(
-  () => store.lastAssistantMessage?.content,
-  async () => {
-    await nextTick()
+// Auto-scroll to bottom on any message change during streaming
+function scrollChatToBottom(): void {
+  nextTick(() => {
     if (messagesContainer.value) {
       messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
     }
-  },
-)
+  })
+}
+
+// Scroll reasoning content div to bottom
+function scrollReasoningToBottom(): void {
+  nextTick(() => {
+    const el = messagesContainer.value?.querySelector('.reasoning-content:last-child')
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
+watch(() => store.messages.length, scrollChatToBottom)
+watch(() => store.lastAssistantMessage?.content, scrollChatToBottom)
+watch(() => store.lastAssistantMessage?.reasoningContent, () => {
+  scrollChatToBottom()
+  scrollReasoningToBottom()
+})
 
 // 判断当前阶段是否完成
 function isCurrentStageFinished(): boolean {
@@ -169,7 +182,18 @@ function stageBadgeClass(stage?: string): string {
 const reasoningOpen = ref<Record<string, boolean>>({})
 
 function toggleReasoning(msgId: string): void {
-  reasoningOpen.value[msgId] = !reasoningOpen.value[msgId]
+  reasoningOpen.value[msgId] = !isReasoningOpen(msgId)
+}
+
+/** Auto-expand while thinking (isStreaming=true, has reasoning content, no duration yet).
+ *  After thinking done (duration > 0), user controls via toggle. */
+function isReasoningOpen(msgId: string): boolean {
+  const msg = store.messages.find(m => m.id === msgId)
+  if (!msg) return false
+  // Still thinking: auto-expand
+  if (msg.isStreaming && msg.reasoningContent && !msg.reasoningDurationMs) return true
+  // Thinking done: use user toggle state
+  return reasoningOpen.value[msgId] ?? false
 }
 
 function formatDuration(ms?: number): string {
@@ -225,15 +249,15 @@ function formatDuration(ms?: number): string {
               class="flex items-center gap-1 text-[10px] text-gray-500 hover:text-gray-700 transition-colors"
               @click="toggleReasoning(msg.id)"
             >
-              <span>{{ reasoningOpen[msg.id] ? '▾' : '▸' }}</span>
+              <span>{{ isReasoningOpen(msg.id) ? '▾' : '▸' }}</span>
               <span>思考过程</span>
               <span v-if="msg.reasoningDurationMs" class="text-gray-400">
                 ({{ formatDuration(msg.reasoningDurationMs) }})
               </span>
             </button>
             <div
-              v-if="reasoningOpen[msg.id]"
-              class="mt-1 p-2 bg-gray-50 border border-gray-200 rounded text-xs text-gray-500 whitespace-pre-wrap max-h-[200px] overflow-y-auto"
+              v-if="isReasoningOpen(msg.id)"
+              class="reasoning-content mt-1 p-2 bg-gray-50 border border-gray-200 rounded text-xs text-gray-500 whitespace-pre-wrap max-h-[200px] overflow-y-auto"
             >
               {{ msg.reasoningContent }}
             </div>

@@ -55,9 +55,7 @@ const currentStageTitle = computed(() => {
 })
 
 function handleNodeClick(node: (typeof stepNodes.value)[number]): void {
-  if (node.key === 'analysis' || node.key === 'design') {
-    store.setStage(node.key)
-  }
+  store.setStage(node.key)
 }
 
 onMounted(() => {

@@ -24,14 +24,15 @@ async def _llm_generate(
     system_prompt: str,
     user_content: str,
     model: str = "glm-5.2",
-    enable_thinking: bool = False,
+    enable_thinking: bool = True,
+    on_reasoning: Any | None = None,
+    on_token: Any | None = None,
 ) -> str:
     """Call LLM and collect full response as string.
 
-    By default disables thinking mode — the analysis/design/review prompts
-    already instruct the model to produce structured output, and enabling
-    thinking can cause the model to emit all content as reasoning_content
-    with an empty content field.
+    With enable_thinking=True, the model will think before responding.
+    on_reasoning(text) is called for each reasoning chunk.
+    on_token(text) is called for each content token (for real-time streaming).
     """
     if _provider is None:
         raise RuntimeError("LLM provider not set. Call set_provider() first.")
@@ -44,10 +45,11 @@ async def _llm_generate(
     async for event in _provider.stream_generate(model, messages, config):
         if isinstance(event, TokenEvent):
             full_text += event.text
+            if on_token:
+                on_token(event.text)
         elif isinstance(event, ReasoningEvent):
-            # GLM may emit content as reasoning even with thinking disabled;
-            # collect it as fallback to avoid empty responses
-            full_text += event.text
+            if on_reasoning:
+                on_reasoning(event.text)
     logger.debug(
         "_llm_generate_result",
         text_len=len(full_text),
@@ -113,6 +115,14 @@ ANALYSIS_PRD_PROMPT = """你是一个资深产品需求分析师。根据用户�
 async def analysis_node(state: GenerationState) -> GenerationState:
     """需求分析节点：直接根据用户需求生成 PRD 文档."""
     logger.info("analysis_node_start")
+
+    # Short-circuit: PRD already generated (via /api/v1/prd/stream)
+    if state.get("analysis_result"):
+        logger.info("analysis_node_skip — analysis_result already present")
+        return {
+            **state,
+            "stage_phase": "complete",
+        }
 
     requirement = state.get("requirement", "")
     messages = state.get("messages", [])
@@ -232,7 +242,7 @@ CODE_ORCHESTRATOR_PROMPT = """你是一个资深 Vue 3 全栈工程师，使用�
 ## 规则
 - 每次只做一件事，保持响应简短
 - 组件名使用 PascalCase，文件名使用 kebab-case
-- 使用 {component_lib} 组件库
+- 使用 Vue 3 Composition API
 - 代码输出 Composition API (`<script setup lang="ts">`)
 - 确保每个 .vue 文件有完整的 `<template>`、`<script setup>`、`<style scoped>`
 - 工具调用的 arguments 必须是合法 JSON 字符串
@@ -260,9 +270,7 @@ async def code_node(state: GenerationState) -> GenerationState:
     failure = state.get("failure_details")
 
     tools_schema = registry.get_schema()
-    system_prompt = CODE_ORCHESTRATOR_PROMPT.format(
-        component_lib=state.get("component_lib", "tailwind"),
-    )
+    system_prompt = CODE_ORCHESTRATOR_PROMPT
 
     if failure:
         user_msg = (
