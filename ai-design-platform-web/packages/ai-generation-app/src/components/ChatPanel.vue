@@ -5,11 +5,11 @@ import { useGenerationStore } from '@/stores/generation'
 import { useMultiAgent } from '@/composables/useMultiAgent'
 import { useStreamChat } from '@/composables/useStreamChat'
 import ChatInput from './ChatInput.vue'
-import type { ComponentLibrary } from '@/types/generation'
 
 const store = useGenerationStore()
 const {
   startGeneration,
+  startGraphGeneration,
   confirmStage,
   cancel: cancelAgent,
   isTransitioning,
@@ -35,20 +35,36 @@ const ANALYSIS_SYSTEM_PROMPT = `你是一个资深产品需求分析师。你的
 - <选项B>
 - <选项C>
 
-当信息足够（3+ 轮 Q&A），用户需求明确时，才输出结构化的需求规格文档。`
+当你认为信息已经足够（通常 3+ 轮 Q&A），输出：
+**准备就绪！** 请点击下方的「🚀 开始设计」按钮，我将为你生成完整的需求规格文档。
+
+注意：你绝对不能自己输出需求规格文档，PRD 将由后续流程生成。`
 
 const messagesContainer = ref<HTMLElement | null>(null)
 
-// 自动滚到底部
-watch(
-  () => store.lastAssistantMessage?.content,
-  async () => {
-    await nextTick()
+// Auto-scroll to bottom on any message change during streaming
+function scrollChatToBottom(): void {
+  nextTick(() => {
     if (messagesContainer.value) {
       messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
     }
-  },
-)
+  })
+}
+
+// Scroll reasoning content div to bottom
+function scrollReasoningToBottom(): void {
+  nextTick(() => {
+    const el = messagesContainer.value?.querySelector('.reasoning-content:last-child')
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
+watch(() => store.messages.length, scrollChatToBottom)
+watch(() => store.lastAssistantMessage?.content, scrollChatToBottom)
+watch(() => store.lastAssistantMessage?.reasoningContent, () => {
+  scrollChatToBottom()
+  scrollReasoningToBottom()
+})
 
 // 判断当前阶段是否完成
 function isCurrentStageFinished(): boolean {
@@ -58,18 +74,11 @@ function isCurrentStageFinished(): boolean {
   return last.content.length > 0 || (last.reasoningContent?.length ?? 0) > 0
 }
 
-// 是否可以确认当前阶段（需求分析/设计阶段完成且不在流式中）
-const canConfirm = computed(() => {
-  const stage = store.stage
-  if (stage !== 'analysis' && stage !== 'design') return false
-  return isCurrentStageFinished()
-})
-
-// 按钮文案
-const confirmLabel = computed(() => {
-  if (store.stage === 'analysis') return '确认需求 → 进入详细设计'
-  if (store.stage === 'design') return '确认方案 → 进入代码实现'
-  return '确认'
+// 反问完成后显示"开始设计"按钮
+const canStartDesign = computed(() => {
+  if (store.stage !== 'analysis') return false
+  if (store.stagePhase !== 'qa' && store.stagePhase !== 'idle') return false
+  return isCurrentStageFinished() && store.messages.length >= 2
 })
 
 async function continueAnalysis(userContent: string): Promise<void> {
@@ -81,10 +90,10 @@ async function continueAnalysis(userContent: string): Promise<void> {
   })
 }
 
-function handleSend(content: string, lib: ComponentLibrary): void {
+function handleSend(content: string): void {
   if (store.stage === 'idle' || store.stage === 'analysis') {
     if (store.stage === 'idle') {
-      startGeneration(content, lib, ANALYSIS_SYSTEM_PROMPT)
+      startGeneration(content, store.currentLib, ANALYSIS_SYSTEM_PROMPT)
     } else {
       continueAnalysis(content)
     }
@@ -143,12 +152,11 @@ function handleOptionClick(option: string): void {
   continueAnalysis(option)
 }
 
-function handleConfirm(): void {
-  if (store.stage === 'analysis') {
-    confirmStage('analysis')
-  } else if (store.stage === 'design') {
-    confirmStage('design')
-  }
+async function handleStartDesign(): Promise<void> {
+  // Collect the user's original requirement from first message
+  const firstUserMsg = store.messages.find(m => m.role === 'user')
+  const requirement = firstUserMsg?.content || ''
+  await startGraphGeneration(requirement, store.currentLib)
 }
 
 // 阶段标签
@@ -156,7 +164,7 @@ function stageLabel(stage?: string): string {
   const map: Record<string, string> = {
     analysis: '需求分析',
     design: '详细设计',
-    code: '代码实现',
+    code: '功能开发',
   }
   return stage ? map[stage] || '' : ''
 }
@@ -174,7 +182,18 @@ function stageBadgeClass(stage?: string): string {
 const reasoningOpen = ref<Record<string, boolean>>({})
 
 function toggleReasoning(msgId: string): void {
-  reasoningOpen.value[msgId] = !reasoningOpen.value[msgId]
+  reasoningOpen.value[msgId] = !isReasoningOpen(msgId)
+}
+
+/** Auto-expand while thinking (isStreaming=true, has reasoning content, no duration yet).
+ *  After thinking done (duration > 0), user controls via toggle. */
+function isReasoningOpen(msgId: string): boolean {
+  const msg = store.messages.find(m => m.id === msgId)
+  if (!msg) return false
+  // Still thinking: auto-expand
+  if (msg.isStreaming && msg.reasoningContent && !msg.reasoningDurationMs) return true
+  // Thinking done: use user toggle state
+  return reasoningOpen.value[msgId] ?? false
 }
 
 function formatDuration(ms?: number): string {
@@ -186,14 +205,10 @@ function formatDuration(ms?: number): string {
 
 <template>
   <div class="chat-panel flex flex-col h-full bg-white">
-    <div class="px-4 py-3 border-b border-gray-200 bg-gray-50">
-      <h2 class="text-sm font-semibold text-gray-700">AI 代码生成</h2>
-    </div>
-
     <div ref="messagesContainer" class="flex-1 overflow-y-auto px-4 py-3 space-y-4">
       <div v-if="store.messages.length === 0" class="text-center text-gray-400 mt-8">
-        <p class="text-lg mb-2">👋 描述你想要生成的组件</p>
-        <p class="text-xs">例如："用表格展示用户列表，包含姓名、邮箱、状态列"</p>
+        <p class="text-lg mb-2">👋 描述你的需求</p>
+        <p class="text-xs">例如："生成XX系统;实现XX功能需求"</p>
       </div>
 
       <div
@@ -234,15 +249,15 @@ function formatDuration(ms?: number): string {
               class="flex items-center gap-1 text-[10px] text-gray-500 hover:text-gray-700 transition-colors"
               @click="toggleReasoning(msg.id)"
             >
-              <span>{{ reasoningOpen[msg.id] ? '▾' : '▸' }}</span>
+              <span>{{ isReasoningOpen(msg.id) ? '▾' : '▸' }}</span>
               <span>思考过程</span>
               <span v-if="msg.reasoningDurationMs" class="text-gray-400">
                 ({{ formatDuration(msg.reasoningDurationMs) }})
               </span>
             </button>
             <div
-              v-if="reasoningOpen[msg.id]"
-              class="mt-1 p-2 bg-gray-50 border border-gray-200 rounded text-xs text-gray-500 whitespace-pre-wrap max-h-[200px] overflow-y-auto"
+              v-if="isReasoningOpen(msg.id)"
+              class="reasoning-content mt-1 p-2 bg-gray-50 border border-gray-200 rounded text-xs text-gray-500 whitespace-pre-wrap max-h-[200px] overflow-y-auto"
             >
               {{ msg.reasoningContent }}
             </div>
@@ -302,28 +317,26 @@ function formatDuration(ms?: number): string {
         </div>
       </div>
 
-      <!-- 确认推进按钮 -->
-      <div v-if="canConfirm" class="flex justify-center">
+      <!-- 开始设计按钮（反问完成时显示） -->
+      <div v-if="canStartDesign" class="flex justify-center pb-2">
         <button
-          class="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition-colors"
           :disabled="isTransitioning"
-          @click="handleConfirm"
+          @click="handleStartDesign"
         >
           <span v-if="isTransitioning" class="inline-flex items-center gap-1">
-            <span class="animate-spin">⏳</span> 推进中...
+            <span class="animate-spin">⏳</span> 启动中...
           </span>
-          <span v-else>{{ confirmLabel }}</span>
+          <span v-else>🚀 开始设计</span>
         </button>
       </div>
     </div>
 
     <ChatInput
       :is-streaming="store.isStreaming"
-      :current-lib="store.currentLib"
       :current-stage="store.stage"
       @send="handleSend"
       @cancel="cancelAgent"
-      @update:current-lib="store.setCurrentLib($event)"
     />
   </div>
 </template>

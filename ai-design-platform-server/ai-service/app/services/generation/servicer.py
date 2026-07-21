@@ -65,30 +65,72 @@ class GenerationServicer(GenerationServiceServicer):
         request: GenerateRequest,
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[GenerateResponse]:
-        """Stream LangGraph pipeline events."""
+        """Stream LangGraph pipeline events. Auto-detects resume vs fresh start."""
         self._active_generations[generation_id] = "running"
         model = request.model or "glm-5.2"
+        mode = request.metadata.get("mode", "graph")
 
         # Set up LLM provider for the graph nodes
         provider = resolve_provider(model)
         set_provider(provider)
 
-        # Build initial state
-        user_messages = [
-            {"role": m.role, "content": m.content}
-            for m in request.messages
-        ]
-        user_content = next(
-            (m["content"] for m in user_messages if m["role"] == "user"), ""
-        )
+        # Check if this is a resume (existing runner has state)
+        existing_runner = self._active_runners.get(generation_id)
+
+        if mode == "resume" and existing_runner:
+            # Resume from checkpoint
+            runner = existing_runner
+            try:
+                async for event in runner.resume(generation_id):
+                    if context.cancelled() or self._active_generations.get(generation_id) == "cancelling":
+                        break
+                    yield self._event_to_response(event)
+
+                yield GenerateResponse(
+                    complete=GenerationComplete(finish_reason="stop", usage=None)
+                )
+            except Exception as e:
+                logger.exception("Graph resume failed: generation_id=%s", generation_id)
+                yield GenerateResponse(
+                    error=GenerationError(code="INTERNAL", message=str(e))
+                )
+            return
+
+        # Check if we should skip analysis (PRD already generated via /api/v1/prd/stream)
+        skip_analysis = request.metadata.get("skip_analysis") == "true"
+
+        # Fresh start — build initial state
+        user_messages = []
+        user_content = ""
+        for m in request.messages:
+            try:
+                role, content = m.role, m.content
+            except AttributeError:
+                role = m.get("role", "")
+                content = m.get("content", "")
+            user_messages.append({"role": str(role), "content": str(content)})
+            if str(role) == "user" and not user_content:
+                user_content = str(content)
+
+        # If skip_analysis, pre-fill completed stages
+        pre_filled_analysis = user_content if skip_analysis else None
+        # Second message (assistant role) = pre-filled design_result
+        pre_filled_design = None
+        pre_filled_code = None
+        if skip_analysis:
+            if len(user_messages) >= 2 and user_messages[1].get("role") == "assistant":
+                pre_filled_design = user_messages[1].get("content")
+            if len(user_messages) >= 3 and user_messages[2].get("role") == "assistant":
+                pre_filled_code = user_messages[2].get("content")
 
         state: GenerationState = {
             "requirement": user_content,
             "component_lib": request.metadata.get("component_lib", "tailwind"),
             "messages": user_messages,
-            "analysis_result": None,
-            "design_result": None,
-            "code_result": None,
+            "requirements_state_json": None,
+            "analysis_result": pre_filled_analysis,
+            "design_result": pre_filled_design,
+            "code_result": pre_filled_code,
             "review_result": None,
             "e2e_results": None,
             "e2e_test_cases": None,
@@ -96,11 +138,22 @@ class GenerationServicer(GenerationServiceServicer):
             "review_severity": None,
             "e2e_passed": False,
             "failure_details": None,
+            "qa_rounds": 0,
             "rollback_records": [],
             "rollback_count": {},
             "max_rollback_per_node": 3,
             "max_rollback_total": 10,
             "needs_manual_review": False,
+            # New fields
+            "stage_phase": "generating",
+            "design_doc": None,
+            "generated_files": {},
+            "compile_errors": None,
+            "review_agent_results": None,
+            "review_report_html": None,
+            "review_issues": None,
+            "e2e_test_cases_md": None,
+            "e2e_user_confirmed": False,
         }
 
         runner = GraphRunner()
@@ -125,8 +178,10 @@ class GenerationServicer(GenerationServiceServicer):
                 error=GenerationError(code="INTERNAL", message=str(e))
             )
         finally:
-            self._active_generations.pop(generation_id, None)
-            self._active_runners.pop(generation_id, None)
+            # Only clean up if graph completed (not interrupted)
+            if context.cancelled():
+                self._active_generations.pop(generation_id, None)
+                self._active_runners.pop(generation_id, None)
 
     async def _stream_chat(
         self,
@@ -145,12 +200,17 @@ class GenerationServicer(GenerationServiceServicer):
             for m in request.messages
         ]
 
+        # Support enable_thinking from both config and metadata
+        enable_thinking = (
+            request.config.enable_thinking
+            or request.metadata.get("enable_thinking") == "true"
+        )
         config = LLMConfig(
             temperature=request.config.temperature if request.config.temperature else 0.7,
             max_tokens=request.config.max_tokens if request.config.max_tokens else 4096,
             top_p=request.config.top_p if request.config.top_p else 1.0,
             stop_sequences=list(request.config.stop_sequences),
-            enable_thinking=request.config.enable_thinking,
+            enable_thinking=enable_thinking,
         )
 
         try:

@@ -44,6 +44,9 @@ class GenerationState(TypedDict):
     component_lib: str
     messages: list[dict]
 
+    # Requirements analysis structured state (JSON-serialized RequirementsState)
+    requirements_state_json: str | None
+
     # Stage outputs
     analysis_result: str | None
     design_result: str | None
@@ -73,3 +76,24 @@ class GenerationState(TypedDict):
     max_rollback_per_node: int
     max_rollback_total: int
     needs_manual_review: bool
+
+    # ====== NEW: Full pipeline workflow fields ======
+
+    # Stage phase tracking ("qa" | "generating" | "reviewing" | "complete")
+    stage_phase: str
+
+    # Design document MD (for streaming, separate from design_result)
+    design_doc: str | None
+
+    # Code generation — multi-file project output
+    generated_files: dict[str, str]            # filename -> code content
+    compile_errors: list[dict] | None          # [{file, line, message}]
+
+    # Multi-agent review output
+    review_agent_results: list[dict] | None    # [{agent_key, name, icon, issues: [...]}]
+    review_report_html: str | None             # Merged HTML report
+    review_issues: list[dict] | None           # Structured issue list [{severity, file, line, title, description, fix}]
+
+    # E2E test cases document
+    e2e_test_cases_md: str | None              # MD document for user review
+    e2e_user_confirmed: bool                   # User confirmed test cases

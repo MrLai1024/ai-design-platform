@@ -1,0 +1,19 @@
+{
+  "name": "crud-page",
+  "description": "生成完整的 CRUD 管理页面（列表 + 搜索 + 分页 + 新建/编辑/删除）",
+  "parameters": {
+    "entity": { "type": "string", "description": "实体名称，如 '客户'、'订单'" },
+    "entityKey": { "type": "string", "description": "实体英文 key，如 'customer'、'order'" },
+    "apiPrefix": { "type": "string", "description": "API 路径前缀，如 '/api/customers'" }
+  },
+  "produces": [
+    {
+      "path": "pages/{{entityKey}}/List.vue",
+      "template": "<script setup lang=\"ts\">\nimport { ref, onMounted } from 'vue'\n\nconst items = ref([])\nconst loading = ref(false)\nconst searchQuery = ref('')\nconst currentPage = ref(1)\nconst pageSize = ref(10)\n\nasync function fetchItems() {\n  loading.value = true\n  try {\n    const res = await fetch('{{apiPrefix}}?page=' + currentPage.value + '&search=' + searchQuery.value)\n    items.value = await res.json()\n  } finally {\n    loading.value = false\n  }\n}\n\nfunction handleSearch() {\n  currentPage.value = 1\n  fetchItems()\n}\n\nfunction handleDelete(id: string) {\n  if (confirm('确认删除？')) {\n    fetch('{{apiPrefix}}/' + id, { method: 'DELETE' }).then(() => fetchItems())\n  }\n}\n\nonMounted(fetchItems)\n</script>\n\n<template>\n  <div class=\"p-4\">\n    <div class=\"flex justify-between mb-4\">\n      <input v-model=\"searchQuery\" class=\"border rounded px-3 py-1.5\" placeholder=\"搜索...\" @keyup.enter=\"handleSearch\" />\n      <button class=\"bg-blue-600 text-white px-4 py-1.5 rounded\" @click=\"$router.push('/{{entityKey}}/new')\">+ 新建{{entity}}</button>\n    </div>\n    <table v-if=\"!loading\" class=\"w-full\">\n      <thead><tr><th>名称</th><th>操作</th></tr></thead>\n      <tbody>\n        <tr v-for=\"item in items\" :key=\"item.id\">\n          <td>{{ item.name }}</td>\n          <td>\n            <button class=\"text-blue-600\" @click=\"$router.push('/{{entityKey}}/' + item.id)\">编辑</button>\n            <button class=\"text-red-600 ml-2\" @click=\"handleDelete(item.id)\">删除</button>\n          </td>\n        </tr>\n      </tbody>\n    </table>\n    <div v-else class=\"text-gray-400\">加载中...</div>\n  </div>\n</template>\n"
+    },
+    {
+      "path": "pages/{{entityKey}}/Form.vue",
+      "template": "<script setup lang=\"ts\">\nimport { ref, onMounted } from 'vue'\nimport { useRoute, useRouter } from 'vue-router'\n\nconst route = useRoute()\nconst router = useRouter()\nconst id = route.params.id\nconst isEdit = id !== 'new'\n\nconst form = ref({ name: '' })\nconst saving = ref(false)\n\nonMounted(async () => {\n  if (isEdit) {\n    const res = await fetch('{{apiPrefix}}/' + id)\n    form.value = await res.json()\n  }\n})\n\nasync function handleSave() {\n  saving.value = true\n  const url = isEdit ? '{{apiPrefix}}/' + id : '{{apiPrefix}}'\n  const method = isEdit ? 'PUT' : 'POST'\n  await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form.value) })\n  router.push('/{{entityKey}}')\n}\n</script>\n\n<template>\n  <div class=\"p-4 max-w-2xl mx-auto\">\n    <h1 class=\"text-xl font-bold mb-4\">{{ isEdit ? '编辑' : '新建' }}{{entity}}</h1>\n    <form @submit.prevent=\"handleSave\">\n      <div class=\"mb-4\">\n        <label class=\"block text-sm mb-1\">名称</label>\n        <input v-model=\"form.name\" class=\"w-full border rounded px-3 py-1.5\" required />\n      </div>\n      <button type=\"submit\" class=\"bg-blue-600 text-white px-4 py-1.5 rounded\" :disabled=\"saving\">\n        {{ saving ? '保存中...' : '保存' }}\n      </button>\n    </form>\n  </div>\n</template>\n"
+    }
+  ]
+}

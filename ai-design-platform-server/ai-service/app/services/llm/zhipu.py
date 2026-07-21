@@ -35,9 +35,15 @@ LIMITS = httpx.Limits(max_connections=50, max_keepalive_connections=10)
 DEFAULT_TIMEOUT = httpx.Timeout(timeout=600.0, connect=30.0)
 
 
-def _to_openai_messages(messages: list[Message]) -> list[dict[str, str]]:
-    """将领域消息转换为 OpenAI 格式。"""
-    return [{"role": m.role, "content": m.content} for m in messages]
+def _to_openai_messages(messages: list[Message | dict]) -> list[dict[str, str]]:
+    """将领域消息转换为 OpenAI 格式。支持 Message 对象和 dict。"""
+    result = []
+    for m in messages:
+        if isinstance(m, dict):
+            result.append({"role": m.get("role", ""), "content": m.get("content", "")})
+        else:
+            result.append({"role": m.role, "content": m.content})
+    return result
 
 
 class ZhipuProvider(LLMProvider):

@@ -1,34 +1,26 @@
 <!-- src/components/ChatInput.vue -->
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import type { ComponentLibrary, Stage } from '@/types/generation'
+import type { Stage } from '@/types/generation'
 
 const emit = defineEmits<{
-  send: [content: string, lib: ComponentLibrary]
+  send: [content: string]
   cancel: []
-  'update:currentLib': [lib: ComponentLibrary]
 }>()
 
 const props = defineProps<{
   isStreaming: boolean
-  currentLib: ComponentLibrary
   currentStage: Stage
 }>()
 
 const inputText = ref('')
-const LIB_OPTIONS: Array<{ key: ComponentLibrary; label: string }> = [
-  { key: 'tailwind', label: 'Tailwind CSS' },
-  { key: 'antd', label: 'Ant Design Vue' },
-  { key: 'element', label: 'Element Plus' },
-  { key: 'echarts', label: 'ECharts' },
-]
 
 const placeholder = computed(() => {
   switch (props.currentStage) {
     case 'analysis': return '回答需求分析师的问题，或补充需求细节...'
     case 'design': return '对设计方案有修改意见？在这里补充...'
     case 'code': return '对生成的代码有调整要求？在这里说明...'
-    default: return '描述你想要生成的组件...'
+    default: return '描述你的需求...'
   }
 })
 
@@ -44,7 +36,7 @@ const sendLabel = computed(() => {
 function handleSend(): void {
   const text = inputText.value.trim()
   if (!text || props.isStreaming) return
-  emit('send', text, props.currentLib)
+  emit('send', text)
   inputText.value = ''
 }
 
@@ -58,30 +50,6 @@ function handleKeydown(e: KeyboardEvent): void {
 
 <template>
   <div class="chat-input border-t border-gray-200 p-4 bg-white">
-    <div class="flex items-center gap-2 mb-2">
-      <select
-        :value="currentLib"
-        :disabled="currentStage !== 'idle'"
-        @change="$emit('update:currentLib', ($event.target as HTMLSelectElement).value as ComponentLibrary)"
-        class="text-xs border border-gray-300 rounded px-2 py-1 bg-white text-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
-        :title="currentStage !== 'idle' ? '组件库仅在初始阶段可选' : ''"
-      >
-        <option v-for="opt in LIB_OPTIONS" :key="opt.key" :value="opt.key">
-          {{ opt.label }}
-        </option>
-      </select>
-      <span
-        v-if="currentStage !== 'idle'"
-        class="text-[10px] px-1.5 py-0.5 rounded-full font-medium"
-        :class="{
-          'bg-purple-100 text-purple-700': currentStage === 'analysis',
-          'bg-orange-100 text-orange-700': currentStage === 'design',
-          'bg-green-100 text-green-700': currentStage === 'code',
-        }"
-      >
-        {{ currentStage === 'analysis' ? '需求分析中' : currentStage === 'design' ? '详细设计中' : '代码实现中' }}
-      </span>
-    </div>
     <div class="flex gap-2">
       <textarea
         v-model="inputText"
