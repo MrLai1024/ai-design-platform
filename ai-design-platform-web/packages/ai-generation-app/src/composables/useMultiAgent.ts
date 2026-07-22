@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useGenerationStore } from '../stores/generation'
 import { useStreamChat } from './useStreamChat'
+import { handleCodeSSEEvent } from './useCodeStream'
 import type { Stage, ComponentLibrary, E2ECaseResult } from '../types/generation'
 
 export function useMultiAgent() {
@@ -147,18 +148,23 @@ export function useMultiAgent() {
         break
       case 'code_gen_start':
         store.initFileTree(event.files || [])
+        handleCodeSSEEvent(event)
         break
       case 'file_start':
         store.setCurrentGeneratingFile(event.path)
+        handleCodeSSEEvent(event)
         break
       case 'file_chunk':
         store.appendFileContent(event.path, event.content || '')
+        handleCodeSSEEvent(event)
         break
       case 'file_complete':
         store.finalizeFile(event.path)
+        handleCodeSSEEvent(event)
         break
       case 'tool_call':
         store.addToolTrace({ type: 'call', tool: event.tool, args: event.args, status: 'running' })
+        handleCodeSSEEvent(event)
         break
       case 'tool_result':
         // Match to last running trace of same tool
@@ -171,8 +177,13 @@ export function useMultiAgent() {
             break
           }
         }
+        handleCodeSSEEvent(event)
         break
       case 'code_gen_done':
+      case 'thinking_chunk':
+      case 'compile_status':
+        handleCodeSSEEvent(event)
+        break
         break
       case 'review_agents_start':
         store.initReviewAgents(event.agents || [])

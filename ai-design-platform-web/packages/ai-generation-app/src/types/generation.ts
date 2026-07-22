@@ -162,6 +162,31 @@ export interface ReviewAgentState {
 }
 
 // ── Graph Event Types 扩展 ──
+export interface CompileErrorEntry {
+  file: string
+  line: number
+  message: string
+}
+
+export interface AgentLogEntry {
+  id: string
+  type: 'thinking' | 'tool_call' | 'tool_result' | 'file_start'
+       | 'file_complete' | 'compile' | 'phase_summary'
+  timestamp: number
+  thinkingText?: string
+  thinkingDone?: boolean
+  toolName?: string
+  toolArgs?: Record<string, any>
+  toolStatus?: 'running' | 'done' | 'error'
+  toolDetail?: string
+  filePath?: string
+  fileTotal?: number
+  fileDone?: boolean
+  compileOk?: boolean
+  compileErrors?: CompileErrorEntry[]
+  summary?: string
+}
+
 export type GraphEventTypeExtended =
   | GraphEventType
   | 'doc_chunk'

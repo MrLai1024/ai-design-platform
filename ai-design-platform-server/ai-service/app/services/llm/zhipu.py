@@ -101,6 +101,9 @@ class ZhipuProvider(LLMProvider):
         }
         if cfg.enable_thinking:
             body["thinking"] = {"type": "enabled"}
+        if cfg.tools:
+            body["tools"] = cfg.tools
+            body["tool_choice"] = "auto"
 
         t_start = time.perf_counter()
         token_count = 0

@@ -14,6 +14,7 @@ class LLMConfig:
     top_p: float = 1.0
     stop_sequences: list[str] = field(default_factory=list)
     enable_thinking: bool = False  # 用户主动开启深度思考模式
+    tools: list[dict] | None = None  # OpenAI-compatible tools for function calling
 
 
 @dataclass

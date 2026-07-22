@@ -240,36 +240,28 @@ class GraphRunner:
             })
             return  # Wait for user to click "下一步"
 
-        # ── Phase 3: Code generation ──
-        if not state.get("code_result") and not state.get("generated_files"):
-            from .nodes import code_node
+        # ── Phase 3: Code generation (streaming via event queue) ──
+        if not state.get("generated_files"):
+            import asyncio as _asyncio
+            from .nodes import code_node_streaming
 
             yield self._make_event("stage_start", "code", {"phase": "generating"})
 
-            # Run code_node directly (it generates files via tool calls)
-            updated_state = await code_node(state)
+            event_queue: _asyncio.Queue = _asyncio.Queue()
+            gen_task = _asyncio.create_task(
+                code_node_streaming(state, event_queue)
+            )
 
+            while not gen_task.done() or not event_queue.empty():
+                try:
+                    evt = await _asyncio.wait_for(event_queue.get(), timeout=0.1)
+                    yield evt
+                except _asyncio.TimeoutError:
+                    pass
+
+            updated_state = gen_task.result()
             generated_files = updated_state.get("generated_files", {})
             compile_errors = updated_state.get("compile_errors")
-
-            # Stream generated files to frontend
-            yield self._make_event("code_gen_start", "code", {
-                "files": list(generated_files.keys()),
-            })
-            for path, content in generated_files.items():
-                yield self._make_event("file_start", "code", {"path": path})
-                chunk_size = 200
-                for j in range(0, len(content), chunk_size):
-                    yield self._make_event("file_chunk", "code", {
-                        "path": path,
-                        "content": content[j:j + chunk_size],
-                    })
-                yield self._make_event("file_complete", "code", {"path": path})
-
-            yield self._make_event("code_gen_done", "code", {
-                "total_files": len(generated_files),
-                "compile_errors": len(compile_errors) if compile_errors else 0,
-            })
 
             state["code_result"] = updated_state.get("code_result", "")
             state["generated_files"] = generated_files

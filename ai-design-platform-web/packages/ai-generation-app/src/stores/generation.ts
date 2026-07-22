@@ -1,7 +1,7 @@
 // src/stores/generation.ts
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { ChatMessage, FileEntry, ComponentLibrary, Stage, StageStatus, StageOutputs, CodeViewTab, RightPanelView, StepNode, E2ETestCase, E2ECaseResult, RollbackEvent, StagePhase, ToolTraceEntry, ReviewAgentState, ReviewFinding } from '@/types/generation'
+import type { ChatMessage, FileEntry, ComponentLibrary, Stage, StageStatus, StageOutputs, CodeViewTab, RightPanelView, StepNode, E2ETestCase, E2ECaseResult, RollbackEvent, StagePhase, ToolTraceEntry, ReviewAgentState, ReviewFinding, AgentLogEntry } from '@/types/generation'
 import type { RequirementsState, AnalysisPanelMode, AnalysisMode } from '@/types/requirements'
 
 export const useGenerationStore = defineStore('generation', () => {
@@ -64,6 +64,7 @@ export const useGenerationStore = defineStore('generation', () => {
   const generatedFiles = ref<Record<string, string>>({})
   const currentGeneratingFile = ref<string | null>(null)
   const toolTraces = ref<ToolTraceEntry[]>([])
+  const agentLogEntries = ref<AgentLogEntry[]>([])
 
   // ── Review 阶段 ──
   const reviewAgents = ref<ReviewAgentState[]>([])
@@ -422,6 +423,14 @@ export const useGenerationStore = defineStore('generation', () => {
     // compile status tracked via compileStatus computed
   }
 
+  function addAgentLogEntry(entry: AgentLogEntry): void {
+    agentLogEntries.value.push(entry)
+  }
+  function updateLastAgentLogEntry(patch: Partial<AgentLogEntry>): void {
+    const last = agentLogEntries.value.at(-1)
+    if (last) Object.assign(last, patch)
+  }
+
   // ── Review 阶段 Actions ──
   function initReviewAgents(agents: Array<{ key: string; name: string; icon: string }>): void {
     reviewAgents.value = agents.map(a => ({
@@ -498,6 +507,7 @@ export const useGenerationStore = defineStore('generation', () => {
     generatedFiles.value = {}
     currentGeneratingFile.value = null
     toolTraces.value = []
+    agentLogEntries.value = []
     reviewAgents.value = []
     reviewReportHtml.value = null
     e2eTestCasesMd.value = null
@@ -535,6 +545,7 @@ export const useGenerationStore = defineStore('generation', () => {
     generatedFiles, currentGeneratingFile, toolTraces,
     initFileTree, setCurrentGeneratingFile, appendFileContent, finalizeFile,
     addToolTrace, updateToolTrace, setCodeGenDone,
+    agentLogEntries, addAgentLogEntry, updateLastAgentLogEntry,
     // Review 阶段
     reviewAgents, reviewReportHtml,
     initReviewAgents, appendAgentFinding, setAgentDone, setAgentRunning,
