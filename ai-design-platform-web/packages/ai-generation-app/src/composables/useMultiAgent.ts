@@ -3,7 +3,7 @@ import { ref } from 'vue'
 import { useGenerationStore } from '../stores/generation'
 import { useStreamChat } from './useStreamChat'
 import { handleCodeSSEEvent } from './useCodeStream'
-import type { Stage, ComponentLibrary, E2ECaseResult } from '../types/generation'
+import type { Stage, E2ECaseResult } from '../types/generation'
 
 export function useMultiAgent() {
   const store = useGenerationStore()
@@ -12,9 +12,8 @@ export function useMultiAgent() {
   const isTransitioning = ref(false)
   const streamError = ref<string | null>(null)
 
-  async function startGeneration(content: string, lib: ComponentLibrary, systemPrompt?: string) {
+  async function startGeneration(content: string, systemPrompt?: string) {
     store.resetAll()
-    store.setCurrentLib(lib)
     store.setStage('analysis')
     store.setStageStatus('analysis', 'active')
     store.setRightPanelView('stage-output')
@@ -23,7 +22,6 @@ export function useMultiAgent() {
     try {
       await send({
         content,
-        lib,
         stage: 'analysis',
         systemPrompt,
       })
@@ -35,11 +33,10 @@ export function useMultiAgent() {
   }
 
   /** 启动 graph 流水线 — /api/v1/generation/stream (PRD 在 graph 内流式生成) */
-  async function startGraphGeneration(content: string, lib: ComponentLibrary) {
+  async function startGraphGeneration(content: string) {
     store.setStage('analysis')
     store.setStageStatus('analysis', 'active')
     store.setStagePhase('generating')
-    store.setCurrentLib(lib)
     store.docIsStreaming = true
     store.docStreamingContent = ''
     store.isStreaming = true
@@ -56,7 +53,6 @@ export function useMultiAgent() {
         body: JSON.stringify({
           messages: chatMessages,
           model: 'glm-5.2',
-          component_lib: lib,
         }),
       })
 
@@ -266,7 +262,7 @@ export function useMultiAgent() {
     const needsFreshStart = stage === 'analysis' || stage === 'design' || stage === 'code'
     const body: Record<string, any> = {
       model: 'glm-5.2',
-      component_lib: store.currentLib,
+
       mode: 'graph',
     }
 

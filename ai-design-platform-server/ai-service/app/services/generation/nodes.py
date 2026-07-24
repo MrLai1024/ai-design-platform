@@ -378,16 +378,27 @@ async def code_node_streaming(
 ) -> GenerationState:
     """代码生成节点 — streaming 版本，每步工具调用通过 queue 实时发射事件."""
 
-    import tempfile, os as _os, json as _json
+    import tempfile, os as _os, json as _json, re
 
-    project_root = _os.path.join(
-        tempfile.gettempdir(),
-        "ai-gen",
-        state.get("requirement", "project")[:20].replace(" ", "_"),
-    )
+    _raw_name = state.get("requirement", "project")[:30]
+    _safe_name = re.sub(r'[^\w]', '_', _raw_name)[:30].strip('_') or "ai-gen-project"
+    project_root = _os.path.join(tempfile.gettempdir(), "ai-gen", _safe_name)
 
     from .tools.registry import ToolRegistry
-    registry = ToolRegistry(project_root)
+
+    try:
+        registry = ToolRegistry(project_root)
+    except Exception as e:
+        logger.error("tool_registry_init_failed", error=str(e))
+        queue.put_nowait(_make_queue_event("code_gen_done", "code", {
+            "total_files": 0, "compile_errors": 1,
+        }))
+        state["generated_files"] = {}
+        state["compile_errors"] = [{"file": "", "line": 0, "message": str(e)}]
+        state["code_result"] = "{}"
+        state["stage_phase"] = "complete"
+        return state
+
     tools_schema = registry.get_schema()
 
     design_doc = state.get("design_doc") or state.get("design_result", "")
@@ -475,11 +486,15 @@ async def code_node_streaming(
 
                 elif tool_name == "use_skill" and result.ok:
                     for f in result.data.get("files", []):
-                        # Write skill template to disk only (no frontend events)
-                        # Frontend events are only emitted for explicit write_code calls
-                        _os.makedirs(_os.path.dirname(_os.path.join(project_root, f["path"])), exist_ok=True)
-                        with open(_os.path.join(project_root, f["path"]), "w", encoding="utf-8") as wf:
-                            wf.write(f["content"])
+                        path = f["path"]
+                        content = f["content"]
+                        # Write to disk
+                        _os.makedirs(_os.path.dirname(_os.path.join(project_root, path)), exist_ok=True)
+                        with open(_os.path.join(project_root, path), "w", encoding="utf-8") as wf:
+                            wf.write(content)
+                        # Track file (don't emit frontend events — write_code handles that)
+                        if path not in generated_files:
+                            generated_files[path] = content
 
                 elif tool_name == "compile_project":
                     errors = result.data.get("errors", []) if not result.ok else []

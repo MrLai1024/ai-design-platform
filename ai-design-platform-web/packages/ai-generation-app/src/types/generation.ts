@@ -1,7 +1,5 @@
 // src/types/generation.ts
 
-/** 组件库标识 */
-export type ComponentLibrary = 'tailwind' | 'antd' | 'element' | 'echarts'
 
 /** 消息中的代码块 */
 export interface ParsedCodeBlock {

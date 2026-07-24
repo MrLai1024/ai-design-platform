@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { useGenerationStore } from '@/stores/generation'
 import { useComponentDocs } from './useComponentDocs'
-import type { ChatMessage, ComponentLibrary, Stage } from '@/types/generation'
+import type { ChatMessage, Stage } from '@/types/generation'
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 9)
@@ -11,8 +11,6 @@ function generateId(): string {
 export interface StreamSendOptions {
   /** 用户输入的文本内容（需求分析阶段使用） */
   content?: string
-  /** 组件库 */
-  lib?: ComponentLibrary
   /** 外部传入的完整 messages 数组（详细设计/代码实现阶段使用），优先级高于 content */
   messages?: Array<{ role: string; content: string }>
   /** 自定义系统提示词（需求分析等阶段使用），仅在未传 messages 时生效 */
@@ -28,9 +26,8 @@ export function useStreamChat() {
   let abortController: AbortController | null = null
 
   async function send(opts: StreamSendOptions): Promise<void> {
-    const { content, lib, messages: externalMessages, systemPrompt: customSystemPrompt, stage: msgStage } = opts
+    const { content, messages: externalMessages, systemPrompt: customSystemPrompt, stage: msgStage } = opts
     error.value = null
-    if (lib) store.setCurrentLib(lib)
 
     // 1. 添加用户消息（仅当有 content 时）
     if (content) {

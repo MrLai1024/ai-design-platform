@@ -57,8 +57,7 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 	}
 
 	metadata := map[string]string{
-		"mode":          mode,
-		"component_lib": req.ComponentLib,
+		"mode": mode,
 	}
 	if req.SkipAnalysis {
 		metadata["skip_analysis"] = "true"

@@ -125,7 +125,7 @@ class GenerationServicer(GenerationServiceServicer):
 
         state: GenerationState = {
             "requirement": user_content,
-            "component_lib": request.metadata.get("component_lib", "tailwind"),
+            "component_lib": "",
             "messages": user_messages,
             "requirements_state_json": None,
             "analysis_result": pre_filled_analysis,

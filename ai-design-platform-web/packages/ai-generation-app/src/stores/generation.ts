@@ -1,7 +1,7 @@
 // src/stores/generation.ts
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { ChatMessage, FileEntry, ComponentLibrary, Stage, StageStatus, StageOutputs, CodeViewTab, RightPanelView, StepNode, E2ETestCase, E2ECaseResult, RollbackEvent, StagePhase, ToolTraceEntry, ReviewAgentState, ReviewFinding, AgentLogEntry } from '@/types/generation'
+import type { ChatMessage, FileEntry, Stage, StageStatus, StageOutputs, CodeViewTab, RightPanelView, StepNode, E2ETestCase, E2ECaseResult, RollbackEvent, StagePhase, ToolTraceEntry, ReviewAgentState, ReviewFinding, AgentLogEntry } from '@/types/generation'
 import type { RequirementsState, AnalysisPanelMode, AnalysisMode } from '@/types/requirements'
 
 export const useGenerationStore = defineStore('generation', () => {
@@ -12,7 +12,7 @@ export const useGenerationStore = defineStore('generation', () => {
   const isStreaming = ref(false)
   const compiledOutput = ref<string>('')
   const compileError = ref<string | null>(null)
-  const currentLib = ref<ComponentLibrary>('tailwind')
+
 
   // ── 多智能体阶段状态 ──
   const stage = ref<Stage>('idle')
@@ -246,9 +246,6 @@ export const useGenerationStore = defineStore('generation', () => {
     compileError.value = error
   }
 
-  function setCurrentLib(lib: ComponentLibrary): void {
-    currentLib.value = lib
-  }
 
   function setStage(s: Stage): void {
     stage.value = s
@@ -517,7 +514,7 @@ export const useGenerationStore = defineStore('generation', () => {
 
   return {
     // state
-    messages, files, activeFile, isStreaming, compiledOutput, compileError, currentLib,
+    messages, files, activeFile, isStreaming, compiledOutput, compileError,
     stage, stageStatus, stageOutputs, codeViewTab, rightPanelView,
     e2eTestCases, e2eResults, e2eRunning, rollbackEvents, needsManualReview, loopBreakReason, currentGenerationId,
     // 需求分析
@@ -528,7 +525,7 @@ export const useGenerationStore = defineStore('generation', () => {
     // actions
     addMessage, appendToLastMessage, appendReasoning, finishReasoning, finalizeLastMessage,
     setFile, updateFileContent, setActiveFile, removeFile, addNewFile,
-    markFileClean, setCompiledOutput, setCompileError, setCurrentLib,
+    markFileClean, setCompiledOutput, setCompileError,
     setStage, setStageStatus, setStageOutput, setCodeViewTab, setRightPanelView,
     enterCodeStage, completeCurrentStage,
     setE2ETestCases, addE2EResult, clearE2EResults, addRollbackEvent, setNeedsManualReview, setLoopBreakReason, setGenerationId,
