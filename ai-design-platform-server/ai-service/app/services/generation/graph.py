@@ -24,6 +24,9 @@ from .nodes import (
     code_node,
     review_node,
     e2e_node,
+    planner_node,
+    executor_task,
+    planner_reflect_node,
 )
 from .harness import LoopControl
 
@@ -105,6 +108,7 @@ class GraphRunner:
     def __init__(self):
         self.app = build_graph()
         self.loop_control = LoopControl()
+        self._state: GenerationState | None = None
 
     async def run(
         self,
@@ -115,12 +119,14 @@ class GraphRunner:
         Run the graph, yielding GraphEvent dicts for each state transition.
         PRD is streamed token-by-token before LangGraph takes over.
         """
+        self._state = state
         config = {"configurable": {"thread_id": generation_id}}
         max_iterations = 50
         iteration = 0
 
         # ── Phase 1: Stream PRD with reasoning in real-time ──
         if not state.get("analysis_result"):
+            logger.info("graph_run_phase1_start gen=%s", generation_id)
             import asyncio as _asyncio
             from .nodes import ANALYSIS_PRD_PROMPT, _llm_generate
 
@@ -185,6 +191,9 @@ class GraphRunner:
             })
             return  # Wait for user to click "下一步"
 
+        else:
+            logger.info("graph_run_phase1_skip gen=%s reason=analysis_result_already_set", generation_id)
+
         # ── Phase 2: Stream design doc (same streaming pattern as PRD) ──
         if not state.get("design_result"):
             import asyncio as _asyncio
@@ -240,17 +249,24 @@ class GraphRunner:
             })
             return  # Wait for user to click "下一步"
 
-        # ── Phase 3: Code generation (streaming via event queue) ──
+        # ── Phase 3: Planner + Executor ReAct (streaming) ──
         if not state.get("generated_files"):
             import asyncio as _asyncio
-            from .nodes import code_node_streaming
+            from .tools.registry import ToolRegistry
+            import tempfile, os as _os, json as _json, re
 
-            yield self._make_event("stage_start", "code", {"phase": "generating"})
+            _raw_name = state.get("requirement", "project")[:30]
+            _safe_name = re.sub(r'[^\w]', '_', _raw_name)[:30].strip('_') or "ai-gen-project"
+            project_root = _os.path.join(tempfile.gettempdir(), "ai-gen", _safe_name)
+
+            registry = ToolRegistry(project_root)
+
+            yield self._make_event("stage_start", "code", {"phase": "planning"})
 
             event_queue: _asyncio.Queue = _asyncio.Queue()
-            gen_task = _asyncio.create_task(
-                code_node_streaming(state, event_queue)
-            )
+
+            # ── Step 1: Planner → Task DAG ──
+            gen_task = _asyncio.create_task(planner_node(state, event_queue))
 
             while not gen_task.done() or not event_queue.empty():
                 try:
@@ -259,17 +275,128 @@ class GraphRunner:
                 except _asyncio.TimeoutError:
                     pass
 
-            updated_state = gen_task.result()
-            generated_files = updated_state.get("generated_files", {})
-            compile_errors = updated_state.get("compile_errors")
+            state = gen_task.result()
+            dag = state.get("planner_dag", {})
+            tasks = dag.get("tasks", [])
 
-            state["code_result"] = updated_state.get("code_result", "")
+            if not tasks:
+                yield self._make_event("error", "code", {"reason": "Planner produced no tasks"})
+                return
+
+            generated_files: dict[str, str] = {}
+            all_compile_errors: list[dict] | None = None
+            max_planner_rounds = 3
+
+            for planner_round in range(max_planner_rounds):
+                # ── Step 2: Execute each pending task ──
+                pending = [t for t in tasks if t.get("status") in ("pending", None)]
+
+                for task in pending:
+                    # Check deps satisfied
+                    deps_ok = all(
+                        any(
+                            dt["id"] == dep_id and dt.get("status") == "done"
+                            for dt in tasks
+                        )
+                        for dep_id in task.get("deps", [])
+                    )
+                    if not deps_ok:
+                        continue  # Skip — dependencies not yet done
+
+                    task["status"] = "running"
+
+                    # Build executor context
+                    registry.set_generated_files(generated_files)
+                    state["generated_files"] = generated_files
+
+                    exec_queue: _asyncio.Queue = _asyncio.Queue()
+                    exec_gen_task = _asyncio.create_task(
+                        executor_task(state, task, exec_queue, project_root, registry)
+                    )
+
+                    while not exec_gen_task.done() or not exec_queue.empty():
+                        try:
+                            evt = await _asyncio.wait_for(exec_queue.get(), timeout=0.1)
+                            yield evt
+                        except _asyncio.TimeoutError:
+                            pass
+
+                    result = exec_gen_task.result()
+                    task["status"] = result["status"]
+                    task["executor_summary"] = result["summary"]
+                    task["compile_errors"] = result["compile_errors"]
+
+                    # Merge generated files
+                    for path, content in result.get("generated_files", {}).items():
+                        generated_files[path] = content
+                        # Also write to disk
+                        full_path = _os.path.join(project_root, path)
+                        _os.makedirs(_os.path.dirname(full_path), exist_ok=True)
+                        with open(full_path, "w", encoding="utf-8") as wf:
+                            wf.write(content)
+
+                    if result.get("compile_errors"):
+                        all_compile_errors = result["compile_errors"]
+
+                    # Update state for context management
+                    dag["completed_tasks"] = sum(
+                        1 for t in tasks if t.get("status") in ("done", "failed")
+                    )
+                    state["planner_dag"] = dag
+                    state["generated_files"] = generated_files
+                    state["context_summary"] = state.get("context_summary", {"key_exports": {}, "completed_tasks": []})
+
+                # ── Step 3: Planner REFLECT ──
+                state["generated_files"] = generated_files
+                reflect_queue: _asyncio.Queue = _asyncio.Queue()
+                reflect_task = _asyncio.create_task(planner_reflect_node(state, reflect_queue))
+
+                while not reflect_task.done() or not reflect_queue.empty():
+                    try:
+                        evt = await _asyncio.wait_for(reflect_queue.get(), timeout=0.1)
+                        yield evt
+                    except _asyncio.TimeoutError:
+                        pass
+
+                state = reflect_task.result()
+
+                # Check exit conditions
+                if state.get("stage_phase") == "complete":
+                    break  # All done, all passed
+
+                # If still pending tasks, loop back
+                still_pending = any(
+                    t.get("status") in ("pending", "running", None)
+                    for t in state.get("planner_dag", {}).get("tasks", [])
+                )
+                if not still_pending:
+                    break  # All tasks processed (some may have failed)
+
+            # Final compilation check
+            compile_result = await registry.invoke("compile_project", {})
+            compile_ok = compile_result.ok
+            errors = compile_result.data.get("errors", []) if not compile_ok else []
+            all_compile_errors = errors if not compile_ok else None
+
+            yield self._make_event("compile_status", "code", {
+                "ok": compile_ok,
+                "errors": errors,
+            })
+
             state["generated_files"] = generated_files
-            state["compile_errors"] = compile_errors
+            state["compile_errors"] = all_compile_errors
+            state["code_result"] = _json.dumps(generated_files, ensure_ascii=False)
             state["stage_phase"] = "complete"
 
+            yield self._make_event("code_gen_done", "code", {
+                "total_files": len(generated_files),
+                "compile_errors": len(all_compile_errors) if all_compile_errors else 0,
+                "app_name": _safe_name,
+                "app_port": 8100 + (hash(_safe_name) % 100),
+            })
+
             yield self._make_event("stage_complete", "code", {
-                "summary": f"Generated {len(generated_files)} files",
+                "summary": f"Generated {len(generated_files)} files in {len(tasks)} tasks",
             })
             yield self._make_event("human_confirm_required", "code", {
                 "message": "Please review the code output.",
@@ -343,6 +470,13 @@ class GraphRunner:
 
         Called after user clicks [下一步 ▸] to confirm a stage.
         """
+        # If we haven't reached LangGraph Phase 4 yet (code not generated),
+        # re-run manual phases — run() will skip completed phases.
+        if self._state and not self._state.get("code_result"):
+            async for event in self.run(self._state, generation_id):
+                yield event
+            return
+
         config = {"configurable": {"thread_id": generation_id}}
         max_iterations = 50
         iteration = 0

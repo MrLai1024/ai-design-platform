@@ -31,6 +31,7 @@ class ToolRegistry:
 
     def __init__(self, project_root: str = "/tmp/ai-gen"):
         self.project_root = project_root
+        self._generated_files: dict[str, str] = {}
         self._tools: dict[str, ToolDef] = {}
         self._register_builtins()
 
@@ -141,6 +142,60 @@ class ToolRegistry:
             category="skill",
         ))
 
+        from ..context_manager import summarize_context as _summarize_ctx
+        from ..context_manager import retrieve_context as _retrieve_ctx
+        from ..context_manager import verify_contract as _verify_contract
+
+        self.register(ToolDef(
+            name="summarize_context",
+            description="将已生成的文件压缩为结构化摘要，释放上下文窗口。用于上下文过长时降低 token 消耗。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "max_tokens": {
+                        "type": "integer",
+                        "description": "摘要目标 token 数，默认 8000",
+                        "default": 8000,
+                    },
+                },
+            },
+            handler=lambda **kw: _summarize_ctx(self._generated_files or {}, **kw),
+            category="context",
+        ))
+
+        self.register(ToolDef(
+            name="retrieve_context",
+            description="从已生成文件中检索相关上下文。用于需要了解其他文件接口时按需查询。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "搜索查询，如 'Header props 定义'"},
+                },
+                "required": ["query"],
+            },
+            handler=lambda **kw: _retrieve_ctx(self._generated_files or {}, **kw),
+            category="context",
+        ))
+
+        self.register(ToolDef(
+            name="verify_contract",
+            description="校验两个文件之间的接口契约是否一致。用于验证消费者组件正确使用了提供者组件的导出。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "consumer_file": {"type": "string", "description": "消费方文件路径"},
+                    "provider_file": {"type": "string", "description": "提供方文件路径"},
+                    "expected_interface": {
+                        "type": "object",
+                        "description": "期望的接口定义，如 {props: ['title'], events: ['submit']}",
+                    },
+                },
+                "required": ["consumer_file", "provider_file"],
+            },
+            handler=lambda **kw: _verify_contract(self._generated_files or {}, **kw),
+            category="context",
+        ))
+
     def register(self, tool: ToolDef) -> None:
         self._tools[tool.name] = tool
         logger.info("tool_registered", name=tool.name, category=tool.category)
@@ -168,3 +223,9 @@ class ToolRegistry:
         except Exception as e:
             logger.error("tool_invoke_error", name=name, error=str(e))
             return ToolResult(ok=False, error=str(e))
+
+    def set_generated_files(self, files: dict[str, str]) -> None:
+        """Update the generated files cache for context tools and MCP type-registry."""
+        self._generated_files = files
+        if hasattr(self, '_mcp_bridge'):
+            self._mcp_bridge.set_type_registry(files)

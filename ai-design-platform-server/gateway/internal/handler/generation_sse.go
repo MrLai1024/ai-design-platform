@@ -39,6 +39,8 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 		return
 	}
 
+	slog.Info("StreamGeneration request", "mode", req.Mode, "skip_analysis", req.SkipAnalysis, "generation_id", req.GenerationID, "messages", len(req.Messages))
+
 	mode := req.Mode
 	if mode == "" {
 		mode = "graph"

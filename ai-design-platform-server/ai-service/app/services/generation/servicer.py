@@ -123,6 +123,13 @@ class GenerationServicer(GenerationServiceServicer):
             if len(user_messages) >= 3 and user_messages[2].get("role") == "assistant":
                 pre_filled_code = user_messages[2].get("content")
 
+        logger.info(
+            "stream_graph_state_init gen=%s skip_analysis=%s mode=%s has_analysis=%s analysis_len=%d has_design=%s design_len=%d has_code=%s",
+            generation_id, skip_analysis, mode, bool(pre_filled_analysis),
+            len(pre_filled_analysis or ""), bool(pre_filled_design),
+            len(pre_filled_design or ""), bool(pre_filled_code),
+        )
+
         state: GenerationState = {
             "requirement": user_content,
             "component_lib": "",

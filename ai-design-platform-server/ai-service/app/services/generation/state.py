@@ -1,4 +1,4 @@
-from typing import TypedDict, Literal
+from typing import TypedDict, Literal, NotRequired
 
 
 class E2ETestStep(TypedDict):
@@ -36,6 +36,25 @@ class RollbackRecord(TypedDict):
     reason: str
     previous_output_hash: str
     token_cost: int
+
+
+class PlannerTask(TypedDict):
+    id: str                          # "task-0", "task-1", ...
+    type: Literal["bootstrap", "business"]
+    description: str                 # 人类可读描述
+    deps: list[str]                  # 依赖的 task id 列表
+    files: list[str]                 # 需要生成的文件路径
+    contract: dict                   # { exports: [...], props: {...}, events: [...] }
+    status: Literal["pending", "running", "done", "failed"]
+    executor_summary: NotRequired[str]
+    compile_errors: NotRequired[list[dict]]
+
+
+class TaskDAG(TypedDict):
+    tasks: list[PlannerTask]
+    generated_at: str
+    total_tasks: int
+    completed_tasks: int
 
 
 class GenerationState(TypedDict):
@@ -97,3 +116,8 @@ class GenerationState(TypedDict):
     # E2E test cases document
     e2e_test_cases_md: str | None              # MD document for user review
     e2e_user_confirmed: bool                   # User confirmed test cases
+
+    # ====== Planner + Executor ReAct fields ======
+    planner_dag: TaskDAG | None                    # Planner 输出的任务 DAG
+    planner_reflect_count: int                     # Planner 重规划次数
+    context_summary: dict | None                   # 全局摘要 {key_exports: {...}, completed_tasks: [...]}

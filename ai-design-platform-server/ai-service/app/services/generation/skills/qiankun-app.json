@@ -1,0 +1,32 @@
+{
+  "name": "qiankun-app",
+  "description": "qiankun 微应用生命周期入口模板，生成 main.ts + public-path.ts + webpack 配置",
+  "parameters": {
+    "appName": {
+      "type": "string",
+      "description": "微应用名称，用于 webpack output.library.name 和 qiankun 注册"
+    },
+    "routerMode": {
+      "type": "string",
+      "description": "路由模式: hash | history",
+      "default": "hash"
+    }
+  },
+  "produces": [
+    {
+      "path": "src/main.ts",
+      "template": "import './public-path'\nimport { createApp, type App as VueApp } from 'vue'\nimport { createPinia } from 'pinia'\nimport App from './App.vue'\nimport router from './router'\n\nlet app: VueApp | null = null\n\nfunction render(props: { container?: HTMLElement } = {}) {\n  const container = props.container\n  const instance = createApp(App)\n  instance.use(createPinia())\n  instance.use(router)\n  const mountPoint = container\n    ? container.querySelector('#app') || container\n    : document.getElementById('app') || document.body\n  instance.mount(mountPoint as HTMLElement)\n  app = instance\n}\n\nif (!(window as any).__POWERED_BY_QIANKUN__) {\n  render()\n}\n\nexport async function bootstrap(): Promise<void> {\n  // qiankun lifecycle — no-op\n}\n\nexport async function mount(props: any): Promise<void> {\n  render(props)\n}\n\nexport async function unmount(): Promise<void> {\n  if (app) {\n    app.unmount()\n    app = null\n  }\n}\n"
+    },
+    {
+      "path": "src/public-path.ts",
+      "template": "if ((window as any).__POWERED_BY_QIANKUN__) {\n  // eslint-disable-next-line\n  // @ts-ignore\n  __webpack_public_path__ = (window as any).__INJECTED_PUBLIC_PATH_BY_QIANKUN__\n}\n"
+    },
+    {
+      "path": "webpack/webpack.common.js",
+      "template": "const path = require('path')\nconst { VueLoaderPlugin } = require('vue-loader')\nconst HtmlWebpackPlugin = require('html-webpack-plugin')\n\nmodule.exports = {\n  entry: './src/main.ts',\n  output: {\n    path: path.resolve(__dirname, '../dist'),\n    filename: 'js/[name].[contenthash:8].js',\n    chunkFilename: 'js/[name].[contenthash:8].chunk.js',\n    library: {\n      name: '{{appName}}',\n      type: 'umd',\n    },\n    clean: true,\n  },\n  resolve: {\n    extensions: ['.ts', '.tsx', '.js', '.vue', '.json'],\n    alias: { '@': path.resolve(__dirname, '../src') },\n  },\n  module: {\n    rules: [\n      { test: /\\.vue$/, loader: 'vue-loader' },\n      { test: /\\.tsx?$/, loader: 'ts-loader', exclude: /node_modules/,\n        options: { appendTsSuffixTo: [/\\.vue$/], transpileOnly: true } },\n      { test: /\\.css$/, use: ['style-loader', 'css-loader'] },\n      { test: /\\.(png|jpe?g|gif|svg)$/, type: 'asset/resource' },\n    ],\n  },\n  plugins: [\n    new VueLoaderPlugin(),\n    new HtmlWebpackPlugin({\n      template: './index.html',\n      filename: 'index.html',\n    }),\n  ],\n  devServer: {\n    port: 8100,\n    headers: { 'Access-Control-Allow-Origin': '*' },\n    historyApiFallback: true,\n  },\n}\n"
+    }
+  ],
+  "contract": {
+    "exports": ["bootstrap", "mount", "unmount"]
+  }
+}

@@ -49,4 +49,8 @@ class SkillLoader:
             })
 
         logger.info("skill_applied", name=name, files=len(files))
-        return ToolResult(ok=True, data={"skill": name, "files": files})
+        return ToolResult(ok=True, data={
+            "skill": name,
+            "files": files,
+            "contract": skill.get("contract", {}),
+        })
