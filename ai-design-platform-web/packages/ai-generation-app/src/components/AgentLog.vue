@@ -19,16 +19,42 @@ const collapsedTasks = ref<Set<string>>(new Set())
 
 const hasTaskGroups = computed(() => store.taskGroups.size > 0)
 
+// Compute a scroll trigger that changes on every entry update
+const scrollKey = computed(() => {
+  let key = `${props.entries.length}:`
+  for (const [, group] of store.taskGroups) {
+    key += `${group.taskId}:${group.entries.length}:${group.status}:`
+    const last = group.entries.at(-1)
+    if (last) key += `${last.id}:${last.type}:${last.toolStatus || ''}:`
+  }
+  const lastEntry = props.entries.at(-1)
+  if (lastEntry) key += `:last:${lastEntry.id}:${lastEntry.type}`
+  return key
+})
+
 function scrollToBottom(): void {
   nextTick(() => {
     if (containerRef.value) {
       containerRef.value.scrollTop = containerRef.value.scrollHeight
+      // Also scroll any active thinking box to its bottom
+      const thinkingBoxes = containerRef.value.querySelectorAll('.thinking-box.streaming')
+      thinkingBoxes.forEach((el) => {
+        (el as HTMLElement).scrollTop = (el as HTMLElement).scrollHeight
+      })
     }
   })
 }
 
-watch(() => props.entries.length, scrollToBottom)
-watch(() => store.taskGroups, scrollToBottom, { deep: true })
+// Scroll on every entry change and every 300ms during streaming
+watch(scrollKey, scrollToBottom)
+let scrollInterval: ReturnType<typeof setInterval> | null = null
+watch(() => props.isStreaming, (streaming) => {
+  if (streaming) {
+    scrollInterval = setInterval(scrollToBottom, 300)
+  } else {
+    if (scrollInterval) { clearInterval(scrollInterval); scrollInterval = null }
+  }
+})
 
 function toggleTask(taskId: string): void {
   if (collapsedTasks.value.has(taskId)) {
@@ -120,7 +146,10 @@ function taskTypeLabel(type: string): string {
                   <span>&#128173;</span>
                   <span v-if="!entry.thinkingDone" class="text-blue-400 animate-pulse">...</span>
                 </div>
-                <div class="p-1.5 bg-white rounded border border-gray-100 text-gray-600 whitespace-pre-wrap max-h-[120px] overflow-y-auto text-[10px] leading-relaxed">
+                <div
+                  class="thinking-box p-1.5 bg-white rounded border border-gray-100 text-gray-600 whitespace-pre-wrap max-h-[120px] overflow-y-auto text-[10px] leading-relaxed"
+                  :class="{ streaming: !entry.thinkingDone }"
+                >
                   {{ entry.thinkingText?.slice(-300) }}
                 </div>
               </div>
@@ -179,7 +208,10 @@ function taskTypeLabel(type: string): string {
               <span>&#128173; 思考过程</span>
               <span v-if="!entry.thinkingDone" class="text-blue-400 animate-pulse">...</span>
             </div>
-            <div class="p-2 bg-white rounded border border-gray-200 text-gray-600 whitespace-pre-wrap max-h-[150px] overflow-y-auto text-[11px] leading-relaxed">
+            <div
+              class="thinking-box p-2 bg-white rounded border border-gray-200 text-gray-600 whitespace-pre-wrap max-h-[150px] overflow-y-auto text-[11px] leading-relaxed"
+              :class="{ streaming: !entry.thinkingDone }"
+            >
               {{ entry.thinkingText }}
             </div>
           </div>

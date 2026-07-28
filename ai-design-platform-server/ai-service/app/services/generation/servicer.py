@@ -8,6 +8,8 @@ import grpc
 from ai.v1.generation_pb2 import (
     CancelRequest,
     CancelResponse,
+    CompileFeedbackRequest,
+    CompileFeedbackResponse,
     GenerateRequest,
     GenerateResponse,
     GenerationComplete,
@@ -271,6 +273,29 @@ class GenerationServicer(GenerationServiceServicer):
             self._active_generations[gid] = "cancelling"
             return CancelResponse(success=True)
         return CancelResponse(success=False)
+
+    async def ReportCompileFeedback(
+        self,
+        request: CompileFeedbackRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CompileFeedbackResponse:
+        """Receive real bundler compile results from the frontend preview."""
+        gid = request.generation_id
+        runner = self._active_runners.get(gid)
+        if runner is None:
+            logger.warning("compile_feedback_no_runner gen=%s", gid)
+            return CompileFeedbackResponse(received=False)
+
+        errors = [
+            {"file": e.file, "line": e.line, "column": e.column, "text": e.text}
+            for e in request.errors
+        ]
+        consumed = runner.report_compile_feedback(request.ok, errors)
+        logger.info(
+            "compile_feedback gen=%s ok=%s errors=%d consumed=%s",
+            gid, request.ok, len(errors), consumed,
+        )
+        return CompileFeedbackResponse(received=True)
 
     def get_runner(self, generation_id: str) -> GraphRunner | None:
         """Get active GraphRunner for external operations (E2E result, confirmation)."""

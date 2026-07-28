@@ -777,7 +777,8 @@ async def executor_task(
                             generated_files[fpath] = fcontent
 
                 elif tool_name == "compile_project":
-                    errors = result.data.get("errors", []) if not result.ok else []
+                    data = result.data or {}
+                    errors = data.get("errors", []) if not result.ok else []
                     compile_errors = errors if not result.ok else None
                     queue.put_nowait(_make_queue_event("compile_status", "code", {
                         "ok": result.ok,

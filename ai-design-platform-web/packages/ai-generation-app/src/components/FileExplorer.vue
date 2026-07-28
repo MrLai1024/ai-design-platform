@@ -2,7 +2,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useGenerationStore } from '@/stores/generation'
-import type { FileEntry } from '@/types/generation'
+import FileTreeNode from './FileTreeNode.vue'
 
 const store = useGenerationStore()
 const selectedFile = ref<string | null>(null)
@@ -55,7 +55,28 @@ const fileTree = computed<TreeNode[]>(() => {
 
 const currentFile = computed(() => {
   if (!selectedFile.value) return null
-  return store.files.get(selectedFile.value) ?? null
+  const entry = store.files.get(selectedFile.value)
+  if (entry) {
+    // If there's streaming content for same file, show the latest
+    if (streamingContent.value) {
+      return { ...entry, content: streamingContent.value }
+    }
+    return entry
+  }
+  // File is being streamed — show from generatedFiles or streamingContent
+  const content = streamingContent.value || store.generatedFiles[selectedFile.value] || ''
+  if (content) {
+    return {
+      filename: selectedFile.value,
+      content,
+      language: selectedFile.value.endsWith('.vue') ? 'vue' as const
+        : selectedFile.value.endsWith('.ts') ? 'typescript' as const
+        : 'javascript' as const,
+      isDirty: false,
+      source: 'ai' as const,
+    }
+  }
+  return null
 })
 
 function selectFile(filename: string): void {
@@ -77,22 +98,33 @@ watch(
   (len) => {
     if (len > 0 && !selectedFile.value) {
       selectedFile.value = store.fileList[0]!.filename
+      store.setActiveFile(store.fileList[0]!.filename)
     }
   },
   { immediate: true },
 )
 
-// Auto-focus new file when generating starts
+// Streaming content ref — updated reactively to drive real-time code display
+const streamingContent = ref<string>('')
+
+// Auto-focus new file + track streaming content
 watch(
   () => store.currentGeneratingFile,
   (path) => {
     if (path) {
       selectedFile.value = path
       store.setActiveFile(path)
-      // Expand parent directory
       const dir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : ''
       if (dir) expandedDirs.value.add(dir)
     }
+  },
+)
+
+// Watch generatedFiles for the selected file's streaming content
+watch(
+  () => selectedFile.value ? store.generatedFiles[selectedFile.value] : '',
+  (content) => {
+    streamingContent.value = content || ''
   },
 )
 </script>

@@ -32,6 +32,8 @@ class ToolRegistry:
     def __init__(self, project_root: str = "/tmp/ai-gen"):
         self.project_root = project_root
         self._generated_files: dict[str, str] = {}
+        # 前端 bundler 上报的真实编译错误（esbuild 精确报错）
+        self._frontend_compile_errors: list[dict] = []
         self._tools: dict[str, ToolDef] = {}
         self._register_builtins()
 
@@ -90,9 +92,9 @@ class ToolRegistry:
 
         self.register(ToolDef(
             name="compile_project",
-            description="编译整个前端工程，返回编译错误列表。",
+            description="编译整个前端工程，返回编译错误列表。错误来自前端 esbuild 真实打包结果。",
             parameters={"type": "object", "properties": {}},
-            handler=lambda **kw: compile_project(self.project_root, **kw),
+            handler=lambda **kw: compile_project(self.project_root, frontend_errors=self._frontend_compile_errors, **kw),
             category="compile",
         ))
 
@@ -100,7 +102,7 @@ class ToolRegistry:
             name="get_compile_errors",
             description="获取最近一次编译的错误详情。",
             parameters={"type": "object", "properties": {}},
-            handler=lambda **kw: get_compile_errors(self.project_root, **kw),
+            handler=lambda **kw: get_compile_errors(self.project_root, frontend_errors=self._frontend_compile_errors, **kw),
             category="compile",
         ))
 
@@ -229,3 +231,14 @@ class ToolRegistry:
         self._generated_files = files
         if hasattr(self, '_mcp_bridge'):
             self._mcp_bridge.set_type_registry(files)
+
+    def report_frontend_compile(self, ok: bool, errors: list[dict] | None = None) -> None:
+        """Store real compile feedback reported by the frontend bundler."""
+        if ok:
+            self._frontend_compile_errors = []
+        else:
+            self._frontend_compile_errors = errors or []
+
+    def get_frontend_compile_errors(self) -> list[dict]:
+        """Return the latest frontend-reported compile errors (empty if last build ok)."""
+        return self._frontend_compile_errors

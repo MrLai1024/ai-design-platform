@@ -20,6 +20,14 @@ export function useMultiCompiler() {
     { deep: true },
   )
 
+  // 监听 AI 生成的文件变化（finalizeFile 后 files Map 增长）→ 自动编译
+  watch(
+    () => store.files.size,
+    () => {
+      scheduleCompile()
+    },
+  )
+
   // 监听当前文件手动编辑（用户编辑后触发）
   watch(
     () => store.activeFileEntry?.content,

@@ -50,6 +50,7 @@ module.exports = {
       },
       { test: /\.(png|jpe?g|gif|svg|webp)$/i, type: 'asset/resource' },
       { test: /\.(woff2?|eot|ttf|otf)$/i, type: 'asset/resource' },
+      { test: /\.wasm$/i, type: 'asset/resource' },
     ],
   },
   plugins: [

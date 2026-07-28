@@ -109,6 +109,17 @@ class GraphRunner:
         self.app = build_graph()
         self.loop_control = LoopControl()
         self._state: GenerationState | None = None
+        self._active_registry = None  # ToolRegistry of the running code phase
+
+    def report_compile_feedback(self, ok: bool, errors: list[dict] | None = None) -> bool:
+        """Receive real bundler compile feedback from the frontend.
+
+        Returns True if a code-phase registry is active to consume it.
+        """
+        if self._active_registry is None:
+            return False
+        self._active_registry.report_frontend_compile(ok, errors)
+        return True
 
     async def run(
         self,
@@ -260,6 +271,7 @@ class GraphRunner:
             project_root = _os.path.join(tempfile.gettempdir(), "ai-gen", _safe_name)
 
             registry = ToolRegistry(project_root)
+            self._active_registry = registry
 
             yield self._make_event("stage_start", "code", {"phase": "planning"})
 
