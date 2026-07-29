@@ -39,6 +39,8 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 		return
 	}
 
+	slog.Info("StreamGeneration request", "mode", req.Mode, "skip_analysis", req.SkipAnalysis, "generation_id", req.GenerationID, "messages", len(req.Messages))
+
 	mode := req.Mode
 	if mode == "" {
 		mode = "graph"
@@ -57,8 +59,7 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 	}
 
 	metadata := map[string]string{
-		"mode":          mode,
-		"component_lib": req.ComponentLib,
+		"mode": mode,
 	}
 	if req.SkipAnalysis {
 		metadata["skip_analysis"] = "true"

@@ -46,7 +46,7 @@ func main() {
 	chatH := handler.NewChatHandler(aiClient)
 	convH := handler.NewConversationHandler(aiClient)
 	graphHandler := handler.NewGraphSSEHandler(aiClient)
-	e2eHandler := handler.NewE2EHandler(graphHandler)
+	e2eHandler := handler.NewE2EHandler(graphHandler, aiClient)
 	prdHandler := handler.NewPRDHandler(aiClient)
 
 	// Gin 路由器
@@ -79,6 +79,7 @@ func main() {
 		api.POST("/generation/stream", graphHandler.StreamGeneration)
 		api.POST("/e2e/result", e2eHandler.SubmitE2EResult)
 		api.POST("/generation/confirm", e2eHandler.ConfirmStage)
+		api.POST("/generation/compile_feedback", e2eHandler.SubmitCompileFeedback)
 	}
 
 	// HTTP 服务器

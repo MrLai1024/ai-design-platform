@@ -11,6 +11,10 @@ service GenerationService {
 
   // CancelGeneration stops an in-progress generation.
   rpc CancelGeneration(CancelRequest) returns (CancelResponse);
+
+  // ReportCompileFeedback receives real bundler compile results from the
+  // frontend preview (esbuild-wasm) so the code Executor can fix real errors.
+  rpc ReportCompileFeedback(CompileFeedbackRequest) returns (CompileFeedbackResponse);
 }
 
 message GenerateRequest {
@@ -87,4 +91,23 @@ message CancelRequest {
 
 message CancelResponse {
   bool success = 1;
+}
+
+// ── Compile feedback (frontend bundler → backend Executor) ──
+
+message CompileFeedbackRequest {
+  string generation_id = 1;
+  bool ok = 2;                        // true = latest bundle succeeded (clears pending errors)
+  repeated CompileError errors = 3;   // present when ok = false
+}
+
+message CompileError {
+  string file = 1;
+  int32 line = 2;
+  int32 column = 3;
+  string text = 4;
+}
+
+message CompileFeedbackResponse {
+  bool received = 1;
 }

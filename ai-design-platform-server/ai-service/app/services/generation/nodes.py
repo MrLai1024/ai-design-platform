@@ -5,9 +5,17 @@ from typing import Any
 
 import structlog
 
-from ..llm.provider import LLMConfig, LLMProvider, ReasoningEvent, TokenEvent
+from ..llm.provider import LLMConfig, LLMProvider, ReasoningEvent, TokenEvent, Message, ToolCallEvent, CompleteEvent
 from .state import GenerationState
 from .harness import EvalHarness
+from .planner import (
+    PLANNER_SYSTEM_PROMPT,
+    PLANNER_REFLECT_PROMPT,
+    extract_task_dag,
+    extract_reflect_decision,
+    build_planner_user_prompt,
+)
+from .context_manager import extract_interface_contract
 
 logger = structlog.get_logger()
 
@@ -249,6 +257,33 @@ CODE_ORCHESTRATOR_PROMPT = """你是一个资深 Vue 3 全栈工程师，使用�
 - 如果不需要调用工具，直接输出简短文本回复
 - 工具调用格式: {"tool_calls": [{"id": "call_N", "function": {"name": "...", "arguments": "{\\"key\\": \\"value\\"}"}}]}"""
 
+EXECUTOR_SYSTEM_PROMPT = """你是一个 Vue 3 前端工程师，负责完成一个具体的代码生成任务。
+
+## 任务信息
+你会收到一个具体的 task，包含：
+- 任务描述
+- 需要生成的文件列表
+- 接口契约（exports/props/events 要求）
+- 依赖文件的接口摘要
+
+## 工作流程
+1. 理解任务目标和接口契约
+2. 调用 use_skill 或 mcp_query 获取模板和文档
+3. 调用 write_code 逐个生成文件
+4. 全部文件生成后调用 compile_project 检查
+5. 有编译错误时修复后再 compile
+6. 编译通过后输出 __TASK_DONE__
+
+## 规则
+- 只生成该 task 范围内的文件
+- 遵守接口契约，确保导出的 props/events/slots 与契约一致
+- 每次只做一件事
+- 组件名使用 PascalCase，文件名使用 kebab-case
+- 使用 Vue 3 Composition API (`<script setup lang="ts">`)
+- 确保每个 .vue 文件有完整的 `<template>`、`<script setup>`、`<style scoped>`
+- 工具调用的 arguments 必须是合法 JSON 字符串
+"""
+
 
 async def code_node(state: GenerationState) -> GenerationState:
     """代码生成节点 — 工具增强的迭代式工程生成."""
@@ -370,6 +405,570 @@ async def code_node(state: GenerationState) -> GenerationState:
     state["stage_phase"] = "complete"
 
     return state
+
+
+async def code_node_streaming(
+    state: GenerationState,
+    queue,
+) -> GenerationState:
+    """代码生成节点 — streaming 版本，每步工具调用通过 queue 实时发射事件."""
+
+    import tempfile, os as _os, json as _json, re
+
+    _raw_name = state.get("requirement", "project")[:30]
+    _safe_name = re.sub(r'[^\w]', '_', _raw_name)[:30].strip('_') or "ai-gen-project"
+    project_root = _os.path.join(tempfile.gettempdir(), "ai-gen", _safe_name)
+
+    from .tools.registry import ToolRegistry
+
+    try:
+        registry = ToolRegistry(project_root)
+    except Exception as e:
+        logger.error("tool_registry_init_failed", error=str(e))
+        queue.put_nowait(_make_queue_event("code_gen_done", "code", {
+            "total_files": 0, "compile_errors": 1,
+        }))
+        state["generated_files"] = {}
+        state["compile_errors"] = [{"file": "", "line": 0, "message": str(e)}]
+        state["code_result"] = "{}"
+        state["stage_phase"] = "complete"
+        return state
+
+    tools_schema = registry.get_schema()
+
+    design_doc = state.get("design_doc") or state.get("design_result", "")
+    failure = state.get("failure_details")
+    system_prompt = CODE_ORCHESTRATOR_PROMPT
+
+    if failure:
+        user_msg = (
+            f"设计方案：\n{design_doc}\n\n"
+            f"之前的代码存在问题：\n{failure['instruction']}\n\n"
+            f"请修复代码，确保通过编译和校验。"
+        )
+    else:
+        user_msg = (
+            f"设计方案：\n{design_doc}\n\n"
+            f"开始生成工程代码。先调用 list_skills 了解可用模板，然后规划文件结构并逐步生成。"
+        )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_msg},
+    ]
+
+    max_tool_rounds = 20
+    generated_files: dict[str, str] = {}
+    last_compile_errors: list[dict] | None = None
+
+    planned_files = _estimate_files(design_doc)
+    queue.put_nowait(_make_queue_event("code_gen_start", "code", {
+        "files": planned_files,
+    }))
+
+    for round_idx in range(max_tool_rounds):
+        logger.info("code_tool_round", round=round_idx + 1)
+
+        def on_thinking(text: str):
+            queue.put_nowait(_make_queue_event("thinking_chunk", "code", {"text": text}))
+
+        try:
+            response = await _llm_generate_with_tools_streaming(
+                messages=messages,
+                tools=tools_schema,
+                model="glm-5.2",
+                on_thinking=on_thinking,
+            )
+        except Exception as e:
+            logger.error("llm_tool_call_error", error=str(e))
+            break
+
+        if response.get("tool_calls"):
+            for tc in response["tool_calls"]:
+                tool_name = tc["function"]["name"]
+                try:
+                    tool_args = _json.loads(tc["function"]["arguments"])
+                except _json.JSONDecodeError:
+                    tool_args = {}
+
+                queue.put_nowait(_make_queue_event("tool_call", "code", {
+                    "tool": tool_name,
+                    "args": tool_args,
+                    "status": "running",
+                }))
+
+                result = await registry.invoke(tool_name, tool_args)
+
+                queue.put_nowait(_make_queue_event("tool_result", "code", {
+                    "tool": tool_name,
+                    "ok": result.ok,
+                    "detail": result.data,
+                }))
+
+                if tool_name in ("create_file", "write_code") and result.ok:
+                    path = tool_args.get("path", "")
+                    content = tool_args.get("content", "")
+                    if tool_name == "write_code" and content:
+                        generated_files[path] = content
+                        queue.put_nowait(_make_queue_event("file_start", "code", {"path": path}))
+                        chunk_size = 200
+                        for i in range(0, len(content), chunk_size):
+                            queue.put_nowait(_make_queue_event("file_chunk", "code", {
+                                "path": path,
+                                "content": content[i:i + chunk_size],
+                            }))
+                        queue.put_nowait(_make_queue_event("file_complete", "code", {"path": path}))
+
+                elif tool_name == "use_skill" and result.ok:
+                    for f in result.data.get("files", []):
+                        path = f["path"]
+                        content = f["content"]
+                        # Write to disk
+                        _os.makedirs(_os.path.dirname(_os.path.join(project_root, path)), exist_ok=True)
+                        with open(_os.path.join(project_root, path), "w", encoding="utf-8") as wf:
+                            wf.write(content)
+                        # Track file (don't emit frontend events — write_code handles that)
+                        if path not in generated_files:
+                            generated_files[path] = content
+
+                elif tool_name == "compile_project":
+                    errors = result.data.get("errors", []) if not result.ok else []
+                    last_compile_errors = errors if not result.ok else None
+                    queue.put_nowait(_make_queue_event("compile_status", "code", {
+                        "ok": result.ok,
+                        "errors": errors,
+                    }))
+
+                messages.append({"role": "assistant", "content": None, "tool_calls": [tc]})
+                messages.append({"role": "tool", "tool_call_id": tc["id"],
+                    "content": _json.dumps({"ok": result.ok, "data": result.data, "error": result.error},
+                    ensure_ascii=False)})
+
+        elif response.get("content"):
+            messages.append({"role": "assistant", "content": response["content"]})
+            if "__CODE_GEN_DONE__" in (response.get("content") or ""):
+                break
+
+        if round_idx > 0 and round_idx % 3 == 0 and generated_files:
+            compile_result = await registry.invoke("compile_project", {})
+            ok = compile_result.ok
+            errors = compile_result.data.get("errors", []) if not ok else []
+            queue.put_nowait(_make_queue_event("compile_status", "code", {
+                "ok": ok, "errors": errors,
+            }))
+            if ok and not errors:
+                break
+
+    queue.put_nowait(_make_queue_event("code_gen_done", "code", {
+        "total_files": len(generated_files),
+        "compile_errors": len(last_compile_errors) if last_compile_errors else 0,
+    }))
+
+    state["generated_files"] = generated_files
+    state["compile_errors"] = last_compile_errors
+    state["code_result"] = _json.dumps(generated_files, ensure_ascii=False)
+    state["stage_phase"] = "complete"
+    return state
+
+
+async def planner_node(
+    state: GenerationState,
+    queue,
+) -> GenerationState:
+    """Planner Agent — REASON→ACT: 解析设计文档，输出 Task DAG."""
+    logger.info("planner_node_start")
+
+    design_doc = state.get("design_doc") or state.get("design_result", "")
+    failure = state.get("failure_details")
+    reflect_count = state.get("planner_reflect_count", 0)
+
+    user_prompt = build_planner_user_prompt(design_doc, failure)
+
+    # REASON + ACT: 一次性输出 DAG
+    def on_thinking(text: str):
+        queue.put_nowait(_make_queue_event("thinking_chunk", "code", {"text": text}))
+
+    queue.put_nowait(_make_queue_event("planner_start", "code", {
+        "phase": "planning",
+        "message": "正在分析设计方案，拆解任务...",
+    }))
+
+    raw_response = await _llm_generate(
+        system_prompt=PLANNER_SYSTEM_PROMPT,
+        user_content=user_prompt,
+        enable_thinking=True,
+        on_reasoning=on_thinking,
+    )
+
+    try:
+        dag = extract_task_dag(raw_response)
+    except Exception as e:
+        logger.error("planner_extract_failed", error=str(e))
+        # Fallback: minimal DAG with code generation task
+        dag = {
+            "reasoning": "Fallback due to parse error",
+            "tasks": [
+                {
+                    "id": "task-bootstrap-0",
+                    "type": "bootstrap",
+                    "description": "qiankun lifecycle entry",
+                    "deps": [],
+                    "files": ["src/main.ts", "src/public-path.ts"],
+                    "contract": {"exports": ["bootstrap", "mount", "unmount"]},
+                    "status": "pending",
+                },
+                {
+                    "id": "task-bootstrap-1",
+                    "type": "bootstrap",
+                    "description": "webpack + package config",
+                    "deps": [],
+                    "files": ["webpack/webpack.common.js", "package.json", "tsconfig.json"],
+                    "contract": {"exports": []},
+                    "status": "pending",
+                },
+                {
+                    "id": "task-code-0",
+                    "type": "business",
+                    "description": "Main app component and all business code",
+                    "deps": ["task-bootstrap-0"],
+                    "files": _estimate_files(design_doc),
+                    "contract": {"exports": ["App"]},
+                    "status": "pending",
+                },
+            ],
+        }
+
+    task_dag = {
+        "tasks": dag["tasks"],
+        "generated_at": str(round(__import__("time").time())),
+        "total_tasks": len(dag["tasks"]),
+        "completed_tasks": 0,
+    }
+
+    queue.put_nowait(_make_queue_event("planner_dag", "code", {
+        "tasks": dag["tasks"],
+        "reasoning": dag.get("reasoning", ""),
+    }))
+
+    state["planner_dag"] = task_dag
+    state["planner_reflect_count"] = reflect_count
+    state["context_summary"] = {"key_exports": {}, "completed_tasks": []}
+    state["generated_files"] = {}
+
+    return state
+
+
+async def executor_task(
+    state: GenerationState,
+    task: dict,
+    queue,
+    project_root: str,
+    registry,
+) -> dict:
+    """
+    Executor Agent — 为单个 task 运行 REASON→ACT→OBSERVE→REFLECT loop.
+    Returns: {task_id, status, generated_files, compile_errors, summary}
+    """
+    task_id = task["id"]
+    logger.info("executor_task_start", task_id=task_id, desc=task.get("description", ""))
+
+    queue.put_nowait(_make_queue_event("task_start", "code", {
+        "task_id": task_id,
+        "description": task.get("description", ""),
+        "files": task.get("files", []),
+    }))
+
+    # Build Executor context — include dependency contracts from context_summary
+    context_summary = state.get("context_summary", {})
+    deps_info = ""
+    for dep_id in task.get("deps", []):
+        for t in state.get("planner_dag", {}).get("tasks", []):
+            if t["id"] == dep_id and t.get("status") == "done":
+                deps_info += f"\n依赖 {dep_id} ({t['description']}): {json.dumps(t.get('contract', {}), ensure_ascii=False)}"
+                # Include key exports for dependency files
+                for f in t.get("files", []):
+                    if f in context_summary.get("key_exports", {}):
+                        deps_info += f"\n  {f} 接口: {json.dumps(context_summary['key_exports'][f], ensure_ascii=False)}"
+
+    files_to_generate = task.get("files", [])
+    contract = task.get("contract", {})
+
+    system_prompt = EXECUTOR_SYSTEM_PROMPT
+    user_msg = (
+        f"## 任务\n{task.get('description', '')}\n\n"
+        f"## 需要生成的文件\n{json.dumps(files_to_generate, ensure_ascii=False)}\n\n"
+        f"## 接口契约要求\n{json.dumps(contract, ensure_ascii=False)}"
+        f"{deps_info}\n\n"
+        f"开始生成。先调用 list_skills 了解可用模板。"
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_msg},
+    ]
+
+    max_rounds = 12
+    generated_files: dict[str, str] = {}
+    compile_errors: list[dict] | None = None
+
+    for round_idx in range(max_rounds):
+        def on_thinking(text: str):
+            queue.put_nowait(_make_queue_event("thinking_chunk", "code", {"text": text}))
+
+        try:
+            response = await _llm_generate_with_tools_streaming(
+                messages=messages,
+                tools=registry.get_schema(),
+                model="glm-5.2",
+                on_thinking=on_thinking,
+            )
+        except Exception as e:
+            logger.error("executor_llm_error", task_id=task_id, error=str(e))
+            break
+
+        if response.get("tool_calls"):
+            for tc in response["tool_calls"]:
+                tool_name = tc["function"]["name"]
+                try:
+                    tool_args = json.loads(tc["function"]["arguments"])
+                except json.JSONDecodeError:
+                    tool_args = {}
+
+                queue.put_nowait(_make_queue_event("tool_call", "code", {
+                    "tool": tool_name,
+                    "args": tool_args,
+                    "task_id": task_id,
+                }))
+
+                result = await registry.invoke(tool_name, tool_args)
+
+                queue.put_nowait(_make_queue_event("tool_result", "code", {
+                    "tool": tool_name,
+                    "ok": result.ok,
+                    "detail": result.data,
+                    "task_id": task_id,
+                }))
+
+                if tool_name in ("create_file", "write_code") and result.ok:
+                    path = tool_args.get("path", "")
+                    content = tool_args.get("content", "")
+                    if tool_name == "write_code" and content:
+                        generated_files[path] = content
+                        queue.put_nowait(_make_queue_event("file_start", "code", {"path": path}))
+                        chunk_size = 200
+                        for i in range(0, len(content), chunk_size):
+                            queue.put_nowait(_make_queue_event("file_chunk", "code", {
+                                "path": path,
+                                "content": content[i:i + chunk_size],
+                                "chunk_index": i // chunk_size,
+                                "is_last_chunk_for_file": (i + chunk_size >= len(content)),
+                            }))
+                        queue.put_nowait(_make_queue_event("file_complete", "code", {"path": path}))
+
+                elif tool_name == "use_skill" and result.ok:
+                    for f in result.data.get("files", []):
+                        fpath = f["path"]
+                        fcontent = f["content"]
+                        import os as _os
+                        _os.makedirs(_os.path.dirname(_os.path.join(project_root, fpath)), exist_ok=True)
+                        with open(_os.path.join(project_root, fpath), "w", encoding="utf-8") as wf:
+                            wf.write(fcontent)
+                        if fpath not in generated_files:
+                            generated_files[fpath] = fcontent
+
+                elif tool_name == "compile_project":
+                    data = result.data or {}
+                    errors = data.get("errors", []) if not result.ok else []
+                    compile_errors = errors if not result.ok else None
+                    queue.put_nowait(_make_queue_event("compile_status", "code", {
+                        "ok": result.ok,
+                        "errors": errors,
+                        "task_id": task_id,
+                    }))
+
+                messages.append({"role": "assistant", "content": None, "tool_calls": [tc]})
+                messages.append({"role": "tool", "tool_call_id": tc["id"],
+                    "content": json.dumps({"ok": result.ok, "data": result.data, "error": result.error},
+                    ensure_ascii=False)})
+
+        elif response.get("content"):
+            content = response["content"]
+            messages.append({"role": "assistant", "content": content})
+            if "__TASK_DONE__" in content:
+                break
+
+        # Auto-compile every 4 rounds
+        if round_idx > 0 and round_idx % 4 == 0 and generated_files:
+            compile_result = await registry.invoke("compile_project", {})
+            ok = compile_result.ok
+            errors = compile_result.data.get("errors", []) if not ok else []
+            queue.put_nowait(_make_queue_event("compile_status", "code", {
+                "ok": ok, "errors": errors, "task_id": task_id,
+            }))
+            if ok and not errors:
+                break
+
+    # Build summary
+    summary = f"Task {task_id} done: {len(generated_files)} files"
+    compile_err_count = len(compile_errors) if compile_errors else 0
+
+    queue.put_nowait(_make_queue_event("task_complete", "code", {
+        "task_id": task_id,
+        "summary": summary,
+        "file_count": len(generated_files),
+        "compile_errors": compile_err_count,
+    }))
+
+    return {
+        "task_id": task_id,
+        "status": "done" if not compile_errors else "failed",
+        "generated_files": generated_files,
+        "compile_errors": compile_errors,
+        "summary": summary,
+    }
+
+
+async def planner_reflect_node(
+    state: GenerationState,
+    queue,
+) -> GenerationState:
+    """
+    Planner REFLECT — 收集所有 Executor 结果，决定下一步。
+    Returns updated state with decision baked in.
+    """
+    logger.info("planner_reflect_start")
+
+    dag = state.get("planner_dag", {})
+    context_summary = state.get("context_summary", {})
+    generated_files = state.get("generated_files", {})
+    compile_errors = state.get("compile_errors")
+
+    # Update context_summary with latest file contracts
+    key_exports = context_summary.get("key_exports", {})
+    for path, content in generated_files.items():
+        key_exports[path] = extract_interface_contract(path, content)
+    context_summary["key_exports"] = key_exports
+
+    # Check if all tasks are done
+    all_done = all(
+        t.get("status") in ("done", "failed")
+        for t in dag.get("tasks", [])
+    )
+    failed_tasks = [
+        t for t in dag.get("tasks", [])
+        if t.get("status") == "failed"
+    ]
+
+    if all_done and not failed_tasks and not compile_errors:
+        # All good
+        queue.put_nowait(_make_queue_event("planner_reflect", "code", {
+            "decision": "done",
+            "reason": "所有任务完成，编译通过",
+        }))
+        state["context_summary"] = context_summary
+        state["stage_phase"] = "complete"
+        return state
+
+    if all_done and failed_tasks:
+        # Some tasks failed — auto-retry once
+        queue.put_nowait(_make_queue_event("planner_reflect", "code", {
+            "decision": "has_failures",
+            "failed_task_ids": [t["id"] for t in failed_tasks],
+        }))
+
+        for t in dag.get("tasks", []):
+            if t.get("status") == "failed":
+                t["status"] = "pending"
+                t["compile_errors"] = None
+
+        state["planner_reflect_count"] = state.get("planner_reflect_count", 0) + 1
+        state["context_summary"] = context_summary
+        return state
+
+    state["context_summary"] = context_summary
+    return state
+
+
+def _estimate_files(design_doc: str) -> list[str]:
+    """Estimate the file list from design doc."""
+    files = []
+    for line in design_doc.split("\n"):
+        line = line.strip()
+        if line.endswith(".vue") or line.endswith(".ts") or line.endswith(".js"):
+            if line not in files:
+                files.append(line)
+    if not files:
+        files = ["App.vue", "components/Header.vue"]
+    return files
+
+
+def _make_queue_event(event_type: str, stage: str, data: dict) -> dict:
+    return {"event_type": event_type, "stage": stage, "data": data}
+
+
+async def _llm_generate_with_tools_streaming(
+    messages: list[dict],
+    tools: list[dict],
+    model: str = "glm-5.2",
+    on_thinking=None,
+) -> dict:
+    """Call LLM with native function calling — streaming via callback."""
+
+    if _provider is None:
+        raise RuntimeError("LLM provider not set.")
+
+    # Convert dict messages to Message objects
+    provider_messages = []
+    for m in messages:
+        content = m.get("content")
+        tc_list = m.get("tool_calls")
+        if tc_list:
+            # Assistant message with tool_calls
+            provider_messages.append(Message(
+                role=m.get("role", "assistant"),
+                content=json.dumps(tc_list, ensure_ascii=False) if content is None else (content or ""),
+            ))
+        else:
+            provider_messages.append(Message(
+                role=m.get("role", "user"),
+                content=content or "",
+            ))
+
+    config = LLMConfig(enable_thinking=True, tools=tools)
+
+    # Collect response
+    full_content = ""
+    tool_calls_list: list[dict] = []
+    current_tool_call: dict | None = None
+
+    async for event in _provider.stream_generate(model, provider_messages, config):
+        if isinstance(event, TokenEvent):
+            full_content += event.text
+        elif isinstance(event, ReasoningEvent):
+            if on_thinking:
+                on_thinking(event.text)
+        elif isinstance(event, ToolCallEvent):
+            # Accumulate tool call deltas
+            if current_tool_call and current_tool_call.get("id") == event.call_id:
+                current_tool_call["function"]["arguments"] += (event.arguments or "")
+            else:
+                if current_tool_call:
+                    tool_calls_list.append(current_tool_call)
+                current_tool_call = {
+                    "id": event.call_id or "",
+                    "function": {
+                        "name": event.name or "",
+                        "arguments": event.arguments or "",
+                    },
+                }
+        elif isinstance(event, CompleteEvent):
+            if current_tool_call:
+                tool_calls_list.append(current_tool_call)
+
+    if tool_calls_list:
+        return {"content": None, "tool_calls": tool_calls_list}
+
+    return {"content": full_content.strip(), "tool_calls": None}
 
 
 async def _llm_generate_with_tools(

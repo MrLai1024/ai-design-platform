@@ -1,7 +1,7 @@
 // src/stores/generation.ts
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { ChatMessage, FileEntry, ComponentLibrary, Stage, StageStatus, StageOutputs, CodeViewTab, RightPanelView, StepNode, E2ETestCase, E2ECaseResult, RollbackEvent, StagePhase, ToolTraceEntry, ReviewAgentState, ReviewFinding } from '@/types/generation'
+import type { ChatMessage, FileEntry, Stage, StageStatus, StageOutputs, CodeViewTab, RightPanelView, StepNode, E2ETestCase, E2ECaseResult, RollbackEvent, StagePhase, ToolTraceEntry, ReviewAgentState, ReviewFinding, AgentLogEntry, PlannerTaskDef, TaskGroup } from '@/types/generation'
 import type { RequirementsState, AnalysisPanelMode, AnalysisMode } from '@/types/requirements'
 
 export const useGenerationStore = defineStore('generation', () => {
@@ -12,7 +12,7 @@ export const useGenerationStore = defineStore('generation', () => {
   const isStreaming = ref(false)
   const compiledOutput = ref<string>('')
   const compileError = ref<string | null>(null)
-  const currentLib = ref<ComponentLibrary>('tailwind')
+
 
   // ── 多智能体阶段状态 ──
   const stage = ref<Stage>('idle')
@@ -64,6 +64,13 @@ export const useGenerationStore = defineStore('generation', () => {
   const generatedFiles = ref<Record<string, string>>({})
   const currentGeneratingFile = ref<string | null>(null)
   const toolTraces = ref<ToolTraceEntry[]>([])
+  const agentLogEntries = ref<AgentLogEntry[]>([])
+
+  // ── Planner/Executor 状态 ──
+  const plannerTasks = ref<PlannerTaskDef[]>([])
+  const taskGroups = ref<Map<string, TaskGroup>>(new Map())
+  const currentTaskId = ref<string | null>(null)
+  const plannerReasoning = ref<string>('')
 
   // ── Review 阶段 ──
   const reviewAgents = ref<ReviewAgentState[]>([])
@@ -245,9 +252,6 @@ export const useGenerationStore = defineStore('generation', () => {
     compileError.value = error
   }
 
-  function setCurrentLib(lib: ComponentLibrary): void {
-    currentLib.value = lib
-  }
 
   function setStage(s: Stage): void {
     stage.value = s
@@ -422,6 +426,57 @@ export const useGenerationStore = defineStore('generation', () => {
     // compile status tracked via compileStatus computed
   }
 
+  function addAgentLogEntry(entry: AgentLogEntry): void {
+    agentLogEntries.value.push(entry)
+  }
+  function updateLastAgentLogEntry(patch: Partial<AgentLogEntry>): void {
+    const last = agentLogEntries.value.at(-1)
+    if (last) Object.assign(last, patch)
+  }
+
+  // ── Planner/Executor Actions ──
+  function setPlannerTasks(tasks: PlannerTaskDef[]): void {
+    plannerTasks.value = tasks
+    taskGroups.value = new Map()
+    for (const t of tasks) {
+      taskGroups.value.set(t.id, {
+        taskId: t.id,
+        description: t.description,
+        files: t.files,
+        status: t.status,
+        entries: [],
+        fileCount: 0,
+        compileErrors: 0,
+      })
+    }
+  }
+
+  function setCurrentTask(taskId: string | null): void {
+    currentTaskId.value = taskId
+  }
+
+  function addTaskLogEntry(taskId: string, entry: AgentLogEntry): void {
+    const group = taskGroups.value.get(taskId)
+    if (group) {
+      group.entries.push(entry)
+      if (entry.type === 'file_complete') group.fileCount++
+      if (entry.type === 'compile' && !entry.compileOk) {
+        group.compileErrors = (entry.compileErrors || []).length
+      }
+    }
+  }
+
+  function updateTaskStatus(taskId: string, status: PlannerTaskDef['status']): void {
+    const task = plannerTasks.value.find(t => t.id === taskId)
+    if (task) task.status = status
+    const group = taskGroups.value.get(taskId)
+    if (group) group.status = status
+  }
+
+  function setPlannerReasoning(text: string): void {
+    plannerReasoning.value = text
+  }
+
   // ── Review 阶段 Actions ──
   function initReviewAgents(agents: Array<{ key: string; name: string; icon: string }>): void {
     reviewAgents.value = agents.map(a => ({
@@ -498,6 +553,11 @@ export const useGenerationStore = defineStore('generation', () => {
     generatedFiles.value = {}
     currentGeneratingFile.value = null
     toolTraces.value = []
+    agentLogEntries.value = []
+    plannerTasks.value = []
+    taskGroups.value = new Map()
+    currentTaskId.value = null
+    plannerReasoning.value = ''
     reviewAgents.value = []
     reviewReportHtml.value = null
     e2eTestCasesMd.value = null
@@ -507,7 +567,7 @@ export const useGenerationStore = defineStore('generation', () => {
 
   return {
     // state
-    messages, files, activeFile, isStreaming, compiledOutput, compileError, currentLib,
+    messages, files, activeFile, isStreaming, compiledOutput, compileError,
     stage, stageStatus, stageOutputs, codeViewTab, rightPanelView,
     e2eTestCases, e2eResults, e2eRunning, rollbackEvents, needsManualReview, loopBreakReason, currentGenerationId,
     // 需求分析
@@ -518,7 +578,7 @@ export const useGenerationStore = defineStore('generation', () => {
     // actions
     addMessage, appendToLastMessage, appendReasoning, finishReasoning, finalizeLastMessage,
     setFile, updateFileContent, setActiveFile, removeFile, addNewFile,
-    markFileClean, setCompiledOutput, setCompileError, setCurrentLib,
+    markFileClean, setCompiledOutput, setCompileError,
     setStage, setStageStatus, setStageOutput, setCodeViewTab, setRightPanelView,
     enterCodeStage, completeCurrentStage,
     setE2ETestCases, addE2EResult, clearE2EResults, addRollbackEvent, setNeedsManualReview, setLoopBreakReason, setGenerationId,
@@ -535,6 +595,9 @@ export const useGenerationStore = defineStore('generation', () => {
     generatedFiles, currentGeneratingFile, toolTraces,
     initFileTree, setCurrentGeneratingFile, appendFileContent, finalizeFile,
     addToolTrace, updateToolTrace, setCodeGenDone,
+    agentLogEntries, addAgentLogEntry, updateLastAgentLogEntry,
+    plannerTasks, taskGroups, currentTaskId, plannerReasoning,
+    setPlannerTasks, setCurrentTask, addTaskLogEntry, updateTaskStatus, setPlannerReasoning,
     // Review 阶段
     reviewAgents, reviewReportHtml,
     initReviewAgents, appendAgentFinding, setAgentDone, setAgentRunning,

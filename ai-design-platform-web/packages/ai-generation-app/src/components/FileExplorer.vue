@@ -1,80 +1,150 @@
 <!-- src/components/FileExplorer.vue -->
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useGenerationStore } from '@/stores/generation'
-import type { FileEntry } from '@/types/generation'
+import FileTreeNode from './FileTreeNode.vue'
 
 const store = useGenerationStore()
 const selectedFile = ref<string | null>(null)
+const expandedDirs = ref<Set<string>>(new Set())
 
-const fileEntries = computed(() => {
-  return Array.from(store.files.values())
-})
+interface TreeNode {
+  name: string
+  path: string
+  isDir: boolean
+  children: TreeNode[]
+}
 
-// 分组：按目录
-const fileTree = computed(() => {
-  const tree: Record<string, FileEntry[]> = {}
-  for (const entry of fileEntries.value) {
-    const dir = entry.filename.includes('/')
-      ? entry.filename.substring(0, entry.filename.lastIndexOf('/'))
-      : '/'
-    if (!tree[dir]) tree[dir] = []
-    tree[dir]!.push(entry)
+// Build recursive file tree from flat file list
+const fileTree = computed<TreeNode[]>(() => {
+  const root: TreeNode = { name: '', path: '', isDir: true, children: [] }
+
+  for (const entry of store.fileList) {
+    const parts = entry.filename.split('/')
+    let current = root
+    for (let i = 0; i < parts.length; i++) {
+      const isLast = i === parts.length - 1
+      const fullPath = parts.slice(0, i + 1).join('/')
+      let child = current.children.find(c => c.name === parts[i]!)
+      if (!child) {
+        child = {
+          name: parts[i]!,
+          path: isLast ? entry.filename : fullPath,
+          isDir: !isLast,
+          children: [],
+        }
+        current.children.push(child)
+      }
+      current = child
+    }
   }
-  return tree
+
+  // Auto-expand all dirs when files first appear
+  if (root.children.length > 0 && expandedDirs.value.size === 0) {
+    const dirs = new Set<string>()
+    function collectDirs(node: TreeNode) {
+      if (node.isDir && node.path) dirs.add(node.path)
+      for (const c of node.children) collectDirs(c)
+    }
+    collectDirs(root)
+    expandedDirs.value = dirs
+  }
+
+  return root.children
 })
 
 const currentFile = computed(() => {
   if (!selectedFile.value) return null
-  return store.files.get(selectedFile.value) ?? null
+  const entry = store.files.get(selectedFile.value)
+  if (entry) {
+    // If there's streaming content for same file, show the latest
+    if (streamingContent.value) {
+      return { ...entry, content: streamingContent.value }
+    }
+    return entry
+  }
+  // File is being streamed — show from generatedFiles or streamingContent
+  const content = streamingContent.value || store.generatedFiles[selectedFile.value] || ''
+  if (content) {
+    return {
+      filename: selectedFile.value,
+      content,
+      language: selectedFile.value.endsWith('.vue') ? 'vue' as const
+        : selectedFile.value.endsWith('.ts') ? 'typescript' as const
+        : 'javascript' as const,
+      isDirty: false,
+      source: 'ai' as const,
+    }
+  }
+  return null
 })
 
 function selectFile(filename: string): void {
   selectedFile.value = filename
+  store.setActiveFile(filename)
 }
 
-// Default to first file when files become available
-if (fileEntries.value.length > 0 && !selectedFile.value) {
-  selectedFile.value = fileEntries.value[0]!.filename
+function toggleDir(dirPath: string): void {
+  if (expandedDirs.value.has(dirPath)) {
+    expandedDirs.value.delete(dirPath)
+  } else {
+    expandedDirs.value.add(dirPath)
+  }
 }
+
+// Auto-select first file when files appear
+watch(
+  () => store.fileList.length,
+  (len) => {
+    if (len > 0 && !selectedFile.value) {
+      selectedFile.value = store.fileList[0]!.filename
+      store.setActiveFile(store.fileList[0]!.filename)
+    }
+  },
+  { immediate: true },
+)
+
+// Streaming content ref — updated reactively to drive real-time code display
+const streamingContent = ref<string>('')
+
+// Auto-focus new file + track streaming content
+watch(
+  () => store.currentGeneratingFile,
+  (path) => {
+    if (path) {
+      selectedFile.value = path
+      store.setActiveFile(path)
+      const dir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : ''
+      if (dir) expandedDirs.value.add(dir)
+    }
+  },
+)
+
+// Watch generatedFiles for the selected file's streaming content
+watch(
+  () => selectedFile.value ? store.generatedFiles[selectedFile.value] : '',
+  (content) => {
+    streamingContent.value = content || ''
+  },
+)
 </script>
 
 <template>
   <div class="file-explorer flex h-full bg-white">
     <!-- 左侧文件树 -->
     <div class="w-[200px] min-w-[160px] border-r border-gray-200 overflow-y-auto bg-gray-50">
-      <div v-for="(entries, dir) in fileTree" :key="dir">
-        <div
-          v-if="dir !== '/'"
-          class="px-3 py-1.5 text-xs text-gray-500 font-medium uppercase tracking-wide"
-        >
-          {{ dir }}
-        </div>
-        <div
-          v-for="entry in entries"
-          :key="entry.filename"
-          class="px-3 py-1.5 text-xs cursor-pointer flex items-center gap-1.5 hover:bg-gray-100 transition-colors"
-          :class="{
-            'bg-blue-50 text-blue-700 font-medium': selectedFile === entry.filename,
-            'text-gray-700': selectedFile !== entry.filename,
-          }"
-          @click="selectFile(entry.filename)"
-        >
-          <span
-            class="font-mono"
-            :class="{
-              'text-green-600': entry.language === 'vue',
-              'text-blue-600': entry.language === 'typescript',
-              'text-yellow-600': entry.language === 'javascript',
-              'text-pink-600': entry.language === 'css',
-              'text-gray-600': !['vue','typescript','javascript','css'].includes(entry.language),
-            }"
-          >●</span>
-          <span class="truncate font-mono">{{ entry.filename.split('/').pop() }}</span>
-        </div>
-      </div>
+      <template v-for="node in fileTree" :key="node.path">
+        <FileTreeNode
+          :node="node"
+          :selected-file="selectedFile"
+          :expanded-dirs="expandedDirs"
+          :depth="0"
+          @select="selectFile"
+          @toggle="toggleDir"
+        />
+      </template>
 
-      <div v-if="fileEntries.length === 0" class="p-4 text-center text-gray-400 text-xs">
+      <div v-if="store.fileList.length === 0" class="p-4 text-center text-gray-400 text-xs">
         暂无文件 — 等待代码生成
       </div>
     </div>

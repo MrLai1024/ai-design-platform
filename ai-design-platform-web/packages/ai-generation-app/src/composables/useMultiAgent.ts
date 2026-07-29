@@ -2,7 +2,8 @@
 import { ref } from 'vue'
 import { useGenerationStore } from '../stores/generation'
 import { useStreamChat } from './useStreamChat'
-import type { Stage, ComponentLibrary, E2ECaseResult } from '../types/generation'
+import { handleCodeSSEEvent } from './useCodeStream'
+import type { Stage, E2ECaseResult } from '../types/generation'
 
 export function useMultiAgent() {
   const store = useGenerationStore()
@@ -11,9 +12,8 @@ export function useMultiAgent() {
   const isTransitioning = ref(false)
   const streamError = ref<string | null>(null)
 
-  async function startGeneration(content: string, lib: ComponentLibrary, systemPrompt?: string) {
+  async function startGeneration(content: string, systemPrompt?: string) {
     store.resetAll()
-    store.setCurrentLib(lib)
     store.setStage('analysis')
     store.setStageStatus('analysis', 'active')
     store.setRightPanelView('stage-output')
@@ -22,7 +22,6 @@ export function useMultiAgent() {
     try {
       await send({
         content,
-        lib,
         stage: 'analysis',
         systemPrompt,
       })
@@ -34,11 +33,10 @@ export function useMultiAgent() {
   }
 
   /** 启动 graph 流水线 — /api/v1/generation/stream (PRD 在 graph 内流式生成) */
-  async function startGraphGeneration(content: string, lib: ComponentLibrary) {
+  async function startGraphGeneration(content: string) {
     store.setStage('analysis')
     store.setStageStatus('analysis', 'active')
     store.setStagePhase('generating')
-    store.setCurrentLib(lib)
     store.docIsStreaming = true
     store.docStreamingContent = ''
     store.isStreaming = true
@@ -55,7 +53,6 @@ export function useMultiAgent() {
         body: JSON.stringify({
           messages: chatMessages,
           model: 'glm-5.2',
-          component_lib: lib,
         }),
       })
 
@@ -147,18 +144,23 @@ export function useMultiAgent() {
         break
       case 'code_gen_start':
         store.initFileTree(event.files || [])
+        handleCodeSSEEvent(event)
         break
       case 'file_start':
         store.setCurrentGeneratingFile(event.path)
+        handleCodeSSEEvent(event)
         break
       case 'file_chunk':
         store.appendFileContent(event.path, event.content || '')
+        handleCodeSSEEvent(event)
         break
       case 'file_complete':
         store.finalizeFile(event.path)
+        handleCodeSSEEvent(event)
         break
       case 'tool_call':
         store.addToolTrace({ type: 'call', tool: event.tool, args: event.args, status: 'running' })
+        handleCodeSSEEvent(event)
         break
       case 'tool_result':
         // Match to last running trace of same tool
@@ -171,8 +173,13 @@ export function useMultiAgent() {
             break
           }
         }
+        handleCodeSSEEvent(event)
         break
       case 'code_gen_done':
+      case 'thinking_chunk':
+      case 'compile_status':
+        handleCodeSSEEvent(event)
+        break
         break
       case 'review_agents_start':
         store.initReviewAgents(event.agents || [])
@@ -255,10 +262,11 @@ export function useMultiAgent() {
     const needsFreshStart = stage === 'analysis' || stage === 'design' || stage === 'code'
     const body: Record<string, any> = {
       model: 'glm-5.2',
-      component_lib: store.currentLib,
+
       mode: 'graph',
     }
 
+    console.log('[confirmStage] stage=', stage, 'needsFreshStart=', needsFreshStart, 'stageOutputs.analysis=', !!store.stageOutputs.analysis, 'docStreamingContent=', !!store.docStreamingContent)
     if (needsFreshStart) {
       // Pre-fill completed stages
       const prefillMessages: Array<{role: string; content: string}> = []
@@ -277,6 +285,7 @@ export function useMultiAgent() {
       body.generation_id = store.currentGenerationId
       body.mode = 'resume'
     }
+    console.log('[confirmStage] body=', JSON.stringify({...body, messages: body.messages?.length || 0}))
 
     try {
       const response = await fetch('/api/v1/generation/stream', {

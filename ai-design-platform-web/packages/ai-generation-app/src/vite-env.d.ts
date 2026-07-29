@@ -14,3 +14,9 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv
 }
+
+// Webpack asset/resource modules
+declare module '*.wasm' {
+  const url: string
+  export default url
+}

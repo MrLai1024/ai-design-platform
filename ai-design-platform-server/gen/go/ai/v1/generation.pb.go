@@ -797,6 +797,178 @@ func (x *CancelResponse) GetSuccess() bool {
 	return false
 }
 
+type CompileFeedbackRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	GenerationId  string                 `protobuf:"bytes,1,opt,name=generation_id,json=generationId,proto3" json:"generation_id,omitempty"`
+	Ok            bool                   `protobuf:"varint,2,opt,name=ok,proto3" json:"ok,omitempty"`        // true = latest bundle succeeded (clears pending errors)
+	Errors        []*CompileError        `protobuf:"bytes,3,rep,name=errors,proto3" json:"errors,omitempty"` // present when ok = false
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CompileFeedbackRequest) Reset() {
+	*x = CompileFeedbackRequest{}
+	mi := &file_ai_v1_generation_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompileFeedbackRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompileFeedbackRequest) ProtoMessage() {}
+
+func (x *CompileFeedbackRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ai_v1_generation_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompileFeedbackRequest.ProtoReflect.Descriptor instead.
+func (*CompileFeedbackRequest) Descriptor() ([]byte, []int) {
+	return file_ai_v1_generation_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *CompileFeedbackRequest) GetGenerationId() string {
+	if x != nil {
+		return x.GenerationId
+	}
+	return ""
+}
+
+func (x *CompileFeedbackRequest) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
+func (x *CompileFeedbackRequest) GetErrors() []*CompileError {
+	if x != nil {
+		return x.Errors
+	}
+	return nil
+}
+
+type CompileError struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	File          string                 `protobuf:"bytes,1,opt,name=file,proto3" json:"file,omitempty"`
+	Line          int32                  `protobuf:"varint,2,opt,name=line,proto3" json:"line,omitempty"`
+	Column        int32                  `protobuf:"varint,3,opt,name=column,proto3" json:"column,omitempty"`
+	Text          string                 `protobuf:"bytes,4,opt,name=text,proto3" json:"text,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CompileError) Reset() {
+	*x = CompileError{}
+	mi := &file_ai_v1_generation_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompileError) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompileError) ProtoMessage() {}
+
+func (x *CompileError) ProtoReflect() protoreflect.Message {
+	mi := &file_ai_v1_generation_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompileError.ProtoReflect.Descriptor instead.
+func (*CompileError) Descriptor() ([]byte, []int) {
+	return file_ai_v1_generation_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *CompileError) GetFile() string {
+	if x != nil {
+		return x.File
+	}
+	return ""
+}
+
+func (x *CompileError) GetLine() int32 {
+	if x != nil {
+		return x.Line
+	}
+	return 0
+}
+
+func (x *CompileError) GetColumn() int32 {
+	if x != nil {
+		return x.Column
+	}
+	return 0
+}
+
+func (x *CompileError) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+type CompileFeedbackResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Received      bool                   `protobuf:"varint,1,opt,name=received,proto3" json:"received,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CompileFeedbackResponse) Reset() {
+	*x = CompileFeedbackResponse{}
+	mi := &file_ai_v1_generation_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CompileFeedbackResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CompileFeedbackResponse) ProtoMessage() {}
+
+func (x *CompileFeedbackResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ai_v1_generation_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CompileFeedbackResponse.ProtoReflect.Descriptor instead.
+func (*CompileFeedbackResponse) Descriptor() ([]byte, []int) {
+	return file_ai_v1_generation_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *CompileFeedbackResponse) GetReceived() bool {
+	if x != nil {
+		return x.Received
+	}
+	return false
+}
+
 var File_ai_v1_generation_proto protoreflect.FileDescriptor
 
 const file_ai_v1_generation_proto_rawDesc = "" +
@@ -857,10 +1029,22 @@ const file_ai_v1_generation_proto_rawDesc = "" +
 	"\rgeneration_id\x18\x01 \x01(\tR\fgenerationId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\"*\n" +
 	"\x0eCancelResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess2\x99\x01\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\"z\n" +
+	"\x16CompileFeedbackRequest\x12#\n" +
+	"\rgeneration_id\x18\x01 \x01(\tR\fgenerationId\x12\x0e\n" +
+	"\x02ok\x18\x02 \x01(\bR\x02ok\x12+\n" +
+	"\x06errors\x18\x03 \x03(\v2\x13.ai.v1.CompileErrorR\x06errors\"b\n" +
+	"\fCompileError\x12\x12\n" +
+	"\x04file\x18\x01 \x01(\tR\x04file\x12\x12\n" +
+	"\x04line\x18\x02 \x01(\x05R\x04line\x12\x16\n" +
+	"\x06column\x18\x03 \x01(\x05R\x06column\x12\x12\n" +
+	"\x04text\x18\x04 \x01(\tR\x04text\"5\n" +
+	"\x17CompileFeedbackResponse\x12\x1a\n" +
+	"\breceived\x18\x01 \x01(\bR\breceived2\xf1\x01\n" +
 	"\x11GenerationService\x12C\n" +
 	"\x0eStreamGenerate\x12\x16.ai.v1.GenerateRequest\x1a\x17.ai.v1.GenerateResponse0\x01\x12?\n" +
-	"\x10CancelGeneration\x12\x14.ai.v1.CancelRequest\x1a\x15.ai.v1.CancelResponseB&Z$ai-design-platform/gen/go/ai/v1;aiv1b\x06proto3"
+	"\x10CancelGeneration\x12\x14.ai.v1.CancelRequest\x1a\x15.ai.v1.CancelResponse\x12V\n" +
+	"\x15ReportCompileFeedback\x12\x1d.ai.v1.CompileFeedbackRequest\x1a\x1e.ai.v1.CompileFeedbackResponseB&Z$ai-design-platform/gen/go/ai/v1;aiv1b\x06proto3"
 
 var (
 	file_ai_v1_generation_proto_rawDescOnce sync.Once
@@ -874,41 +1058,47 @@ func file_ai_v1_generation_proto_rawDescGZIP() []byte {
 	return file_ai_v1_generation_proto_rawDescData
 }
 
-var file_ai_v1_generation_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_ai_v1_generation_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_ai_v1_generation_proto_goTypes = []any{
-	(*GenerateRequest)(nil),    // 0: ai.v1.GenerateRequest
-	(*Message)(nil),            // 1: ai.v1.Message
-	(*GenerationConfig)(nil),   // 2: ai.v1.GenerationConfig
-	(*GenerateResponse)(nil),   // 3: ai.v1.GenerateResponse
-	(*Token)(nil),              // 4: ai.v1.Token
-	(*ToolCall)(nil),           // 5: ai.v1.ToolCall
-	(*GenerationComplete)(nil), // 6: ai.v1.GenerationComplete
-	(*Usage)(nil),              // 7: ai.v1.Usage
-	(*GenerationError)(nil),    // 8: ai.v1.GenerationError
-	(*GraphEvent)(nil),         // 9: ai.v1.GraphEvent
-	(*CancelRequest)(nil),      // 10: ai.v1.CancelRequest
-	(*CancelResponse)(nil),     // 11: ai.v1.CancelResponse
-	nil,                        // 12: ai.v1.GenerateRequest.MetadataEntry
+	(*GenerateRequest)(nil),         // 0: ai.v1.GenerateRequest
+	(*Message)(nil),                 // 1: ai.v1.Message
+	(*GenerationConfig)(nil),        // 2: ai.v1.GenerationConfig
+	(*GenerateResponse)(nil),        // 3: ai.v1.GenerateResponse
+	(*Token)(nil),                   // 4: ai.v1.Token
+	(*ToolCall)(nil),                // 5: ai.v1.ToolCall
+	(*GenerationComplete)(nil),      // 6: ai.v1.GenerationComplete
+	(*Usage)(nil),                   // 7: ai.v1.Usage
+	(*GenerationError)(nil),         // 8: ai.v1.GenerationError
+	(*GraphEvent)(nil),              // 9: ai.v1.GraphEvent
+	(*CancelRequest)(nil),           // 10: ai.v1.CancelRequest
+	(*CancelResponse)(nil),          // 11: ai.v1.CancelResponse
+	(*CompileFeedbackRequest)(nil),  // 12: ai.v1.CompileFeedbackRequest
+	(*CompileError)(nil),            // 13: ai.v1.CompileError
+	(*CompileFeedbackResponse)(nil), // 14: ai.v1.CompileFeedbackResponse
+	nil,                             // 15: ai.v1.GenerateRequest.MetadataEntry
 }
 var file_ai_v1_generation_proto_depIdxs = []int32{
 	1,  // 0: ai.v1.GenerateRequest.messages:type_name -> ai.v1.Message
 	2,  // 1: ai.v1.GenerateRequest.config:type_name -> ai.v1.GenerationConfig
-	12, // 2: ai.v1.GenerateRequest.metadata:type_name -> ai.v1.GenerateRequest.MetadataEntry
+	15, // 2: ai.v1.GenerateRequest.metadata:type_name -> ai.v1.GenerateRequest.MetadataEntry
 	4,  // 3: ai.v1.GenerateResponse.token:type_name -> ai.v1.Token
 	5,  // 4: ai.v1.GenerateResponse.tool_call:type_name -> ai.v1.ToolCall
 	6,  // 5: ai.v1.GenerateResponse.complete:type_name -> ai.v1.GenerationComplete
 	8,  // 6: ai.v1.GenerateResponse.error:type_name -> ai.v1.GenerationError
 	9,  // 7: ai.v1.GenerateResponse.graph_event:type_name -> ai.v1.GraphEvent
 	7,  // 8: ai.v1.GenerationComplete.usage:type_name -> ai.v1.Usage
-	0,  // 9: ai.v1.GenerationService.StreamGenerate:input_type -> ai.v1.GenerateRequest
-	10, // 10: ai.v1.GenerationService.CancelGeneration:input_type -> ai.v1.CancelRequest
-	3,  // 11: ai.v1.GenerationService.StreamGenerate:output_type -> ai.v1.GenerateResponse
-	11, // 12: ai.v1.GenerationService.CancelGeneration:output_type -> ai.v1.CancelResponse
-	11, // [11:13] is the sub-list for method output_type
-	9,  // [9:11] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	13, // 9: ai.v1.CompileFeedbackRequest.errors:type_name -> ai.v1.CompileError
+	0,  // 10: ai.v1.GenerationService.StreamGenerate:input_type -> ai.v1.GenerateRequest
+	10, // 11: ai.v1.GenerationService.CancelGeneration:input_type -> ai.v1.CancelRequest
+	12, // 12: ai.v1.GenerationService.ReportCompileFeedback:input_type -> ai.v1.CompileFeedbackRequest
+	3,  // 13: ai.v1.GenerationService.StreamGenerate:output_type -> ai.v1.GenerateResponse
+	11, // 14: ai.v1.GenerationService.CancelGeneration:output_type -> ai.v1.CancelResponse
+	14, // 15: ai.v1.GenerationService.ReportCompileFeedback:output_type -> ai.v1.CompileFeedbackResponse
+	13, // [13:16] is the sub-list for method output_type
+	10, // [10:13] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_ai_v1_generation_proto_init() }
@@ -929,7 +1119,7 @@ func file_ai_v1_generation_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ai_v1_generation_proto_rawDesc), len(file_ai_v1_generation_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

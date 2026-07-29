@@ -93,7 +93,7 @@ async function continueAnalysis(userContent: string): Promise<void> {
 function handleSend(content: string): void {
   if (store.stage === 'idle' || store.stage === 'analysis') {
     if (store.stage === 'idle') {
-      startGeneration(content, store.currentLib, ANALYSIS_SYSTEM_PROMPT)
+      startGeneration(content, ANALYSIS_SYSTEM_PROMPT)
     } else {
       continueAnalysis(content)
     }
@@ -156,7 +156,7 @@ async function handleStartDesign(): Promise<void> {
   // Collect the user's original requirement from first message
   const firstUserMsg = store.messages.find(m => m.role === 'user')
   const requirement = firstUserMsg?.content || ''
-  await startGraphGeneration(requirement, store.currentLib)
+  await startGraphGeneration(requirement)
 }
 
 // 阶段标签

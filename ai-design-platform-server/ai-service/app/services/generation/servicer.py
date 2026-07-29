@@ -8,6 +8,8 @@ import grpc
 from ai.v1.generation_pb2 import (
     CancelRequest,
     CancelResponse,
+    CompileFeedbackRequest,
+    CompileFeedbackResponse,
     GenerateRequest,
     GenerateResponse,
     GenerationComplete,
@@ -123,9 +125,16 @@ class GenerationServicer(GenerationServiceServicer):
             if len(user_messages) >= 3 and user_messages[2].get("role") == "assistant":
                 pre_filled_code = user_messages[2].get("content")
 
+        logger.info(
+            "stream_graph_state_init gen=%s skip_analysis=%s mode=%s has_analysis=%s analysis_len=%d has_design=%s design_len=%d has_code=%s",
+            generation_id, skip_analysis, mode, bool(pre_filled_analysis),
+            len(pre_filled_analysis or ""), bool(pre_filled_design),
+            len(pre_filled_design or ""), bool(pre_filled_code),
+        )
+
         state: GenerationState = {
             "requirement": user_content,
-            "component_lib": request.metadata.get("component_lib", "tailwind"),
+            "component_lib": "",
             "messages": user_messages,
             "requirements_state_json": None,
             "analysis_result": pre_filled_analysis,
@@ -264,6 +273,29 @@ class GenerationServicer(GenerationServiceServicer):
             self._active_generations[gid] = "cancelling"
             return CancelResponse(success=True)
         return CancelResponse(success=False)
+
+    async def ReportCompileFeedback(
+        self,
+        request: CompileFeedbackRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> CompileFeedbackResponse:
+        """Receive real bundler compile results from the frontend preview."""
+        gid = request.generation_id
+        runner = self._active_runners.get(gid)
+        if runner is None:
+            logger.warning("compile_feedback_no_runner gen=%s", gid)
+            return CompileFeedbackResponse(received=False)
+
+        errors = [
+            {"file": e.file, "line": e.line, "column": e.column, "text": e.text}
+            for e in request.errors
+        ]
+        consumed = runner.report_compile_feedback(request.ok, errors)
+        logger.info(
+            "compile_feedback gen=%s ok=%s errors=%d consumed=%s",
+            gid, request.ok, len(errors), consumed,
+        )
+        return CompileFeedbackResponse(received=True)
 
     def get_runner(self, generation_id: str) -> GraphRunner | None:
         """Get active GraphRunner for external operations (E2E result, confirmation)."""

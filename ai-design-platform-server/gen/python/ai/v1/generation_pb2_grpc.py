@@ -25,6 +25,11 @@ class GenerationServiceStub:
                 request_serializer=ai_dot_v1_dot_generation__pb2.CancelRequest.SerializeToString,
                 response_deserializer=ai_dot_v1_dot_generation__pb2.CancelResponse.FromString,
                 _registered_method=True)
+        self.ReportCompileFeedback = channel.unary_unary(
+                '/ai.v1.GenerationService/ReportCompileFeedback',
+                request_serializer=ai_dot_v1_dot_generation__pb2.CompileFeedbackRequest.SerializeToString,
+                response_deserializer=ai_dot_v1_dot_generation__pb2.CompileFeedbackResponse.FromString,
+                _registered_method=True)
 
 
 class GenerationServiceServicer:
@@ -45,6 +50,14 @@ class GenerationServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ReportCompileFeedback(self, request, context):
+        """ReportCompileFeedback receives real bundler compile results from the
+        frontend preview (esbuild-wasm) so the code Executor can fix real errors.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GenerationServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -57,6 +70,11 @@ def add_GenerationServiceServicer_to_server(servicer, server):
                     servicer.CancelGeneration,
                     request_deserializer=ai_dot_v1_dot_generation__pb2.CancelRequest.FromString,
                     response_serializer=ai_dot_v1_dot_generation__pb2.CancelResponse.SerializeToString,
+            ),
+            'ReportCompileFeedback': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReportCompileFeedback,
+                    request_deserializer=ai_dot_v1_dot_generation__pb2.CompileFeedbackRequest.FromString,
+                    response_serializer=ai_dot_v1_dot_generation__pb2.CompileFeedbackResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -114,6 +132,33 @@ class GenerationService:
             '/ai.v1.GenerationService/CancelGeneration',
             ai_dot_v1_dot_generation__pb2.CancelRequest.SerializeToString,
             ai_dot_v1_dot_generation__pb2.CancelResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReportCompileFeedback(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ai.v1.GenerationService/ReportCompileFeedback',
+            ai_dot_v1_dot_generation__pb2.CompileFeedbackRequest.SerializeToString,
+            ai_dot_v1_dot_generation__pb2.CompileFeedbackResponse.FromString,
             options,
             channel_credentials,
             insecure,

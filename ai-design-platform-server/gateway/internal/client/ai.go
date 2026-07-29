@@ -55,6 +55,31 @@ func (c *AIClient) CancelGeneration(ctx context.Context, generationID, reason st
 	return err
 }
 
+// CompileError mirrors one bundler error from the frontend preview.
+type CompileError struct {
+	File   string `json:"file"`
+	Line   int32  `json:"line"`
+	Column int32  `json:"column"`
+	Text   string `json:"text"`
+}
+
+// ReportCompileFeedback 转发前端打包结果到 AI 服务。
+func (c *AIClient) ReportCompileFeedback(ctx context.Context, generationID string, ok bool, errs []CompileError) (bool, error) {
+	pbErrs := make([]*pb.CompileError, len(errs))
+	for i, e := range errs {
+		pbErrs[i] = &pb.CompileError{File: e.File, Line: e.Line, Column: e.Column, Text: e.Text}
+	}
+	resp, err := c.genCli.ReportCompileFeedback(ctx, &pb.CompileFeedbackRequest{
+		GenerationId: generationID,
+		Ok:           ok,
+		Errors:       pbErrs,
+	})
+	if err != nil {
+		return false, err
+	}
+	return resp.Received, nil
+}
+
 // Close 关闭 gRPC 连接。
 func (c *AIClient) Close() error {
 	return c.conn.Close()

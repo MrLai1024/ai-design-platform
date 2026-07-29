@@ -1,7 +1,5 @@
 // src/types/generation.ts
 
-/** 组件库标识 */
-export type ComponentLibrary = 'tailwind' | 'antd' | 'element' | 'echarts'
 
 /** 消息中的代码块 */
 export interface ParsedCodeBlock {
@@ -162,6 +160,31 @@ export interface ReviewAgentState {
 }
 
 // ── Graph Event Types 扩展 ──
+export interface CompileErrorEntry {
+  file: string
+  line: number
+  message: string
+}
+
+export interface AgentLogEntry {
+  id: string
+  type: 'thinking' | 'tool_call' | 'tool_result' | 'file_start'
+       | 'file_complete' | 'compile' | 'phase_summary'
+  timestamp: number
+  thinkingText?: string
+  thinkingDone?: boolean
+  toolName?: string
+  toolArgs?: Record<string, any>
+  toolStatus?: 'running' | 'done' | 'error'
+  toolDetail?: string
+  filePath?: string
+  fileTotal?: number
+  fileDone?: boolean
+  compileOk?: boolean
+  compileErrors?: CompileErrorEntry[]
+  summary?: string
+}
+
 export type GraphEventTypeExtended =
   | GraphEventType
   | 'doc_chunk'
@@ -174,4 +197,38 @@ export type GraphEventTypeExtended =
   | 'review_report_ready' | 'review_fix_start' | 'review_fix_done'
   | 'e2e_cases_gen_start' | 'e2e_cases_gen_done'
   | 'e2e_execute_start' | 'e2e_case_start' | 'e2e_execute_done'
+  | 'planner_start' | 'planner_dag' | 'planner_reflect'
+  | 'task_start' | 'task_complete' | 'task_failed'
+  | 'context_summarized' | 'contract_verify'
   | 'graph_complete'
+
+// ── Planner/Executor Types ──
+
+export interface PlannerTaskDef {
+  id: string
+  type: 'bootstrap' | 'business'
+  description: string
+  deps: string[]
+  files: string[]
+  contract: Record<string, any>
+  status: 'pending' | 'running' | 'done' | 'failed'
+  executorSummary?: string
+  compileErrors?: CompileErrorEntry[]
+}
+
+export interface TaskGroup {
+  taskId: string
+  description: string
+  files: string[]
+  status: 'pending' | 'running' | 'done' | 'failed'
+  entries: AgentLogEntry[]
+  fileCount: number
+  compileErrors: number
+}
+
+// HMR Event types from iframe
+export interface HmrEvent {
+  type: 'hot-replace' | 'hot-rerender' | 'warm-reload' | 'full-reload'
+  file: string
+  timestamp: number
+}
