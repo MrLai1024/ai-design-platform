@@ -13,7 +13,15 @@ import (
 
 // GraphSSEHandler handles LangGraph streaming via SSE.
 type GraphSSEHandler struct {
-	aiClient *client.AIClient
+	aiClient      *client.AIClient
+	feedbackStore map[string]string // generation_id -> feedback_text
+}
+
+// FeedbackRequest for user feedback on code stage.
+type FeedbackRequest struct {
+	GenerationID string `json:"generation_id"`
+	Stage        string `json:"stage"`
+	Feedback     string `json:"feedback"`
 }
 
 // GenerationRequest with graph-specific fields.
@@ -28,7 +36,7 @@ type GenerationRequest struct {
 }
 
 func NewGraphSSEHandler(aiClient *client.AIClient) *GraphSSEHandler {
-	return &GraphSSEHandler{aiClient: aiClient}
+	return &GraphSSEHandler{aiClient: aiClient, feedbackStore: make(map[string]string)}
 }
 
 // StreamGeneration handles POST /api/v1/generation/stream
@@ -63,6 +71,11 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 	}
 	if req.SkipAnalysis {
 		metadata["skip_analysis"] = "true"
+	}
+	// Inject pending feedback if any
+	if fb, ok := h.feedbackStore[generationID]; ok && fb != "" {
+		metadata["code_feedback"] = fb
+		delete(h.feedbackStore, generationID)
 	}
 
 	grpcReq := &pb.GenerateRequest{
@@ -157,4 +170,20 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 		}
 		return true
 	})
+}
+
+// SubmitFeedback handles POST /api/v1/generation/feedback
+func (h *GraphSSEHandler) SubmitFeedback(c *gin.Context) {
+	var req FeedbackRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.GenerationID == "" || req.Feedback == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "generation_id and feedback required"})
+		return
+	}
+	h.feedbackStore[req.GenerationID] = req.Feedback
+	slog.Info("feedback_stored", "generation_id", req.GenerationID, "feedback_len", len(req.Feedback))
+	c.JSON(http.StatusOK, gin.H{"received": true})
 }

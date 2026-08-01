@@ -100,6 +100,7 @@ class GenerationServicer(GenerationServiceServicer):
 
         # Check if we should skip analysis (PRD already generated via /api/v1/prd/stream)
         skip_analysis = request.metadata.get("skip_analysis") == "true"
+        code_feedback = request.metadata.get("code_feedback", "")
 
         # Fresh start — build initial state
         user_messages = []
@@ -163,6 +164,7 @@ class GenerationServicer(GenerationServiceServicer):
             "review_issues": None,
             "e2e_test_cases_md": None,
             "e2e_user_confirmed": False,
+            "code_feedback": code_feedback,
         }
 
         runner = GraphRunner()

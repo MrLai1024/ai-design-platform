@@ -169,7 +169,7 @@ export interface CompileErrorEntry {
 export interface AgentLogEntry {
   id: string
   type: 'thinking' | 'tool_call' | 'tool_result' | 'file_start'
-       | 'file_complete' | 'compile' | 'phase_summary'
+       | 'file_complete' | 'compile' | 'phase_summary' | 'cancel' | 'feedback_summary'
   timestamp: number
   thinkingText?: string
   thinkingDone?: boolean
@@ -183,6 +183,10 @@ export interface AgentLogEntry {
   compileOk?: boolean
   compileErrors?: CompileErrorEntry[]
   summary?: string
+  // feedback_summary fields
+  feedbackText?: string
+  feedbackResult?: string
+  feedbackExpanded?: boolean
 }
 
 export type GraphEventTypeExtended =

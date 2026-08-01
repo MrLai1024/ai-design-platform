@@ -11,6 +11,43 @@ export function useMultiAgent() {
 
   const isTransitioning = ref(false)
   const streamError = ref<string | null>(null)
+  let currentAbortController: AbortController | null = null
+
+  function getAbortController(): AbortController {
+    if (currentAbortController) {
+      try { currentAbortController.abort() } catch { /* ignore */ }
+    }
+    currentAbortController = new AbortController()
+    return currentAbortController
+  }
+
+  async function sendFeedback(feedback: string): Promise<void> {
+    if (!store.currentGenerationId) return
+    try {
+      await fetch('/api/v1/generation/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          generation_id: store.currentGenerationId,
+          stage: store.stage,
+          feedback,
+        }),
+      })
+      // After feedback is received, restart the graph stream to pick up changes
+      await confirmStage(store.stage)
+    } catch (e: any) {
+      streamError.value = e.message || 'Feedback failed'
+    }
+  }
+
+  function cancelGeneration(): void {
+    if (currentAbortController) {
+      try { currentAbortController.abort() } catch { /* ignore */ }
+      currentAbortController = null
+    }
+    store.setStreaming(false)
+    isTransitioning.value = false
+  }
 
   async function startGeneration(content: string, systemPrompt?: string) {
     store.resetAll()
@@ -288,10 +325,12 @@ export function useMultiAgent() {
     console.log('[confirmStage] body=', JSON.stringify({...body, messages: body.messages?.length || 0}))
 
     try {
+      const controller = getAbortController()
       const response = await fetch('/api/v1/generation/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: controller.signal,
       })
       if (!response.ok) throw new Error(`Confirm failed: ${response.status}`)
 
@@ -357,6 +396,8 @@ export function useMultiAgent() {
     startGraphGeneration,
     confirmStage,
     submitE2EResults,
+    sendFeedback,
+    cancelGeneration,
     cancel,
   }
 }
