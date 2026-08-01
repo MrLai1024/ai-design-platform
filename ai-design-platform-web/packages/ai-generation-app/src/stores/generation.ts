@@ -188,6 +188,10 @@ export const useGenerationStore = defineStore('generation', () => {
     isStreaming.value = false
   }
 
+  function setStreaming(v: boolean): void {
+    isStreaming.value = v
+  }
+
   function setFile(filename: string, entry: FileEntry): void {
     files.value.set(filename, entry)
     if (!activeFile.value) {
@@ -576,7 +580,7 @@ export const useGenerationStore = defineStore('generation', () => {
     lastAssistantMessage, dirtyFiles, fileList, activeFileEntry,
     currentStepNodes, isStageDone,
     // actions
-    addMessage, appendToLastMessage, appendReasoning, finishReasoning, finalizeLastMessage,
+    addMessage, appendToLastMessage, appendReasoning, finishReasoning, finalizeLastMessage, setStreaming,
     setFile, updateFileContent, setActiveFile, removeFile, addNewFile,
     markFileClean, setCompiledOutput, setCompileError,
     setStage, setStageStatus, setStageOutput, setCodeViewTab, setRightPanelView,

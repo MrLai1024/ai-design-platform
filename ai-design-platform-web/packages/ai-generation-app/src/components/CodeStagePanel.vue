@@ -2,6 +2,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useGenerationStore } from '@/stores/generation'
+import { useMultiAgent } from '@/composables/useMultiAgent'
 import TabBar from './TabBar.vue'
 import PreviewFrame from './PreviewFrame.vue'
 import FileExplorer from './FileExplorer.vue'
@@ -9,6 +10,7 @@ import AgentLog from './AgentLog.vue'
 import type { AgentLogEntry } from '@/types/generation'
 
 const store = useGenerationStore()
+const { sendFeedback, cancelGeneration } = useMultiAgent()
 
 const currentTab = computed(() => store.codeViewTab === 'preview' ? 'preview' : 'files')
 
@@ -27,6 +29,28 @@ function onAgentLogClick(entry: AgentLogEntry): void {
     store.setActiveFile(path)
   }
 }
+
+function onSendFeedback(text: string): void {
+  // Add feedback entry to AgentLog
+  store.addAgentLogEntry({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+    type: 'feedback_summary',
+    timestamp: Date.now(),
+    feedbackText: text,
+    feedbackResult: '正在处理...',
+  })
+  sendFeedback(text)
+}
+
+function onCancelGeneration(): void {
+  cancelGeneration()
+  store.addAgentLogEntry({
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+    type: 'cancel',
+    timestamp: Date.now(),
+    summary: '用户手动终止',
+  })
+}
 </script>
 
 <template>
@@ -37,23 +61,20 @@ function onAgentLogClick(entry: AgentLogEntry): void {
       @select="handleTabSelect"
     />
     <div class="flex-1 relative">
-      <!-- 预览 tab -->
       <div v-show="currentTab === 'preview'" class="absolute inset-0">
         <PreviewFrame />
       </div>
 
-      <!-- 工程文件 tab: 三栏 -->
       <div v-show="currentTab === 'files'" class="absolute inset-0 flex overflow-hidden">
-        <!-- 左: AgentLog 35% -->
         <div class="w-[35%] min-w-[280px] border-r border-gray-200 flex flex-col">
           <AgentLog
             :entries="store.agentLogEntries"
             :is-streaming="store.isStreaming"
             @entry-click="onAgentLogClick"
+            @send-feedback="onSendFeedback"
+            @cancel-generation="onCancelGeneration"
           />
         </div>
-
-        <!-- 右: FileExplorer (FileTree + CodeView) 65% -->
         <div class="flex-1">
           <FileExplorer />
         </div>

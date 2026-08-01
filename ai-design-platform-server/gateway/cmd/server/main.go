@@ -80,6 +80,7 @@ func main() {
 		api.POST("/e2e/result", e2eHandler.SubmitE2EResult)
 		api.POST("/generation/confirm", e2eHandler.ConfirmStage)
 		api.POST("/generation/compile_feedback", e2eHandler.SubmitCompileFeedback)
+		api.POST("/generation/feedback", graphHandler.SubmitFeedback)
 	}
 
 	// HTTP 服务器
