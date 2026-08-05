@@ -205,10 +205,8 @@ export function useStreamChat() {
                 console.warn(`Loop warning: ${event.reason}`)
                 break
 
-              case 'loop_break':
-                store.setNeedsManualReview(true)
-                store.setLoopBreakReason(event.reason)
-                break
+              // NOTE: 聊天流（chat mode）不会收到 loop_break —— 该事件只由
+              // LangGraph 流水线发出（graph mode 的 useMultiAgent 处理）。
 
               // --- 需求分析事件 ---
 
@@ -338,40 +336,6 @@ export function useStreamChat() {
 
               case 'code_gen_done':
                 store.setCodeGenDone(event.total_files || 0, event.compile_errors || 0)
-                break
-
-              // ── Review 阶段 ──
-              case 'review_agents_start':
-                store.initReviewAgents(event.agents || [])
-                break
-
-              case 'review_agent_chunk':
-                store.setAgentRunning(event.agent)
-                store.appendAgentFinding(event.agent, {
-                  severity: event.issue?.severity || 'medium',
-                  file: event.issue?.file || '',
-                  line: event.issue?.line || 0,
-                  title: event.issue?.title || '',
-                  description: event.issue?.description || '',
-                  fix: event.issue?.fix || '',
-                })
-                break
-
-              case 'review_agent_done':
-                store.setAgentDone(event.agent)
-                break
-
-              case 'review_report_ready':
-                store.reviewReportHtml = event.report_html
-                store.docStreamingContent = event.report_html || ''
-                break
-
-              case 'review_fix_start':
-                // Auto-fixing — switching back to code stage
-                break
-
-              case 'review_fix_done':
-                // Fix complete
                 break
 
               // ── E2E 阶段 ──

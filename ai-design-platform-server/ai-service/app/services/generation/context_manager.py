@@ -113,8 +113,16 @@ async def verify_contract(
 ) -> ToolResult:
     """
     Verify that consumer_file correctly uses provider_file's exports.
-    Checks: props match, event names match.
+    Checks: exports present, props passed, event names match.
     """
+    # 5.3: expected_interface 必须显式提供 — 缺失时"零 violations → match=true"
+    # 是空校验漏洞（vacuous pass），一律拒绝并给出明确错误。
+    if not expected_interface or not isinstance(expected_interface, dict):
+        return ToolResult(
+            ok=False,
+            error="expected_interface 未提供或为空：契约校验必须声明期望接口（exports/props/events）",
+        )
+
     consumer_content = files.get(consumer_file, "")
     provider_content = files.get(provider_file, "")
 
@@ -151,5 +159,33 @@ async def verify_contract(
                     "detail": f"{provider_file} missing expected export '{export_name}'",
                 })
 
+        # Check events — provider must emit the expected events (5.3 / 5a
+        # review): defineEmits<('submit' | 'cancel')> → {'submit', 'cancel'}.
+        expected_events = expected_interface.get("events", [])
+        if isinstance(expected_events, list):
+            provider_events = _normalized_event_names(provider_contract["events"])
+            for event_name in expected_events:
+                if event_name not in provider_events:
+                    violations.append({
+                        "type": "missing_event",
+                        "detail": f"{provider_file} missing expected event '{event_name}'",
+                    })
+
     match = len(violations) == 0
     return ToolResult(ok=True, data={"match": match, "violations": violations})
+
+
+def _normalized_event_names(events: list) -> set[str]:
+    """Normalize defineEmits expressions: ('submit' | 'cancel') → {submit, cancel}.
+
+    Handles quoted union syntax (``'submit' | 'cancel'``, ``"submit"``) and
+    paren-wrapped unions; object-literal emit types are a known heuristic miss
+    (rule-engine, no LLM).
+    """
+    names: set[str] = set()
+    for expr in events or []:
+        for raw in str(expr).replace("|", ",").split(","):
+            token = raw.strip().strip("'\"`()[] ")
+            if token:
+                names.add(token)
+    return names

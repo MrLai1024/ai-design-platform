@@ -1,0 +1,3 @@
+{"ts": "2026-08-06T00:03:56", "category": "compile", "problem": "code 失败：编译失败：1 处错误", "root_cause": "编译失败：1 处错误", "fix": "重派（带反馈） → code", "result": "pending"}
+{"ts": "2026-08-06T00:03:56", "category": "compile", "problem": "code 失败：编译失败：1 处错误", "root_cause": "编译失败：1 处错误", "fix": "拆分（并行子任务） → code", "result": "pending"}
+{"ts": "2026-08-06T00:03:56", "category": "compile", "problem": "code 失败：编译失败：1 处错误", "root_cause": "编译失败：1 处错误", "fix": "上报（转人工）", "result": "escalated"}

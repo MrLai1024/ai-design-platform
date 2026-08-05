@@ -1,0 +1,77 @@
+{
+  "app_id": "gen-manual-code",
+  "created_at": "2026-08-06T00:03:56",
+  "version": 1,
+  "spec_version": 1,
+  "features_done": [],
+  "stages": {},
+  "updated_at": "2026-08-06T00:03:56",
+  "verdicts": [
+    {
+      "node": "code",
+      "decision": "redo",
+      "reason": "编译未通过（1 处错误）\n[恢复策略：重派（带反馈） → code] 失败分类：编译失败（置信 high）\n编译失败：1 处错误\n历史修复策略参考：重派（带反馈） → code（历史成功 0 次）",
+      "signature": "dc83bd61",
+      "at": "2026-08-06T00:03:56",
+      "recovery": {
+        "category": "compile",
+        "reason": "编译失败：1 处错误",
+        "strategy": {
+          "strategy": "redispatch",
+          "target": "code",
+          "reason": "重派同一 worker（携带编译/契约证据反馈）"
+        },
+        "attempts": 1,
+        "escalate": false,
+        "scope_change": false,
+        "scope_change_note": "",
+        "suggested_fix": "重派（带反馈） → code（历史成功 0 次）",
+        "signature": "231fe416dbc4"
+      }
+    },
+    {
+      "node": "code",
+      "decision": "redo",
+      "reason": "编译未通过（1 处错误）\n[恢复策略：拆分（并行子任务） → code] 失败分类：编译失败（置信 high）\n编译失败：1 处错误\n历史修复策略参考：重派（带反馈） → code（历史成功 0 次）",
+      "signature": "dc83bd61",
+      "at": "2026-08-06T00:03:56",
+      "recovery": {
+        "category": "compile",
+        "reason": "编译失败：1 处错误",
+        "strategy": {
+          "strategy": "split",
+          "target": "code",
+          "reason": "重派一轮未通过，问题集中在具体文件 → 拆分修复范围（并行子任务）"
+        },
+        "attempts": 2,
+        "escalate": false,
+        "scope_change": false,
+        "scope_change_note": "",
+        "suggested_fix": "重派（带反馈） → code（历史成功 0 次）",
+        "signature": "231fe416dbc4"
+      }
+    },
+    {
+      "node": "code",
+      "decision": "redo",
+      "reason": "编译未通过（1 处错误）",
+      "signature": "dc83bd61",
+      "at": "2026-08-06T00:03:56",
+      "recovery": {
+        "category": "compile",
+        "reason": "编译失败：1 处错误",
+        "strategy": {
+          "strategy": "escalate",
+          "target": null,
+          "reason": "自主闭环超 2 轮红线，必须向用户汇报"
+        },
+        "attempts": 3,
+        "escalate": true,
+        "scope_change": false,
+        "scope_change_note": "",
+        "suggested_fix": "重派（带反馈） → code（历史成功 0 次）",
+        "signature": "231fe416dbc4"
+      }
+    }
+  ]
+}

@@ -5,40 +5,34 @@ import { useGenerationStore } from '@/stores/generation'
 import { useMultiAgent } from '@/composables/useMultiAgent'
 import { useStreamChat } from '@/composables/useStreamChat'
 import ChatInput from './ChatInput.vue'
+import ManagerCard from './ManagerCard.vue'
+import type { ChatMessage } from '@/types/generation'
 
 const store = useGenerationStore()
 const {
-  startGeneration,
+  startBrainstorm,
+  sendBrainstormTurn,
   startGraphGeneration,
+  startIncrementalGeneration,
+  regenIncrementalStep,
   confirmStage,
+  sendFeedback,
+  routeUserMessage,
   cancel: cancelAgent,
   isTransitioning,
 } = useMultiAgent()
 const { send: sendStream } = useStreamChat()
 
-// 需求分析阶段的 system prompt（后端 LangGraph 节点的镜像）
-const ANALYSIS_SYSTEM_PROMPT = `你是一个资深产品需求分析师。你的职责是**澄清需求**，不是写代码或设计方案。
+// 8.x 增量开发入口: 应用完成 (e2e 通过) 后可对当前应用发起增量开发,
+// 用户在输入框键入新需求后发送。
+const incrementalDraft = ref(false)
+const canStartIncremental = computed(() =>
+  store.stage === 'e2e' && store.stageStatus.e2e === 'done',
+)
 
-## 核心规则（必须严格遵守）
-1. **绝对禁止**编写代码、组件名、技术方案
-2. **绝对禁止**输出设计方案、组件树、数据流
-3. **只能**做需求澄清：通过提问逐步明确用户想要什么
-
-## 工作流程
-用户的需求通常比较模糊。你需要通过多轮提问来明确功能边界、页面布局、交互行为、数据内容。
-
-**每轮只问一个问题**，给出 2-4 个具体选项让用户选择。
-
-输出格式（提问阶段）：
-**问题：** <一个问题>
-- <选项A>
-- <选项B>
-- <选项C>
-
-当你认为信息已经足够（通常 3+ 轮 Q&A），输出：
-**准备就绪！** 请点击下方的「🚀 开始设计」按钮，我将为你生成完整的需求规格文档。
-
-注意：你绝对不能自己输出需求规格文档，PRD 将由后续流程生成。`
+function handleStartIncremental(): void {
+  incrementalDraft.value = true
+}
 
 const messagesContainer = ref<HTMLElement | null>(null)
 
@@ -66,37 +60,92 @@ watch(() => store.lastAssistantMessage?.reasoningContent, () => {
   scrollReasoningToBottom()
 })
 
-// 判断当前阶段是否完成
-function isCurrentStageFinished(): boolean {
-  if (store.isStreaming) return false
-  const last = store.lastAssistantMessage
-  if (!last || last.isStreaming) return false
-  return last.content.length > 0 || (last.reasoningContent?.length ?? 0) > 0
+// 头脑风暴阶段判定（任务组 3：澄清期间所有输入直接进 agenda 引擎，不做意图分类）
+function isBrainstormActive(): boolean {
+  return store.stage === 'analysis' && (store.stagePhase === 'qa' || store.stagePhase === 'idle')
 }
 
-// 反问完成后显示"开始设计"按钮
+// 头脑风暴收敛（覆盖度达标 + 用户确认）→ 显示"开始设计"按钮
+// 必须仍在澄清阶段（stagePhase === 'qa'）：PRD 流式生成中（'generating'）
+// 隐藏按钮，避免重点击中断在途生成（fix #3）
 const canStartDesign = computed(() => {
   if (store.stage !== 'analysis') return false
-  if (store.stagePhase !== 'qa' && store.stagePhase !== 'idle') return false
-  return isCurrentStageFinished() && store.messages.length >= 2
+  if (store.stagePhase !== 'qa') return false
+  return store.brainstormConverged
 })
 
-async function continueAnalysis(userContent: string): Promise<void> {
+/** 澄清阶段输入 → agenda 引擎（POST /api/v1/generation/brainstorm） */
+async function continueBrainstorm(userContent: string, itemId?: string): Promise<void> {
+  await sendBrainstormTurn(userContent, itemId)
+}
+
+/** 非头脑风暴阶段的兜底聊天回复（design/code 等阶段的自由输入） */
+async function continueChat(userContent: string): Promise<void> {
+  // useStreamChat 只接受 analysis/design/code 三档 stage，收窄类型（fix #12）
+  const chatStage = store.stage === 'design' || store.stage === 'code'
+    ? store.stage
+    : 'analysis'
   await sendStream({
     content: userContent,
-    lib: store.currentLib,
-    stage: 'analysis',
-    systemPrompt: ANALYSIS_SYSTEM_PROMPT,
+    stage: chatStage,
   })
 }
 
-function handleSend(content: string): void {
-  if (store.stage === 'idle' || store.stage === 'analysis') {
-    if (store.stage === 'idle') {
-      startGeneration(content, ANALYSIS_SYSTEM_PROMPT)
-    } else {
-      continueAnalysis(content)
+async function handleSend(content: string): Promise<void> {
+  // 8.x 增量开发：按钮触发后，下一次发送的内容作为新需求提交给增量流水线
+  if (incrementalDraft.value) {
+    incrementalDraft.value = false
+    await startIncrementalGeneration(content)
+    return
+  }
+  // 需求输入：全新开始 → 头脑风暴首轮（需求画像，任务组 3）
+  if (store.stage === 'idle') {
+    startBrainstorm(content)
+    return
+  }
+  // 需求澄清 Q&A：走 agenda 引擎
+  if (isBrainstormActive()) {
+    continueBrainstorm(content)
+    return
+  }
+  // 2.3: 流程进行中 → Manager 自判意图后分流
+  const intent = await routeUserMessage(content)
+  if (intent === 'reply_qa') {
+    await continueChat(content)
+  }
+}
+
+/** 卡片选项点击：question_card/proposal_card/confirm_card 在头脑风暴阶段走 agenda 引擎；diagnosis_card（求援）按选项分流 */
+async function handleCardOptionClick(msg: ChatMessage, option: string): Promise<void> {
+  if (store.isStreaming) return
+  const card = msg.meta?.card
+  if (card === 'question_card') {
+    // 议程提问卡片：带 item_id 精准落回议程项
+    continueBrainstorm(option, msg.meta?.data?.item_id as string | undefined)
+  } else if (card === 'diagnosis_card') {
+    if (option === '继续自主') {
+      confirmStage(store.stage)
+    } else if (option === '转人工') {
+      store.setManualMode(true)
     }
+  } else if (card === 'confirm_card' && (msg.meta?.data as any)?.scope_confirm) {
+    // 9.3 (I5): 范围变更确认卡 — 「确认」→ resume (后端批准范围变更,
+    // 进入重派反馈); 「重新生成」→ feedback (后端拒绝, 范围不变更)。
+    if (option === '确认') {
+      confirmStage(store.stage)
+    } else if (option === '重新生成') {
+      await sendFeedback(option)
+    }
+  } else if (card === 'confirm_card' && option === '重新生成' && (msg.meta?.data as any)?.incremental) {
+    // 8.x (review I1): 增量确认卡「重新生成」— 服务端清除当前级产物重算,
+    // 不再静默跳过用户修正。
+    await regenIncrementalStep()
+  } else if (isBrainstormActive()) {
+    // proposal_card（方案对比选择）/ confirm_card（收敛确认）→ agenda 引擎
+    continueBrainstorm(option, msg.meta?.data?.item_id as string | undefined)
+  } else {
+    // 收敛后的流程卡片（coverage_matrix 等）→ Manager 意图路由兜底
+    await routeUserMessage(option)
   }
 }
 
@@ -148,8 +197,12 @@ const interactiveOptions = computed<ParsedQuestion | null>(() => {
 
 function handleOptionClick(option: string): void {
   if (store.isStreaming) return
-  // 将选项文本作为用户回复发送
-  continueAnalysis(option)
+  // 旧消息的文本选项兜底：澄清阶段走 agenda 引擎，其他阶段走意图路由
+  if (isBrainstormActive()) {
+    continueBrainstorm(option)
+  } else {
+    routeUserMessage(option)
+  }
 }
 
 async function handleStartDesign(): Promise<void> {
@@ -263,17 +316,27 @@ function formatDuration(ms?: number): string {
             </div>
           </div>
 
-          <!-- 文本内容 -->
-          <div v-if="msg.role === 'user'">{{ msg.content }}</div>
-          <div
-            v-else
-            class="message-content prose prose-sm max-w-none"
-            v-html="stripOptions(msg.content)
-              .replace(/```[\s\S]*?```/g, '')
-              .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-              .replace(/\n/g, '<br>')
-            "
+          <!-- Manager 结构化消息卡片（meta 驱动，任务组 2） -->
+          <ManagerCard
+            v-if="msg.meta"
+            :meta="msg.meta"
+            :disabled="store.isStreaming"
+            @option-click="(opt: string) => handleCardOptionClick(msg, opt)"
           />
+
+          <!-- 文本内容（无 meta 时回退） -->
+          <template v-else>
+            <div v-if="msg.role === 'user'">{{ msg.content }}</div>
+            <div
+              v-else
+              class="message-content prose prose-sm max-w-none"
+              v-html="stripOptions(msg.content)
+                .replace(/```[\s\S]*?```/g, '')
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\n/g, '<br>')
+              "
+            />
+          </template>
 
           <!-- 选项按钮（最后一条 assistant 消息，流式结束，有可交互选项） -->
           <div
@@ -328,6 +391,18 @@ function formatDuration(ms?: number): string {
             <span class="animate-spin">⏳</span> 启动中...
           </span>
           <span v-else>🚀 开始设计</span>
+        </button>
+      </div>
+
+      <!-- 8.x 增量开发入口（应用完成时显示）：下次输入的新需求走增量流水线 -->
+      <div v-if="canStartIncremental" class="flex justify-center pb-2">
+        <button
+          class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+          :disabled="isTransitioning"
+          @click="handleStartIncremental"
+        >
+          <span v-if="incrementalDraft">✏️ 请输入新需求后发送...</span>
+          <span v-else>🔄 增量开发</span>
         </button>
       </div>
     </div>

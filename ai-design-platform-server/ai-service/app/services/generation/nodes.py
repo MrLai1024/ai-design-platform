@@ -1,5 +1,4 @@
 # ai-design-platform-server/ai-service/app/services/generation/nodes.py
-import asyncio
 import json
 from typing import Any
 
@@ -7,7 +6,6 @@ import structlog
 
 from ..llm.provider import LLMConfig, LLMProvider, ReasoningEvent, TokenEvent, Message, ToolCallEvent, CompleteEvent
 from .state import GenerationState
-from .harness import EvalHarness
 from .planner import (
     PLANNER_SYSTEM_PROMPT,
     PLANNER_REFLECT_PROMPT,
@@ -66,44 +64,9 @@ async def _llm_generate(
     return full_text
 
 
-async def _llm_generate_structured(
-    system_prompt: str,
-    user_content: str,
-    output_schema: dict[str, Any],
-    model: str = "glm-5.2",
-) -> dict[str, Any]:
-    """Call LLM and parse response as JSON matching output_schema."""
-    schema_hint = (
-        f"\n\n你必须以 JSON 格式输出，格式如下：\n"
-        f"{json.dumps(output_schema, ensure_ascii=False, indent=2)}\n"
-        f"只输出 JSON，不要有其他内容。"
-    )
-    full_prompt = system_prompt + schema_hint
-    raw = await _llm_generate(full_prompt, user_content, model)
-    # Extract JSON from response (handle markdown code blocks)
-    raw_lower = raw.lower()
-    if "```json" in raw_lower:
-        idx = raw_lower.index("```json")
-        fence_tag = raw[idx : idx + len("```json") + 2]  # capture exact tag incl. any trailing ws
-        raw = raw.split(fence_tag, 1)[1].split("```")[0]
-    elif "```" in raw:
-        raw = raw.split("```", 1)[1].split("```")[0]
-    try:
-        return json.loads(raw.strip())
-    except json.JSONDecodeError:
-        logger.error(
-            "structured_parse_failed",
-            raw_text=raw[:500],
-        )
-        raise ValueError(
-            f"Failed to parse structured JSON from LLM response. "
-            f"Raw text (first 500 chars): {raw[:500]}"
-        )
-
-
 # ---- Analysis Node (direct PRD generation) ----
 
-ANALYSIS_PRD_PROMPT = """你是一个资深产品需求分析师。根据用户的原始需求，直接生成一份完整的需求规格文档（PRD）。
+ANALYSIS_PRD_PROMPT = """你是一个资深产品需求分析师。根据用户的原始需求与头脑风暴澄清产物，直接生成一份完整的需求规格文档（PRD）。
 
 ## 文档结构（严格按此顺序输出）
 1. **# 需求规格文档** — 文档标题
@@ -112,8 +75,11 @@ ANALYSIS_PRD_PROMPT = """你是一个资深产品需求分析师。根据用户�
 4. **## 3. 页面结构** — 页面树形结构，标注页面类型
 5. **## 4. 数据模型** — 核心数据实体及字段定义
 6. **## 5. 交互行为** — 关键交互流程说明
+7. **## 6. 假设清单** — 澄清中未确认、按假设处理的议程项（仅当输入提供假设清单时输出）
 
 ## 规则
+- 若输入包含「澄清产物」（结构化需求 / 决策日志 / 假设清单），须以其为准：结构化需求决定功能与页面内容，决策日志如实写入相关章节，假设清单逐条列入「## 6. 假设清单」并标注（待确认，用户可纠正）
+- 未提供假设清单时，可不输出第 6 节
 - 用简洁专业的语言
 - 不确定的地方合理推测并标注（待确认）
 - 不写代码、不写技术实现、不写组件选择
@@ -136,46 +102,43 @@ async def analysis_node(state: GenerationState) -> GenerationState:
     messages = state.get("messages", [])
     qa_rounds = state.get("qa_rounds", 0)
 
-    # Collect conversation context
-    context = ""
-    for m in messages:
-        context += f"\n[{m.get('role', '?')}]: {m.get('content', '')}"
+    # Task group 3 (3.6): PRD 消费澄清产物（结构化需求 + 决策日志 + 假设清单）
+    requirements_state_json = state.get("requirements_state_json")
+    if requirements_state_json:
+        parts = [
+            f"用户需求：{requirement}",
+            "以下为头脑风暴澄清产物，请以其为准生成完整的需求规格文档：",
+            f"### 结构化需求\n{requirements_state_json}",
+        ]
+        decisions = state.get("brainstorm_decisions") or []
+        assumptions = state.get("brainstorm_assumptions") or []
+        if decisions:
+            parts.append("### 决策日志\n" + json.dumps(decisions, ensure_ascii=False))
+        if assumptions:
+            parts.append("### 假设清单\n" + json.dumps(assumptions, ensure_ascii=False))
+        user_prompt = "\n\n".join(parts)
+    else:
+        # Collect conversation context
+        context = ""
+        for m in messages:
+            context += f"\n[{m.get('role', '?')}]: {m.get('content', '')}"
 
-    user_prompt = f"用户需求：{requirement}\n\n对话上下文：{context}\n\n请生成完整的需求规格文档。"
+        user_prompt = f"用户需求：{requirement}\n\n对话上下文：{context}\n\n请生成完整的需求规格文档。"
 
     prd_text = await _llm_generate(
         system_prompt=ANALYSIS_PRD_PROMPT,
         user_content=user_prompt,
     )
 
-    e2e_cases = _extract_e2e_cases(prd_text)
-
+    # E2E cases are no longer placeholder-extracted here — the Test Designer
+    # (task group 6, e2e_designer) generates the real DSL cases at the e2e
+    # stage from the requirement points + architecture Spec.
     return {
         **state,
         "analysis_result": prd_text,
-        "e2e_test_cases": e2e_cases,
         "qa_rounds": qa_rounds + 1,
         "stage_phase": "complete",
     }
-
-
-# Remove old helper functions — no longer needed
-# _emit_requirements_state, _handle_prd_generation, _user_wants_prd, _strategist, etc.
-
-
-def _extract_e2e_cases(prd: str) -> list[dict]:
-    """从 PRD 中提取 E2E 测试用例骨架."""
-    return [
-        {
-            "id": "TC-001",
-            "name": "页面加载验证",
-            "description": "验证核心页面能正常加载",
-            "steps": [
-                {"action": "wait", "target": "body", "value": "2000", "description": "等待页面加载"},
-                {"action": "assert", "target": "body", "value": "", "description": "页面已加载"},
-            ],
-        }
-    ]
 
 
 # ---- Design Node ----
@@ -205,34 +168,128 @@ DESIGN_SYSTEM_PROMPT = """你是一个资深前端架构师。根据需求分析
 - 需要注意的边界情况"""
 
 
-async def design_node(state: GenerationState) -> GenerationState:
-    """方案设计节点：产出架构设计文档。"""
-    logger.info("design_node_start")
+def _clarify_blocks(state: GenerationState | None) -> list[str]:
+    """澄清产物 prompt 块（结构化需求 + 决策日志 + 假设清单），供 Spec 生成消费（4.2）."""
+    blocks: list[str] = []
+    if not state:
+        return blocks
+    requirements_state_json = state.get("requirements_state_json")
+    if requirements_state_json:
+        try:
+            pretty = json.dumps(
+                json.loads(requirements_state_json),
+                ensure_ascii=False, indent=2,
+            )
+        except (json.JSONDecodeError, TypeError):
+            pretty = requirements_state_json
+        blocks.append(f"头脑风暴澄清产物（结构化需求，以其为准）：\n{pretty}")
+    decisions = state.get("brainstorm_decisions") or []
+    if decisions:
+        blocks.append("决策日志：\n" + json.dumps(decisions, ensure_ascii=False, indent=2))
+    assumptions = state.get("brainstorm_assumptions") or []
+    if assumptions:
+        blocks.append("假设清单：\n" + json.dumps(assumptions, ensure_ascii=False, indent=2))
+    return blocks
 
-    failure_details = state.get("failure_details")
-    if failure_details and failure_details["source"] == "review":
-        prompt = (
-            f"原需求分析：\n{state['analysis_result']}\n\n"
-            f"之前的设计方案存在问题，review 反馈如下：\n"
-            f"{failure_details['instruction']}\n\n"
-            f"请修改设计方案，解决上述问题。"
-        )
-    else:
-        prompt = f"需求分析文档：\n{state['analysis_result']}"
 
-    result = await _llm_generate(
-        system_prompt=DESIGN_SYSTEM_PROMPT,
-        user_content=prompt,
+async def _spec_default_llm(system_prompt: str, user_content: str) -> str:
+    """Default LLM seam for the structured Spec call: thinking off (4.2).
+
+    The Spec is a pure JSON contract — emitted directly, no reasoning stream —
+    keeping the call fast and the output clean. Tests inject their own
+    ``llm_fn`` instead.
+    """
+    return await _llm_generate(
+        system_prompt=system_prompt,
+        user_content=user_content,
+        enable_thinking=False,
     )
 
-    state["design_result"] = result
-    state["design_doc"] = result
-    state["stage_phase"] = "complete"
-    check = EvalHarness.validate(state, "design")
-    if not check.passed:
-        logger.warning("design_validation_failed", errors=check.errors)
 
-    return state
+async def generate_architecture_spec(
+    prd: str,
+    state: GenerationState | None = None,
+    llm_fn: Any | None = None,
+    max_attempts: int = 2,
+    feedback: str = "",
+    existing_spec: dict | None = None,
+) -> tuple[dict, list[str]]:
+    """Generate the machine-readable architecture Spec (4.2).
+
+    Single-turn structured LLM call with the D5 schema, via brainstorm's
+    ``_llm_structured`` seam (lazy import: breaks the nodes↔brainstorm import
+    cycle). Schema-validated before acceptance: an invalid result is retried
+    once with the validation errors fed back into the prompt. The final result
+    (possibly still invalid) is returned so the manager gate decides.
+
+    ``llm_fn`` defaults to the singleton path with thinking off
+    (``_spec_default_llm``); tests pass a fake. ``feedback`` (review fix 1) is
+    the previous gate's redo reason (L1 field list / L2 missing list), fed back
+    when the design re-runs after a failed gate.
+
+    ``existing_spec`` (8.3 增量设计): the existing app's architecture.json
+    summary. When provided the prompt instructs that the output MUST be the
+    FULL merged spec (existing structure + the delta changes) — the memory
+    write overwrites architecture.json with the merged version, so downstream
+    consumers (Planner / Verifier) always see a complete document.
+
+    Returns ``(spec, validation_errors)``.
+    """
+    from .brainstorm import _llm_structured  # lazy: nodes ↔ brainstorm cycle
+    from .spec_schema import (
+        ARCHITECTURE_SPEC_PROMPT,
+        empty_spec,
+        validate_spec,
+    )
+
+    fn = llm_fn if llm_fn is not None else _spec_default_llm
+    parts = [f"需求分析文档（PRD）：\n{prd}"]
+    parts.extend(_clarify_blocks(state))
+    # 7.6: 分发约束（含长期用户偏好）消费点 — Spec prompt (方案不得推翻偏好)。
+    constraints = ((state or {}).get("dispatch_contract") or {}).get("constraints") or []
+    if constraints:
+        parts.append(
+            "## 约束（Manager 分发 + 用户历史偏好，必须遵守）\n"
+            + "\n".join(f"- {c}" for c in constraints)
+        )
+    if existing_spec:
+        # 8.3 增量设计: 合并完整 Spec —— 输出 = 已有结构 + 本次变更。
+        from .memory import _architecture_summary  # lazy: same-package summary
+
+        parts.append(
+            "## 已有架构 Spec（增量开发 —— 输出必须为合并后的完整 Spec）\n"
+            "以下为已有应用架构摘要，本次变更是**在其基础上叠加**：\n"
+            + json.dumps(_architecture_summary(existing_spec), ensure_ascii=False, indent=2)
+            + "\n\n"
+            "输出规则：完整输出合并后的架构 Spec —— 既有页面/组件/数据实体/路由保持存在"
+            "（必要时用 abstract 概述），本次变更涉及的模块给出完整细节；"
+            "禁止只输出变更部分（下游消费方需要完整文档）。"
+        )
+    if feedback:
+        parts.append(
+            "## Manager 把关反馈（上一版方案未通过，请据此修正后重新设计）\n"
+            + feedback
+        )
+    base_prompt = "\n\n".join(parts)
+
+    spec: dict = {}
+    errors: list[str] = []
+    for attempt in range(max_attempts):
+        user_prompt = base_prompt
+        if attempt > 0 and errors:
+            user_prompt += (
+                "\n\n## 上一版 Spec 未通过字段完整性校验（必须全部修正）：\n"
+                + "\n".join(f"- {e}" for e in errors)
+                + "\n\n## 上一版 Spec 内容：\n"
+                + json.dumps(spec, ensure_ascii=False, indent=2)
+                + "\n\n请修正以上问题，重新输出完整的架构 Spec JSON（所有字段非空）。"
+            )
+        spec = await _llm_structured(ARCHITECTURE_SPEC_PROMPT, user_prompt, empty_spec(), fn)
+        errors = validate_spec(spec)
+        if not errors:
+            break
+        logger.warning("architecture_spec_validation_failed", attempt=attempt + 1, errors=errors)
+    return spec, errors
 
 
 # ---- Code Node (Tool-use Loop) ----
@@ -255,7 +312,11 @@ CODE_ORCHESTRATOR_PROMPT = """你是一个资深 Vue 3 全栈工程师，使用�
 - 确保每个 .vue 文件有完整的 `<template>`、`<script setup>`、`<style scoped>`
 - 工具调用的 arguments 必须是合法 JSON 字符串
 - 如果不需要调用工具，直接输出简短文本回复
-- 工具调用格式: {"tool_calls": [{"id": "call_N", "function": {"name": "...", "arguments": "{\\"key\\": \\"value\\"}"}}]}"""
+- 工具调用格式: {"tool_calls": [{"id": "call_N", "function": {"name": "...", "arguments": "{\\"key\\": \\"value\\"}"}}]}
+
+## data-testid 埋点（5.7，必做）
+- 关键交互元素（按钮/输入框/链接导航/分页/选项卡/弹窗等）必须带语义化 data-testid 钩子（kebab-case，如 save-button、pagination-next）
+- 缺少 data-testid 的交互元素会被 Verifier 判为验证失败"""
 
 EXECUTOR_SYSTEM_PROMPT = """你是一个 Vue 3 前端工程师，负责完成一个具体的代码生成任务。
 
@@ -270,9 +331,26 @@ EXECUTOR_SYSTEM_PROMPT = """你是一个 Vue 3 前端工程师，负责完成一
 1. 理解任务目标和接口契约
 2. 调用 use_skill 或 mcp_query 获取模板和文档
 3. 调用 write_code 逐个生成文件
-4. 全部文件生成后调用 compile_project 检查
-5. 有编译错误时修复后再 compile
-6. 编译通过后输出 __TASK_DONE__
+4. 全部文件生成后调用 verify_contract 校验本任务的接口契约：
+   - consumer_file / provider_file 取本任务或依赖任务中相互引用的文件
+   - expected_interface 取任务 contract 中的 exports/props/events（依赖任务契约同样校验）
+   - 返回 violations 时修复对应文件，然后再次调用 verify_contract，直到 match=true
+5. 调用 compile_project 检查编译
+6. 有编译错误时修复后再 compile
+7. 编译通过且契约校验通过后输出 __TASK_DONE__
+
+## 验收标准（输出 __TASK_DONE__ 前必须全部满足）
+- 文件清单：任务 files 全部生成
+- 契约一致：verify_contract 校验 match=true（exports/props/events 与契约一致）
+- 编译通过：compile_project 无错误
+- 埋点完整：关键交互元素均带语义化 data-testid（见下方埋点规则）
+
+## data-testid 埋点规则（5.7，必做）
+- 所有关键交互元素必须带语义化 data-testid 钩子，钩子名用 kebab-case 英文（如 save-button、pagination-next、search-input、user-menu、login-submit）
+- 覆盖范围：按钮（button/el-button）、输入框（input/el-input/textarea/el-select）、链接与导航（a/router-link/el-menu-item）、分页（el-pagination）、选项卡（el-tabs/el-tab-pane）、弹窗（el-dialog）、开关（el-switch）、单选复选（el-radio/el-checkbox）、上传（el-upload）、日期（el-date-picker）
+- data-testid 直接写在交互元素标签上：`<button data-testid="save-button">保存</button>`；组件库组件同样直接加属性（属性会透传到根元素）
+- 纯展示元素（div/span/img/标题）不需要 data-testid
+- 关键交互元素缺少 data-testid 会被 Verifier 判为验证失败，必须补全后才能输出 __TASK_DONE__
 
 ## 规则
 - 只生成该 task 范围内的文件
@@ -289,14 +367,10 @@ async def code_node(state: GenerationState) -> GenerationState:
     """代码生成节点 — 工具增强的迭代式工程生成."""
     logger.info("code_node_start")
 
-    import tempfile
     import os as _os
 
-    project_root = _os.path.join(
-        tempfile.gettempdir(),
-        "ai-gen",
-        state.get("requirement", "project")[:20].replace(" ", "_"),
-    )
+    from .memory import project_root_for  # task group 7: persistent root
+    project_root = project_root_for(state)
 
     from .tools.registry import ToolRegistry
     registry = ToolRegistry(project_root)
@@ -413,11 +487,10 @@ async def code_node_streaming(
 ) -> GenerationState:
     """代码生成节点 — streaming 版本，每步工具调用通过 queue 实时发射事件."""
 
-    import tempfile, os as _os, json as _json, re
+    import os as _os, json as _json
 
-    _raw_name = state.get("requirement", "project")[:30]
-    _safe_name = re.sub(r'[^\w]', '_', _raw_name)[:30].strip('_') or "ai-gen-project"
-    project_root = _os.path.join(tempfile.gettempdir(), "ai-gen", _safe_name)
+    from .memory import project_root_for  # task group 7: persistent root
+    project_root = project_root_for(state)
 
     from .tools.registry import ToolRegistry
 
@@ -571,30 +644,106 @@ async def code_node_streaming(
     return state
 
 
+def build_fallback_dag(spec: dict | None, design_doc: str) -> dict:
+    """5.2: Planner parse-failure fallback — derived from the Spec.
+
+    A single business task covering the Spec's ``directory_tree`` files, with
+    the contract annotated from ``data_model``/``pages``. No hardcoded
+    bootstrap heuristics (the old fallback re-created qiankun/webpack tasks
+    regardless of the Spec, contradicting 5.2). Falls back to
+    ``_estimate_files`` when the Spec is absent (legacy path).
+    """
+    if spec:
+        files: list[str] = []
+        for entries in (spec.get("directory_tree") or {}).values():
+            for entry in entries or []:
+                if isinstance(entry, str) and entry and not entry.endswith("/"):
+                    if entry not in files:
+                        files.append(entry)
+        contract: dict = {}
+        data_entities = [
+            e.get("name") for e in (spec.get("data_model") or [])
+            if isinstance(e, dict) and e.get("name")
+        ]
+        pages = [
+            p.get("name") for p in (spec.get("pages") or [])
+            if isinstance(p, dict) and p.get("name")
+        ]
+        if data_entities:
+            contract["data_entities"] = data_entities
+        if pages:
+            contract["pages"] = pages
+        reasoning = "Fallback due to parse error — 依据架构 Spec 的 directory_tree/data_model/pages 推导"
+        if not files:
+            files = _estimate_files(design_doc)
+    else:
+        files = _estimate_files(design_doc)
+        contract = {}
+        reasoning = "Fallback due to parse error"
+    return {
+        "reasoning": reasoning,
+        "tasks": [
+            {
+                "id": "task-code-0",
+                "type": "business",
+                "description": "Main app component and all business code",
+                "deps": [],
+                "files": files,
+                "contract": contract,
+                "status": "pending",
+            },
+        ],
+    }
+
+
 async def planner_node(
     state: GenerationState,
     queue,
 ) -> GenerationState:
-    """Planner Agent — REASON→ACT: 解析设计文档，输出 Task DAG."""
+    """Planner Agent — REASON→ACT: 依据架构 Spec 拆解 Task DAG (task 5.2).
+
+    Incremental mode (8.3): the prompt switches to the delta-framed
+    ``build_incremental_planner_prompt`` (existing file inventory + change
+    manifest → tasks touching only the affected modules) and the existing
+    ``generated_files`` are NOT wiped (they stay as the executor context).
+    """
     logger.info("planner_node_start")
 
+    spec = state.get("architecture_spec")
     design_doc = state.get("design_doc") or state.get("design_result", "")
     failure = state.get("failure_details")
     reflect_count = state.get("planner_reflect_count", 0)
     code_feedback = state.get("code_feedback", "")
 
-    user_prompt = build_planner_user_prompt(design_doc, failure)
+    incremental = bool(state.get("incremental_mode") and state.get("change_manifest"))
+    if incremental:
+        from .planner import build_incremental_planner_prompt
+
+        inc_ctx = state.get("incremental_context") or {}
+        user_prompt = build_incremental_planner_prompt(
+            spec,
+            design_doc,
+            state.get("change_manifest"),
+            inc_ctx.get("generated_files") or {},
+        )
+    else:
+        user_prompt = build_planner_user_prompt(spec, design_doc, failure)
 
     # Self-review mode: user feedback triggers a comparison of design vs generated files
     if code_feedback:
         generated_files_summary = ""
         for path, content in state.get("generated_files", {}).items():
             generated_files_summary += f"- {path} ({len(content)} chars)\n"
+        spec_block = (
+            f"## 架构 Spec\n{json.dumps(spec, ensure_ascii=False, indent=2)}\n\n"
+            if spec
+            else ""
+        )
         user_prompt = (
-            f"设计方案：\n{design_doc}\n\n"
+            f"{spec_block}设计方案：\n{design_doc}\n\n"
             f"已生成的文件：\n{generated_files_summary}\n"
             f"用户反馈：{code_feedback}\n\n"
-            f"请对比设计方案和已生成文件，找出遗漏或差异。输出补充 Task DAG（仅包含需要新增或修改的任务）。"
+            f"请对比 Spec/设计方案和已生成文件，找出遗漏或差异。输出补充 Task DAG（仅包含需要新增或修改的任务）。"
             f"如果没有遗漏，输出空 tasks 列表。"
         )
 
@@ -618,39 +767,9 @@ async def planner_node(
         dag = extract_task_dag(raw_response)
     except Exception as e:
         logger.error("planner_extract_failed", error=str(e))
-        # Fallback: minimal DAG with code generation task
-        dag = {
-            "reasoning": "Fallback due to parse error",
-            "tasks": [
-                {
-                    "id": "task-bootstrap-0",
-                    "type": "bootstrap",
-                    "description": "qiankun lifecycle entry",
-                    "deps": [],
-                    "files": ["src/main.ts", "src/public-path.ts"],
-                    "contract": {"exports": ["bootstrap", "mount", "unmount"]},
-                    "status": "pending",
-                },
-                {
-                    "id": "task-bootstrap-1",
-                    "type": "bootstrap",
-                    "description": "webpack + package config",
-                    "deps": [],
-                    "files": ["webpack/webpack.common.js", "package.json", "tsconfig.json"],
-                    "contract": {"exports": []},
-                    "status": "pending",
-                },
-                {
-                    "id": "task-code-0",
-                    "type": "business",
-                    "description": "Main app component and all business code",
-                    "deps": ["task-bootstrap-0"],
-                    "files": _estimate_files(design_doc),
-                    "contract": {"exports": ["App"]},
-                    "status": "pending",
-                },
-            ],
-        }
+        # Fallback: single business task derived from the Spec — no hardcoded
+        # bootstrap heuristics (task 5.2).
+        dag = build_fallback_dag(spec, design_doc)
 
     task_dag = {
         "tasks": dag["tasks"],
@@ -667,7 +786,10 @@ async def planner_node(
     state["planner_dag"] = task_dag
     state["planner_reflect_count"] = reflect_count
     state["context_summary"] = {"key_exports": {}, "completed_tasks": []}
-    state["generated_files"] = {}
+    if not incremental:
+        # 增量模式保留已有文件（8.3 只动受影响模块 —— 已有文件是执行上下文）;
+        # 全量模式从空开始。
+        state["generated_files"] = {}
 
     return state
 
@@ -708,12 +830,24 @@ async def executor_task(
     contract = task.get("contract", {})
 
     system_prompt = EXECUTOR_SYSTEM_PROMPT
+    # 5.5: Debugger 修复轮的重派上下文 —— 失败证据链（根因 + 修复指令）
+    # 由 graph phase 3 写入 task["fix_instructions"] / task["root_cause"]，
+    # 首次执行时为空（无修复上下文）。
+    fix_context = task.get("fix_instructions") or ""
+    if task.get("root_cause"):
+        fix_context = f"根因：{task['root_cause']}\n" + fix_context
     user_msg = (
         f"## 任务\n{task.get('description', '')}\n\n"
         f"## 需要生成的文件\n{json.dumps(files_to_generate, ensure_ascii=False)}\n\n"
         f"## 接口契约要求\n{json.dumps(contract, ensure_ascii=False)}"
         f"{deps_info}\n\n"
-        f"开始生成。先调用 list_skills 了解可用模板。"
+        f"## 验收标准（任务完成前必须全部满足）\n"
+        f"1. 文件清单：{json.dumps(files_to_generate, ensure_ascii=False)} 全部生成\n"
+        f"2. 契约一致：调用 verify_contract 校验本任务与依赖任务的接口契约，violations 修复到 match=true\n"
+        f"3. 编译通过：compile_project 无错误\n"
+        f"4. 埋点完整：关键交互元素均带语义化 data-testid（kebab-case）\n"
+        + (f"\n## Debugger 修复指令（上一轮验证失败，必须落实）\n{fix_context}\n" if fix_context else "")
+        + f"\n开始生成。先调用 list_skills 了解可用模板。"
     )
 
     messages = [
@@ -723,7 +857,14 @@ async def executor_task(
 
     max_rounds = 12
     generated_files: dict[str, str] = {}
+    deleted_files: list[str] = []
     compile_errors: list[dict] | None = None
+    # 5.3: verify_contract 结果收集（任务级验收 — 契约一致）
+    contract_results: list[dict] = []
+    # 5.3/5.6 (并行纪律, review M1): 本任务写入的文件**逐路径**实时同步进
+    # registry 缓存（registry.merge_generated_files({path: content})），使
+    # verify_contract / retrieve_context 能查到刚写入的文件；绝不整包合并或
+    # 全量替换 —— 整包合并会把同批任务已写入的路径回退成启动时快照的旧值。
 
     for round_idx in range(max_rounds):
         def on_thinking(text: str):
@@ -766,8 +907,19 @@ async def executor_task(
                 if tool_name in ("create_file", "write_code") and result.ok:
                     path = tool_args.get("path", "")
                     content = tool_args.get("content", "")
-                    if tool_name == "write_code" and content:
+                    # 5.6 review (deferred 5a item): create_file 现在也进缓存与
+                    # 文件追踪 —— 骨架内容与 file_tools.create_file 一致，避免
+                    # "文件已建但 missing_files 仍报缺失"的假阳性（并行下更易
+                    # 触发缓存陈旧）。已存在的文件（created=False）不重写，
+                    # 不追踪。delete_file 走下方分支同步移除缓存。
+                    if tool_name == "create_file" and not content:
+                        if result.data.get("created", False):
+                            content = f"// {path}\n"
+                        else:
+                            content = ""
+                    if content:
                         generated_files[path] = content
+                        registry.merge_generated_files({path: content})
                         queue.put_nowait(_make_queue_event("file_start", "code", {"path": path}))
                         chunk_size = 200
                         for i in range(0, len(content), chunk_size):
@@ -779,6 +931,17 @@ async def executor_task(
                             }))
                         queue.put_nowait(_make_queue_event("file_complete", "code", {"path": path}))
 
+                elif tool_name == "delete_file" and result.ok:
+                    path = tool_args.get("path", "")
+                    if path:
+                        generated_files.pop(path, None)
+                        registry.remove_generated_file(path)
+                        deleted_files.append(path)
+                        queue.put_nowait(_make_queue_event("file_deleted", "code", {
+                            "path": path,
+                            "task_id": task_id,
+                        }))
+
                 elif tool_name == "use_skill" and result.ok:
                     for f in result.data.get("files", []):
                         fpath = f["path"]
@@ -789,6 +952,27 @@ async def executor_task(
                             wf.write(fcontent)
                         if fpath not in generated_files:
                             generated_files[fpath] = fcontent
+                            registry.merge_generated_files({fpath: fcontent})
+
+                elif tool_name == "verify_contract":
+                    # 5.3: 收集契约校验结果 — 任务级验收的「契约一致」判定来源。
+                    # expected_interface/error 记录用于区分真实校验与空校验
+                    # （未提供 expected_interface 会被工具拒绝，见 context_manager）。
+                    data = result.data or {}
+                    contract_results.append({
+                        "consumer_file": tool_args.get("consumer_file", ""),
+                        "provider_file": tool_args.get("provider_file", ""),
+                        "expected_interface": tool_args.get("expected_interface"),
+                        "match": bool(data.get("match", False)),
+                        "violations": data.get("violations", []),
+                        "error": result.error,
+                    })
+                    queue.put_nowait(_make_queue_event("contract_status", "code", {
+                        "task_id": task_id,
+                        "ok": bool(data.get("match", False)),
+                        "violations": data.get("violations", []),
+                        "error": result.error,
+                    }))
 
                 elif tool_name == "compile_project":
                     data = result.data or {}
@@ -826,11 +1010,36 @@ async def executor_task(
     summary = f"Task {task_id} done: {len(generated_files)} files"
     compile_err_count = len(compile_errors) if compile_errors else 0
 
+    # 5.3: 任务级验收 — 文件清单 + 契约一致 + 编译通过。
+    # contract_ok = 最后一次 verify_contract 的自检结果（violations 修复到
+    # match=true 才算通过；中途失败的校验被修复后不判定任务失败）。
+    missing_files = [f for f in files_to_generate if f not in generated_files]
+    contract_ok: bool | None = (
+        contract_results[-1]["match"] if contract_results else None
+    )
+    acceptance = {
+        "files_ok": len(missing_files) == 0,
+        "contract_ok": contract_ok,   # None = verify_contract 未被调用（未知）
+        "compile_ok": not compile_errors,
+        "details": {
+            "missing_files": missing_files,
+            "contract_results": contract_results,
+        },
+    }
+
     queue.put_nowait(_make_queue_event("task_complete", "code", {
         "task_id": task_id,
         "summary": summary,
         "file_count": len(generated_files),
         "compile_errors": compile_err_count,
+    }))
+
+    queue.put_nowait(_make_queue_event("task_acceptance", "code", {
+        "task_id": task_id,
+        "files_ok": acceptance["files_ok"],
+        "contract_ok": acceptance["contract_ok"],
+        "compile_ok": acceptance["compile_ok"],
+        "missing_files": missing_files,
     }))
 
     return {
@@ -839,6 +1048,12 @@ async def executor_task(
         "generated_files": generated_files,
         "compile_errors": compile_errors,
         "summary": summary,
+        # 5.3: additive — existing consumers (graph.py phase 3) keep reading
+        # task_id/status/generated_files/compile_errors/summary unchanged.
+        "acceptance": acceptance,
+        # 5.6: additive — 任务内 delete_file 删除的路径（runner 从共享
+        # generated_files 中移除，保证并行批次合并后删除不残留）。
+        "deleted_files": deleted_files,
     }
 
 
@@ -862,6 +1077,18 @@ async def planner_reflect_node(
     for path, content in generated_files.items():
         key_exports[path] = extract_interface_contract(path, content)
     context_summary["key_exports"] = key_exports
+
+    # 5.3: 契约验收不过的任务按失败处理（contract_ok is False → failed，走
+    # 自动重试路径）。contract_ok is None（从未调用 verify_contract）仅告警，
+    # 不判失败 —— 5.4 Verifier 是确定性的兜底。
+    for t in dag.get("tasks", []):
+        acceptance = t.get("acceptance") or {}
+        if t.get("status") == "done":
+            if acceptance.get("contract_ok") is False:
+                logger.warning("task_contract_failed", task_id=t.get("id"))
+                t["status"] = "failed"
+            elif acceptance.get("contract_ok") is None:
+                logger.warning("task_contract_unverified", task_id=t.get("id"))
 
     # Check if all tasks are done
     all_done = all(
@@ -1035,239 +1262,83 @@ async def _llm_generate_with_tools(
     return {"content": raw.strip(), "tool_calls": None}
 
 
-# ---- Multi-Agent Review Node ----
-
-REVIEW_AGENTS = {
-    "security": {
-        "name": "安全审查",
-        "icon": "\U0001f512",
-        "system_prompt": (
-            "你是前端安全专家。审查以下代码的安全问题：\n"
-            "1. XSS 风险（v-html、innerHTML、未转义用户输入）\n"
-            "2. 敏感数据暴露（API key、token、密码明文字段）\n"
-            "3. CSRF 防护缺失\n"
-            "4. 不安全的路由守卫\n"
-            '输出 JSON: {"issues": [{"severity": "critical|high|medium|low", "file": "...", "line": 0, "title": "...", "description": "...", "fix": "..."}]}'
-        ),
-    },
-    "performance": {
-        "name": "性能分析",
-        "icon": "⚡",
-        "system_prompt": (
-            "你是前端性能专家。审查以下代码的性能问题：\n"
-            "1. 不必要的重渲染（computed/watch 滥用）\n"
-            "2. 大列表未虚拟滚动\n"
-            "3. 图片/资源未懒加载\n"
-            "4. 打包体积过大风险\n"
-            '输出 JSON: {"issues": [...]}'
-        ),
-    },
-    "accessibility": {
-        "name": "可访问性",
-        "icon": "♿",
-        "system_prompt": (
-            "你是 Web 可访问性专家。审查代码的 A11y 问题：\n"
-            "1. ARIA 属性缺失或错误\n"
-            "2. 键盘导航不完整\n"
-            "3. 颜色对比度不足\n"
-            "4. 屏幕阅读器兼容性\n"
-            '输出 JSON: {"issues": [...]}'
-        ),
-    },
-    "maintainability": {
-        "name": "可维护性",
-        "icon": "\U0001f9e9",
-        "system_prompt": (
-            "你是代码质量专家。审查可维护性问题：\n"
-            "1. 组件过大（>300 行）\n"
-            "2. 重复代码\n"
-            "3. 硬编码魔法数字\n"
-            "4. 类型定义缺失或不完整\n"
-            '输出 JSON: {"issues": [...]}'
-        ),
-    },
-}
-
-
-def _build_review_html(agent_results: list[dict], all_issues: list[dict]) -> str:
-    """Build merged HTML review report."""
-    issue_html = ""
-    for issue in all_issues:
-        sev_color = {"critical": "#dc2626", "high": "#ea580c", "medium": "#ca8a04", "low": "#2563eb"}
-        color = sev_color.get(issue.get("severity", "low"), "#6b7280")
-        issue_html += f"""
-        <div style="border-left: 4px solid {color}; margin: 8px 0; padding: 8px 12px; background: #f9fafb;">
-          <strong>[{issue.get('severity', '?').upper()}] {issue.get('title', 'Issue')}</strong>
-          <br><small>{issue.get('file', '?')}:{issue.get('line', 0)}</small>
-          <p>{issue.get('description', '')}</p>
-          <p><strong>修复建议:</strong> {issue.get('fix', 'N/A')}</p>
-        </div>"""
-
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>质量评审报告</title>
-<style>body {{ font-family: -apple-system, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; }}
-h1 {{ border-bottom: 2px solid #e5e7eb; padding-bottom: 8px; }}
-h2 {{ margin-top: 24px; }}
-.agent {{ margin: 12px 0; padding: 12px; border-radius: 8px; background: #f3f4f6; }}
-.passed {{ color: #16a34a; }} .failed {{ color: #dc2626; }}</style></head>
-<body>
-<h1>🔍 质量评审报告</h1>
-<p>审查维度：安全 · 性能 · 可访问性 · 可维护性</p>
-<p>共发现 <strong>{len(all_issues)}</strong> 个问题</p>
-{issue_html}
-</body></html>"""
-
-
-async def _run_single_agent(agent_key: str, agent_def: dict, design_doc: str, code_context: str) -> dict:
-    """Run a single review agent."""
-    try:
-        raw = await _llm_generate_structured(
-            system_prompt=agent_def["system_prompt"],
-            user_content=f"## 设计方案\n{design_doc[:3000]}\n\n## 代码\n{code_context[:8000]}",
-            output_schema={"issues": []},
-        )
-        return {
-            "agent_key": agent_key,
-            "name": agent_def["name"],
-            "icon": agent_def["icon"],
-            "issues": raw.get("issues", []),
-        }
-    except Exception as e:
-        logger.error("review_agent_error", agent=agent_key, error=str(e))
-        return {
-            "agent_key": agent_key,
-            "name": agent_def["name"],
-            "icon": agent_def["icon"],
-            "issues": [],
-            "error": str(e),
-        }
-
-
-async def review_node(state: GenerationState) -> GenerationState:
-    """多 Agent 并行审查 → 合并 HTML 报告."""
-
-    files = state.get("generated_files", {})
-    design_doc = state.get("design_doc") or state.get("design_result", "")
-
-    code_context = "\n\n".join(
-        f"### {path}\n```\n{content[:2000]}\n```" if len(content) > 2000
-        else f"### {path}\n```\n{content}\n```"
-        for path, content in files.items()
-    )
-
-    if not code_context and state.get("code_result"):
-        code_context = state["code_result"][:8000]
-
-    # Run 4 agents in parallel
-    tasks = [
-        _run_single_agent(key, agent_def, design_doc, code_context)
-        for key, agent_def in REVIEW_AGENTS.items()
-    ]
-    agent_results = await asyncio.gather(*tasks)
-
-    # Collect all issues
-    all_issues = []
-    for ar in agent_results:
-        all_issues.extend(ar.get("issues", []))
-
-    critical = [i for i in all_issues if i.get("severity") == "critical"]
-    passed = len(critical) == 0
-
-    if not passed:
-        severity = "critical"
-        rollback_target = "code"
-    elif all_issues:
-        severity = "moderate"
-        rollback_target = "code"
-    else:
-        severity = None
-        rollback_target = ""
-
-    report_html = _build_review_html(agent_results, all_issues)
-
-    fix_instruction = None
-    if all_issues:
-        issues_text = "\n".join(
-            f"- [{i.get('severity', '?')}] {i.get('file', '?')}:{i.get('line', 0)} — {i.get('title', '')} → {i.get('fix', '')}"
-            for i in all_issues[:20]
-        )
-        fix_instruction = f"审查发现 {len(all_issues)} 个问题需要修复：\n{issues_text}"
-
-    return {
-        **state,
-        "review_agent_results": agent_results,
-        "review_report_html": report_html,
-        "review_issues": all_issues,
-        "review_passed": passed,
-        "review_severity": severity,
-        "review_result": f"Found {len(all_issues)} issues, {len(critical)} critical",
-        "failure_details": {
-            "source": "review",
-            "failed_items": all_issues,
-            "instruction": fix_instruction or "",
-            "rollback_target": rollback_target,
-        } if all_issues else None,
-        "stage_phase": "complete",
-    }
-
-
-# ---- E2E Node (two-phase) ----
-
-E2E_CASES_PROMPT = """你是一个资深 QA 测试工程师。根据需求文档和生成的代码，编写 E2E 自动化测试用例。
-
-## 输出格式（Markdown）
-# E2E 测试用例
-
-## TC-001: 用例名称
-- **前置条件**: ...
-- **测试步骤**:
-  1. 打开页面
-  2. 点击某个按钮
-  3. 验证结果
-- **预期结果**: ...
-
-## TC-002: ...
-
-## 规则
-- 每个用例测试一个功能点
-- 用例需覆盖核心用户流程
-- 步骤用自然语言描述
-- 输出纯 Markdown，不要 JSON 包裹"""
+# ---- E2E Node (two-phase: Test Designer → user confirm → frontend runner) ----
+# Task group 6: phase 1 invokes the Test Designer (e2e_designer) which emits a
+# coverage matrix + structured DSL cases (6.1), applies selector priority
+# (6.2), gates coverage completeness (6.5), writes cases into the repo (6.6)
+# and annotates requires_browser (6.7). The rendered MD summary keeps the
+# existing frontend doc display; the DSL list is the canonical artifact.
 
 
 async def e2e_node(state: GenerationState) -> GenerationState:
-    """E2E 节点 — 两阶段：生成测试用例 → 用户确认 → 自动执行."""
+    """E2E 节点 — 两阶段：Test Designer 生成覆盖矩阵 + DSL 用例 → 用户确认 → 前端 Runner 执行.
+
+    Incremental mode (8.3/8.4 回归模式): the Designer receives the preserved
+    historical cases (dispositions keep/fix-selector) and ADDS cases for the
+    changed/new requirement points — retired/updated cases stay out (retire →
+    archived / update → expected_broken were applied at the disposition
+    confirmation step).
+    """
 
     e2e_confirmed = state.get("e2e_user_confirmed", False)
 
     if not e2e_confirmed:
-        # Phase 1: Generate test cases MD
-        logger.info("e2e_phase1_generate_cases")
+        # Phase 1: Test Designer — coverage matrix + DSL cases.
+        logger.info("e2e_phase1_design_cases")
 
-        requirement = state.get("analysis_result", "")
-        generated_files = state.get("generated_files", {})
+        # Idempotence: the gate may route back to the e2e worker while cases
+        # await confirmation — never regenerate already-designed cases.
+        if state.get("e2e_test_cases"):
+            logger.info("e2e_phase1_skip_designer_cases_exist")
+            return {
+                **state,
+                "stage_phase": "reviewing",
+            }
 
-        code_summary = "\n".join(f"- {path}" for path in generated_files.keys())
+        from .e2e_designer import project_root_for, run_e2e_designer
 
-        user_prompt = (
-            f"## 需求文档\n{requirement[:5000]}\n\n"
-            f"## 生成的文件列表\n{code_summary}\n\n"
-            f"请根据以上信息编写 E2E 测试用例。"
-        )
+        project_root = project_root_for(state)
+        preserved_cases = None
+        if state.get("incremental_mode") and state.get("test_dispositions"):
+            # 8.3 regression mode: 保留 keep/fix-selector 历史用例, update/retire
+            # 不保留 (update 由 Designer 重设计, retire 已归档)。
+            from .incremental import load_existing_cases  # lazy: no module cycle
 
-        test_cases_md = await _llm_generate(
-            system_prompt=E2E_CASES_PROMPT,
-            user_content=user_prompt,
+            disp_by_id = {
+                d.get("case_id"): d.get("disposition")
+                for d in (state.get("test_dispositions") or [])
+                if isinstance(d, dict)
+            }
+            existing = load_existing_cases(project_root)
+            preserved_cases = [
+                c for c in existing
+                if disp_by_id.get(c.get("id"), "keep") in ("keep", "fix-selector")
+            ]
+            logger.info(
+                "e2e_incremental_designer",
+                preserved=len(preserved_cases), total=len(existing),
+            )
+
+        report = await run_e2e_designer(
+            state,
+            llm_fn=None,
+            project_root=project_root,
+            existing_cases=preserved_cases,
         )
 
         return {
             **state,
-            "e2e_test_cases_md": test_cases_md,
+            "e2e_designer_report": report,
+            "e2e_coverage_matrix": report["coverage"],
+            "e2e_test_cases": report["cases"],
+            "e2e_test_cases_md": report["md"],
             "stage_phase": "reviewing",
         }
 
     else:
-        # Phase 2: Execute tests (pass-through to frontend)
+        # Phase 2: pass-through — execution stays frontend-driven (the graph
+        # emits e2e_execute_start; the frontend runner POSTs results back via
+        # ResumeAfterE2E → Test Diagnoser → gate routing).
         logger.info("e2e_phase2_execute")
         return {
             **state,

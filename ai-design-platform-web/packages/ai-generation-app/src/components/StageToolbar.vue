@@ -29,7 +29,6 @@ const stageTitle = computed(() => {
     analysis: '📋 需求规格文档',
     design: '📐 详细设计方案',
     code: '💻 功能开发',
-    review: '🔍 质量校验报告',
     e2e: '🧪 E2E 验证',
   }
   return map[store.stage] || '阶段产出'

@@ -34,6 +34,9 @@ class ToolRegistry:
         self._generated_files: dict[str, str] = {}
         # 前端 bundler 上报的真实编译错误（esbuild 精确报错）
         self._frontend_compile_errors: list[dict] = []
+        # 预览 iframe 上报的运行时错误（console/uncaught/network）—— Verifier L3 证据。
+        # 替换语义：每次上报是当前构建的完整快照（前端在每次新构建时清空）。
+        self._runtime_errors: list[dict] = []
         self._tools: dict[str, ToolDef] = {}
         self._register_builtins()
 
@@ -181,7 +184,7 @@ class ToolRegistry:
 
         self.register(ToolDef(
             name="verify_contract",
-            description="校验两个文件之间的接口契约是否一致。用于验证消费者组件正确使用了提供者组件的导出。",
+            description="校验两个文件之间的接口契约是否一致。用于验证消费者组件正确使用了提供者组件的导出。必须提供 expected_interface（exports/props/events），缺失时校验为空校验会被拒绝。",
             parameters={
                 "type": "object",
                 "properties": {
@@ -189,10 +192,10 @@ class ToolRegistry:
                     "provider_file": {"type": "string", "description": "提供方文件路径"},
                     "expected_interface": {
                         "type": "object",
-                        "description": "期望的接口定义，如 {props: ['title'], events: ['submit']}",
+                        "description": "期望的接口定义（必填），如 {props: ['title'], events: ['submit']}",
                     },
                 },
-                "required": ["consumer_file", "provider_file"],
+                "required": ["consumer_file", "provider_file", "expected_interface"],
             },
             handler=lambda **kw: _verify_contract(self._generated_files or {}, **kw),
             category="context",
@@ -227,10 +230,39 @@ class ToolRegistry:
             return ToolResult(ok=False, error=str(e))
 
     def set_generated_files(self, files: dict[str, str]) -> None:
-        """Update the generated files cache for context tools and MCP type-registry."""
+        """Replace the generated files cache (context tools + MCP type-registry).
+
+        并行纪律 (5.6): 只有 runner 在任务启动前以共享 dict 做整包快照时才
+        允许全量替换；executor 任务中途的写必须走 ``merge_generated_files``
+        （合并而非替换），否则并发任务会互相清掉对方刚写入的缓存条目。
+        """
         self._generated_files = files
         if hasattr(self, '_mcp_bridge'):
             self._mcp_bridge.set_type_registry(files)
+
+    def merge_generated_files(self, files: dict[str, str]) -> None:
+        """Merge (not replace) file writes into the cache — 5.6 parallel-safe.
+
+        Each executor merges only the paths it wrote, so concurrent executors
+        cannot wipe each other's in-flight entries (asyncio is cooperative —
+        the hazard is interleaved awaits inside a task's write loop, where a
+        full-replace from task A would drop task B's just-written entry).
+        """
+        if not files:
+            return
+        self._generated_files.update(files)
+        if hasattr(self, '_mcp_bridge'):
+            self._mcp_bridge.set_type_registry(self._generated_files)
+
+    def remove_generated_file(self, path: str) -> None:
+        """Remove one path from the cache (delete_file) — parallel-safe merge."""
+        self._generated_files.pop(path, None)
+        if hasattr(self, '_mcp_bridge'):
+            self._mcp_bridge.set_type_registry(self._generated_files)
+
+    def get_generated_files(self) -> dict[str, str]:
+        """Return the generated files cache (context tools see this snapshot)."""
+        return self._generated_files
 
     def report_frontend_compile(self, ok: bool, errors: list[dict] | None = None) -> None:
         """Store real compile feedback reported by the frontend bundler."""
@@ -242,3 +274,15 @@ class ToolRegistry:
     def get_frontend_compile_errors(self) -> list[dict]:
         """Return the latest frontend-reported compile errors (empty if last build ok)."""
         return self._frontend_compile_errors
+
+    def report_runtime_errors(self, errors: list[dict] | None = None) -> None:
+        """Store runtime errors reported by the preview iframe (Verifier L3 source).
+
+        Replace semantics: each batch is the snapshot for the current build;
+        the frontend sends an empty batch to clear on every new preview load.
+        """
+        self._runtime_errors = list(errors or [])
+
+    def get_runtime_errors(self) -> list[dict]:
+        """Return the latest iframe-reported runtime errors (empty = L3 pass)."""
+        return self._runtime_errors

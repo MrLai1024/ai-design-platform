@@ -33,6 +33,16 @@ type GenerationRequest struct {
 	GenerationID   string        `json:"generation_id"`
 	Mode           string        `json:"mode"`
 	SkipAnalysis   bool          `json:"skip_analysis"`
+	// E2EConfirmed (group 6): explicit confirmation of the designed E2E
+	// cases — only the E2EStagePanel 确认按钮 path sets it; chat-intent
+	// proceed must not auto-confirm cases.
+	E2EConfirmed bool `json:"e2e_confirmed"`
+	// Incremental (task group 8): 对已有应用 (同 generation_id 的 .ai-memory)
+	// 发起增量开发 — 服务端加载应用记忆 → diff → manifest → 用例处置。
+	Incremental bool `json:"incremental"`
+	// Regen (task group 8, review I1): 增量确认卡「重新生成」— resume 前
+	// 清除当前待确认级产物, 服务端从该级重新计算。
+	Regen bool `json:"regen"`
 }
 
 func NewGraphSSEHandler(aiClient *client.AIClient) *GraphSSEHandler {
@@ -71,6 +81,15 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 	}
 	if req.SkipAnalysis {
 		metadata["skip_analysis"] = "true"
+	}
+	if req.E2EConfirmed {
+		metadata["e2e_confirmed"] = "true"
+	}
+	if req.Incremental {
+		metadata["incremental"] = "true"
+	}
+	if req.Regen {
+		metadata["regen"] = "true"
 	}
 	// Inject pending feedback if any
 	if fb, ok := h.feedbackStore[generationID]; ok && fb != "" {

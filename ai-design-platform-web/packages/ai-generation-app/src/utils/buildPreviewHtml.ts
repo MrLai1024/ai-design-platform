@@ -1,5 +1,7 @@
 // src/utils/buildPreviewHtml.ts
 
+import { RUNTIME_CAPTURE_SCRIPT } from '@/bundler/previewTemplate'
+
 /**
  * 构建注入 iframe srcdoc 的完整 HTML 文档。
  * 包含 Vue runtime、组件库 CDN、编译产物、错误边界。
@@ -58,6 +60,7 @@ export function buildPreviewHtml(
         message: 'Runtime: ' + msg + ' at line ' + line
       }, '*');
     };
+    ${RUNTIME_CAPTURE_SCRIPT}
     window.parent.postMessage({ type: 'ready' }, '*');
   <\/script>
 </body>

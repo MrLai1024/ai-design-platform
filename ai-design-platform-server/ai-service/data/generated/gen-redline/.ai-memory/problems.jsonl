@@ -1,0 +1,4 @@
+{"ts": "2026-08-05T23:24:20", "category": "drift", "problem": "design 失败：Spec 遗漏功能点", "root_cause": "Spec 遗漏功能点", "fix": "重派（带反馈） → design", "result": "pending"}
+{"ts": "2026-08-05T23:24:20", "category": "drift", "problem": "design 失败：Spec 遗漏功能点", "root_cause": "Spec 遗漏功能点", "fix": "回退（更早节点） → design", "result": "pending"}
+{"ts": "2026-08-05T23:24:20", "category": "drift", "problem": "design 失败：Spec 遗漏功能点", "root_cause": "Spec 遗漏功能点", "fix": "上报（转人工）", "result": "escalated"}
+{"ts": "2026-08-05T23:40:45", "category": "drift", "problem": "design 失败：Spec 遗漏功能点", "root_cause": "Spec 遗漏功能点", "fix": "重派（带反馈） → design", "result": "pending"}

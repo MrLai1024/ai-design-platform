@@ -644,6 +644,7 @@ type GraphEvent struct {
 	EventType string                 `protobuf:"bytes,1,opt,name=event_type,json=eventType,proto3" json:"event_type,omitempty"` // "stage_start" | "stage_complete" | "stage_rollback"
 	// | "e2e_execute" | "e2e_case_result" | "e2e_complete"
 	// | "human_confirm_required" | "loop_warning" | "loop_break"
+	// | "verifier_result" | "debugger_diagnosis" | "debugger_stopped"
 	Stage         string `protobuf:"bytes,2,opt,name=stage,proto3" json:"stage,omitempty"` // "analysis" | "design" | "code" | "review" | "e2e"
 	Data          string `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`   // JSON-encoded payload (varies by event_type)
 	unknownFields protoimpl.UnknownFields
@@ -969,6 +970,632 @@ func (x *CompileFeedbackResponse) GetReceived() bool {
 	return false
 }
 
+type RuntimeFeedbackRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	GenerationId  string                 `protobuf:"bytes,1,opt,name=generation_id,json=generationId,proto3" json:"generation_id,omitempty"`
+	Errors        []*RuntimeError        `protobuf:"bytes,2,rep,name=errors,proto3" json:"errors,omitempty"` // empty batch = clear (new build loaded)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RuntimeFeedbackRequest) Reset() {
+	*x = RuntimeFeedbackRequest{}
+	mi := &file_ai_v1_generation_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuntimeFeedbackRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuntimeFeedbackRequest) ProtoMessage() {}
+
+func (x *RuntimeFeedbackRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ai_v1_generation_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuntimeFeedbackRequest.ProtoReflect.Descriptor instead.
+func (*RuntimeFeedbackRequest) Descriptor() ([]byte, []int) {
+	return file_ai_v1_generation_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *RuntimeFeedbackRequest) GetGenerationId() string {
+	if x != nil {
+		return x.GenerationId
+	}
+	return ""
+}
+
+func (x *RuntimeFeedbackRequest) GetErrors() []*RuntimeError {
+	if x != nil {
+		return x.Errors
+	}
+	return nil
+}
+
+type RuntimeError struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"` // "console_error" | "uncaught" | "unhandledrejection" | "network"
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	Stack         string                 `protobuf:"bytes,3,opt,name=stack,proto3" json:"stack,omitempty"` // optional stack trace
+	Url           string                 `protobuf:"bytes,4,opt,name=url,proto3" json:"url,omitempty"`     // optional source url / failed request url
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RuntimeError) Reset() {
+	*x = RuntimeError{}
+	mi := &file_ai_v1_generation_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuntimeError) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuntimeError) ProtoMessage() {}
+
+func (x *RuntimeError) ProtoReflect() protoreflect.Message {
+	mi := &file_ai_v1_generation_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuntimeError.ProtoReflect.Descriptor instead.
+func (*RuntimeError) Descriptor() ([]byte, []int) {
+	return file_ai_v1_generation_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *RuntimeError) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *RuntimeError) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *RuntimeError) GetStack() string {
+	if x != nil {
+		return x.Stack
+	}
+	return ""
+}
+
+func (x *RuntimeError) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+type RuntimeFeedbackResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Received      bool                   `protobuf:"varint,1,opt,name=received,proto3" json:"received,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RuntimeFeedbackResponse) Reset() {
+	*x = RuntimeFeedbackResponse{}
+	mi := &file_ai_v1_generation_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RuntimeFeedbackResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RuntimeFeedbackResponse) ProtoMessage() {}
+
+func (x *RuntimeFeedbackResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ai_v1_generation_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RuntimeFeedbackResponse.ProtoReflect.Descriptor instead.
+func (*RuntimeFeedbackResponse) Descriptor() ([]byte, []int) {
+	return file_ai_v1_generation_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *RuntimeFeedbackResponse) GetReceived() bool {
+	if x != nil {
+		return x.Received
+	}
+	return false
+}
+
+type ClassifyIntentRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Text          string                 `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
+	Stage         string                 `protobuf:"bytes,2,opt,name=stage,proto3" json:"stage,omitempty"` // "analysis" | "design" | "code" | "e2e" | ""
+	GenerationId  string                 `protobuf:"bytes,3,opt,name=generation_id,json=generationId,proto3" json:"generation_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClassifyIntentRequest) Reset() {
+	*x = ClassifyIntentRequest{}
+	mi := &file_ai_v1_generation_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClassifyIntentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClassifyIntentRequest) ProtoMessage() {}
+
+func (x *ClassifyIntentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ai_v1_generation_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClassifyIntentRequest.ProtoReflect.Descriptor instead.
+func (*ClassifyIntentRequest) Descriptor() ([]byte, []int) {
+	return file_ai_v1_generation_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ClassifyIntentRequest) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *ClassifyIntentRequest) GetStage() string {
+	if x != nil {
+		return x.Stage
+	}
+	return ""
+}
+
+func (x *ClassifyIntentRequest) GetGenerationId() string {
+	if x != nil {
+		return x.GenerationId
+	}
+	return ""
+}
+
+type ClassifyIntentResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Intent        string                 `protobuf:"bytes,1,opt,name=intent,proto3" json:"intent,omitempty"` // "reply_qa" | "proceed" | "feedback" | "escalate" | "ask_why"
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClassifyIntentResponse) Reset() {
+	*x = ClassifyIntentResponse{}
+	mi := &file_ai_v1_generation_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClassifyIntentResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClassifyIntentResponse) ProtoMessage() {}
+
+func (x *ClassifyIntentResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ai_v1_generation_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClassifyIntentResponse.ProtoReflect.Descriptor instead.
+func (*ClassifyIntentResponse) Descriptor() ([]byte, []int) {
+	return file_ai_v1_generation_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *ClassifyIntentResponse) GetIntent() string {
+	if x != nil {
+		return x.Intent
+	}
+	return ""
+}
+
+func (x *ClassifyIntentResponse) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type BrainstormTurnRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Text  string                 `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"` // user input: requirement (first turn) or answer / choice
+	// Session id. Empty on the first turn → a new session is created and its id
+	// returned. NOTE: an unknown (or stale) id also creates a new session —
+	// sessions are in-memory per process (persistence arrives with the memory
+	// system); the frontend must use the id returned by the previous response.
+	GenerationId  string `protobuf:"bytes,2,opt,name=generation_id,json=generationId,proto3" json:"generation_id,omitempty"`
+	ItemId        string `protobuf:"bytes,3,opt,name=item_id,json=itemId,proto3" json:"item_id,omitempty"` // agenda item id when the user clicked a question_card option
+	Model         string `protobuf:"bytes,4,opt,name=model,proto3" json:"model,omitempty"`                 // optional model override (defaults to glm-5.2)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BrainstormTurnRequest) Reset() {
+	*x = BrainstormTurnRequest{}
+	mi := &file_ai_v1_generation_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BrainstormTurnRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BrainstormTurnRequest) ProtoMessage() {}
+
+func (x *BrainstormTurnRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ai_v1_generation_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BrainstormTurnRequest.ProtoReflect.Descriptor instead.
+func (*BrainstormTurnRequest) Descriptor() ([]byte, []int) {
+	return file_ai_v1_generation_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *BrainstormTurnRequest) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *BrainstormTurnRequest) GetGenerationId() string {
+	if x != nil {
+		return x.GenerationId
+	}
+	return ""
+}
+
+func (x *BrainstormTurnRequest) GetItemId() string {
+	if x != nil {
+		return x.ItemId
+	}
+	return ""
+}
+
+func (x *BrainstormTurnRequest) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+type BrainstormTurnResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	GenerationId  string                 `protobuf:"bytes,1,opt,name=generation_id,json=generationId,proto3" json:"generation_id,omitempty"` // session id (create on first turn, reuse afterwards)
+	Converged     bool                   `protobuf:"varint,2,opt,name=converged,proto3" json:"converged,omitempty"`                          // true when the agenda is converged → 开始设计 button
+	Coverage      float64                `protobuf:"fixed64,3,opt,name=coverage,proto3" json:"coverage,omitempty"`                           // agenda coverage (answered / total, 0..1)
+	Events        []*GraphEvent          `protobuf:"bytes,4,rep,name=events,proto3" json:"events,omitempty"`                                 // manager_message cards produced by this turn
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BrainstormTurnResponse) Reset() {
+	*x = BrainstormTurnResponse{}
+	mi := &file_ai_v1_generation_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BrainstormTurnResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BrainstormTurnResponse) ProtoMessage() {}
+
+func (x *BrainstormTurnResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ai_v1_generation_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BrainstormTurnResponse.ProtoReflect.Descriptor instead.
+func (*BrainstormTurnResponse) Descriptor() ([]byte, []int) {
+	return file_ai_v1_generation_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *BrainstormTurnResponse) GetGenerationId() string {
+	if x != nil {
+		return x.GenerationId
+	}
+	return ""
+}
+
+func (x *BrainstormTurnResponse) GetConverged() bool {
+	if x != nil {
+		return x.Converged
+	}
+	return false
+}
+
+func (x *BrainstormTurnResponse) GetCoverage() float64 {
+	if x != nil {
+		return x.Coverage
+	}
+	return 0
+}
+
+func (x *BrainstormTurnResponse) GetEvents() []*GraphEvent {
+	if x != nil {
+		return x.Events
+	}
+	return nil
+}
+
+// Runner evidence for one E2E case (task group 6.3): DOM snapshot +
+// console/network errors collected during the case execution.
+type E2EEvidence struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	DomSnapshot    string                 `protobuf:"bytes,1,opt,name=dom_snapshot,json=domSnapshot,proto3" json:"dom_snapshot,omitempty"`          // body outerHTML (truncated)
+	ConsoleErrors  []string               `protobuf:"bytes,2,rep,name=console_errors,json=consoleErrors,proto3" json:"console_errors,omitempty"`    // JSON-serialized console errors
+	NetworkErrors  []string               `protobuf:"bytes,3,rep,name=network_errors,json=networkErrors,proto3" json:"network_errors,omitempty"`    // JSON-serialized network errors
+	ScreenshotNote string                 `protobuf:"bytes,4,opt,name=screenshot_note,json=screenshotNote,proto3" json:"screenshot_note,omitempty"` // visual screenshot availability note
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *E2EEvidence) Reset() {
+	*x = E2EEvidence{}
+	mi := &file_ai_v1_generation_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *E2EEvidence) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*E2EEvidence) ProtoMessage() {}
+
+func (x *E2EEvidence) ProtoReflect() protoreflect.Message {
+	mi := &file_ai_v1_generation_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use E2EEvidence.ProtoReflect.Descriptor instead.
+func (*E2EEvidence) Descriptor() ([]byte, []int) {
+	return file_ai_v1_generation_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *E2EEvidence) GetDomSnapshot() string {
+	if x != nil {
+		return x.DomSnapshot
+	}
+	return ""
+}
+
+func (x *E2EEvidence) GetConsoleErrors() []string {
+	if x != nil {
+		return x.ConsoleErrors
+	}
+	return nil
+}
+
+func (x *E2EEvidence) GetNetworkErrors() []string {
+	if x != nil {
+		return x.NetworkErrors
+	}
+	return nil
+}
+
+func (x *E2EEvidence) GetScreenshotNote() string {
+	if x != nil {
+		return x.ScreenshotNote
+	}
+	return ""
+}
+
+// One E2E case result (6.3). status ∈ "" | "passed" | "failed" |
+// "skipped_requires_browser" (6.7).
+type E2ECaseResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CaseId        string                 `protobuf:"bytes,1,opt,name=case_id,json=caseId,proto3" json:"case_id,omitempty"`
+	Passed        bool                   `protobuf:"varint,2,opt,name=passed,proto3" json:"passed,omitempty"`
+	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	Status        string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
+	Screenshot    string                 `protobuf:"bytes,5,opt,name=screenshot,proto3" json:"screenshot,omitempty"` // legacy HTML snapshot (data URL)
+	Evidence      *E2EEvidence           `protobuf:"bytes,6,opt,name=evidence,proto3" json:"evidence,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *E2ECaseResult) Reset() {
+	*x = E2ECaseResult{}
+	mi := &file_ai_v1_generation_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *E2ECaseResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*E2ECaseResult) ProtoMessage() {}
+
+func (x *E2ECaseResult) ProtoReflect() protoreflect.Message {
+	mi := &file_ai_v1_generation_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use E2ECaseResult.ProtoReflect.Descriptor instead.
+func (*E2ECaseResult) Descriptor() ([]byte, []int) {
+	return file_ai_v1_generation_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *E2ECaseResult) GetCaseId() string {
+	if x != nil {
+		return x.CaseId
+	}
+	return ""
+}
+
+func (x *E2ECaseResult) GetPassed() bool {
+	if x != nil {
+		return x.Passed
+	}
+	return false
+}
+
+func (x *E2ECaseResult) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *E2ECaseResult) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *E2ECaseResult) GetScreenshot() string {
+	if x != nil {
+		return x.Screenshot
+	}
+	return ""
+}
+
+func (x *E2ECaseResult) GetEvidence() *E2EEvidence {
+	if x != nil {
+		return x.Evidence
+	}
+	return nil
+}
+
+// ResumeAfterE2E request — the full completed run's results (one call per
+// run; the Diagnoser classifies failures as a batch).
+type ResumeAfterE2ERequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	GenerationId  string                 `protobuf:"bytes,1,opt,name=generation_id,json=generationId,proto3" json:"generation_id,omitempty"`
+	Results       []*E2ECaseResult       `protobuf:"bytes,2,rep,name=results,proto3" json:"results,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResumeAfterE2ERequest) Reset() {
+	*x = ResumeAfterE2ERequest{}
+	mi := &file_ai_v1_generation_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResumeAfterE2ERequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResumeAfterE2ERequest) ProtoMessage() {}
+
+func (x *ResumeAfterE2ERequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ai_v1_generation_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResumeAfterE2ERequest.ProtoReflect.Descriptor instead.
+func (*ResumeAfterE2ERequest) Descriptor() ([]byte, []int) {
+	return file_ai_v1_generation_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *ResumeAfterE2ERequest) GetGenerationId() string {
+	if x != nil {
+		return x.GenerationId
+	}
+	return ""
+}
+
+func (x *ResumeAfterE2ERequest) GetResults() []*E2ECaseResult {
+	if x != nil {
+		return x.Results
+	}
+	return nil
+}
+
 var File_ai_v1_generation_proto protoreflect.FileDescriptor
 
 const file_ai_v1_generation_proto_rawDesc = "" +
@@ -1040,11 +1667,59 @@ const file_ai_v1_generation_proto_rawDesc = "" +
 	"\x06column\x18\x03 \x01(\x05R\x06column\x12\x12\n" +
 	"\x04text\x18\x04 \x01(\tR\x04text\"5\n" +
 	"\x17CompileFeedbackResponse\x12\x1a\n" +
-	"\breceived\x18\x01 \x01(\bR\breceived2\xf1\x01\n" +
+	"\breceived\x18\x01 \x01(\bR\breceived\"j\n" +
+	"\x16RuntimeFeedbackRequest\x12#\n" +
+	"\rgeneration_id\x18\x01 \x01(\tR\fgenerationId\x12+\n" +
+	"\x06errors\x18\x02 \x03(\v2\x13.ai.v1.RuntimeErrorR\x06errors\"d\n" +
+	"\fRuntimeError\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12\x14\n" +
+	"\x05stack\x18\x03 \x01(\tR\x05stack\x12\x10\n" +
+	"\x03url\x18\x04 \x01(\tR\x03url\"5\n" +
+	"\x17RuntimeFeedbackResponse\x12\x1a\n" +
+	"\breceived\x18\x01 \x01(\bR\breceived\"f\n" +
+	"\x15ClassifyIntentRequest\x12\x12\n" +
+	"\x04text\x18\x01 \x01(\tR\x04text\x12\x14\n" +
+	"\x05stage\x18\x02 \x01(\tR\x05stage\x12#\n" +
+	"\rgeneration_id\x18\x03 \x01(\tR\fgenerationId\"H\n" +
+	"\x16ClassifyIntentResponse\x12\x16\n" +
+	"\x06intent\x18\x01 \x01(\tR\x06intent\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"\x7f\n" +
+	"\x15BrainstormTurnRequest\x12\x12\n" +
+	"\x04text\x18\x01 \x01(\tR\x04text\x12#\n" +
+	"\rgeneration_id\x18\x02 \x01(\tR\fgenerationId\x12\x17\n" +
+	"\aitem_id\x18\x03 \x01(\tR\x06itemId\x12\x14\n" +
+	"\x05model\x18\x04 \x01(\tR\x05model\"\xa2\x01\n" +
+	"\x16BrainstormTurnResponse\x12#\n" +
+	"\rgeneration_id\x18\x01 \x01(\tR\fgenerationId\x12\x1c\n" +
+	"\tconverged\x18\x02 \x01(\bR\tconverged\x12\x1a\n" +
+	"\bcoverage\x18\x03 \x01(\x01R\bcoverage\x12)\n" +
+	"\x06events\x18\x04 \x03(\v2\x11.ai.v1.GraphEventR\x06events\"\xa7\x01\n" +
+	"\vE2EEvidence\x12!\n" +
+	"\fdom_snapshot\x18\x01 \x01(\tR\vdomSnapshot\x12%\n" +
+	"\x0econsole_errors\x18\x02 \x03(\tR\rconsoleErrors\x12%\n" +
+	"\x0enetwork_errors\x18\x03 \x03(\tR\rnetworkErrors\x12'\n" +
+	"\x0fscreenshot_note\x18\x04 \x01(\tR\x0escreenshotNote\"\xbe\x01\n" +
+	"\rE2ECaseResult\x12\x17\n" +
+	"\acase_id\x18\x01 \x01(\tR\x06caseId\x12\x16\n" +
+	"\x06passed\x18\x02 \x01(\bR\x06passed\x12\x14\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\x12\x16\n" +
+	"\x06status\x18\x04 \x01(\tR\x06status\x12\x1e\n" +
+	"\n" +
+	"screenshot\x18\x05 \x01(\tR\n" +
+	"screenshot\x12.\n" +
+	"\bevidence\x18\x06 \x01(\v2\x12.ai.v1.E2EEvidenceR\bevidence\"l\n" +
+	"\x15ResumeAfterE2ERequest\x12#\n" +
+	"\rgeneration_id\x18\x01 \x01(\tR\fgenerationId\x12.\n" +
+	"\aresults\x18\x02 \x03(\v2\x14.ai.v1.E2ECaseResultR\aresults2\xb2\x04\n" +
 	"\x11GenerationService\x12C\n" +
 	"\x0eStreamGenerate\x12\x16.ai.v1.GenerateRequest\x1a\x17.ai.v1.GenerateResponse0\x01\x12?\n" +
 	"\x10CancelGeneration\x12\x14.ai.v1.CancelRequest\x1a\x15.ai.v1.CancelResponse\x12V\n" +
-	"\x15ReportCompileFeedback\x12\x1d.ai.v1.CompileFeedbackRequest\x1a\x1e.ai.v1.CompileFeedbackResponseB&Z$ai-design-platform/gen/go/ai/v1;aiv1b\x06proto3"
+	"\x15ReportCompileFeedback\x12\x1d.ai.v1.CompileFeedbackRequest\x1a\x1e.ai.v1.CompileFeedbackResponse\x12M\n" +
+	"\x0eClassifyIntent\x12\x1c.ai.v1.ClassifyIntentRequest\x1a\x1d.ai.v1.ClassifyIntentResponse\x12M\n" +
+	"\x0eBrainstormTurn\x12\x1c.ai.v1.BrainstormTurnRequest\x1a\x1d.ai.v1.BrainstormTurnResponse\x12V\n" +
+	"\x15ReportRuntimeFeedback\x12\x1d.ai.v1.RuntimeFeedbackRequest\x1a\x1e.ai.v1.RuntimeFeedbackResponse\x12I\n" +
+	"\x0eResumeAfterE2E\x12\x1c.ai.v1.ResumeAfterE2ERequest\x1a\x17.ai.v1.GenerateResponse0\x01B&Z$ai-design-platform/gen/go/ai/v1;aiv1b\x06proto3"
 
 var (
 	file_ai_v1_generation_proto_rawDescOnce sync.Once
@@ -1058,7 +1733,7 @@ func file_ai_v1_generation_proto_rawDescGZIP() []byte {
 	return file_ai_v1_generation_proto_rawDescData
 }
 
-var file_ai_v1_generation_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_ai_v1_generation_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_ai_v1_generation_proto_goTypes = []any{
 	(*GenerateRequest)(nil),         // 0: ai.v1.GenerateRequest
 	(*Message)(nil),                 // 1: ai.v1.Message
@@ -1075,12 +1750,22 @@ var file_ai_v1_generation_proto_goTypes = []any{
 	(*CompileFeedbackRequest)(nil),  // 12: ai.v1.CompileFeedbackRequest
 	(*CompileError)(nil),            // 13: ai.v1.CompileError
 	(*CompileFeedbackResponse)(nil), // 14: ai.v1.CompileFeedbackResponse
-	nil,                             // 15: ai.v1.GenerateRequest.MetadataEntry
+	(*RuntimeFeedbackRequest)(nil),  // 15: ai.v1.RuntimeFeedbackRequest
+	(*RuntimeError)(nil),            // 16: ai.v1.RuntimeError
+	(*RuntimeFeedbackResponse)(nil), // 17: ai.v1.RuntimeFeedbackResponse
+	(*ClassifyIntentRequest)(nil),   // 18: ai.v1.ClassifyIntentRequest
+	(*ClassifyIntentResponse)(nil),  // 19: ai.v1.ClassifyIntentResponse
+	(*BrainstormTurnRequest)(nil),   // 20: ai.v1.BrainstormTurnRequest
+	(*BrainstormTurnResponse)(nil),  // 21: ai.v1.BrainstormTurnResponse
+	(*E2EEvidence)(nil),             // 22: ai.v1.E2EEvidence
+	(*E2ECaseResult)(nil),           // 23: ai.v1.E2ECaseResult
+	(*ResumeAfterE2ERequest)(nil),   // 24: ai.v1.ResumeAfterE2ERequest
+	nil,                             // 25: ai.v1.GenerateRequest.MetadataEntry
 }
 var file_ai_v1_generation_proto_depIdxs = []int32{
 	1,  // 0: ai.v1.GenerateRequest.messages:type_name -> ai.v1.Message
 	2,  // 1: ai.v1.GenerateRequest.config:type_name -> ai.v1.GenerationConfig
-	15, // 2: ai.v1.GenerateRequest.metadata:type_name -> ai.v1.GenerateRequest.MetadataEntry
+	25, // 2: ai.v1.GenerateRequest.metadata:type_name -> ai.v1.GenerateRequest.MetadataEntry
 	4,  // 3: ai.v1.GenerateResponse.token:type_name -> ai.v1.Token
 	5,  // 4: ai.v1.GenerateResponse.tool_call:type_name -> ai.v1.ToolCall
 	6,  // 5: ai.v1.GenerateResponse.complete:type_name -> ai.v1.GenerationComplete
@@ -1088,17 +1773,29 @@ var file_ai_v1_generation_proto_depIdxs = []int32{
 	9,  // 7: ai.v1.GenerateResponse.graph_event:type_name -> ai.v1.GraphEvent
 	7,  // 8: ai.v1.GenerationComplete.usage:type_name -> ai.v1.Usage
 	13, // 9: ai.v1.CompileFeedbackRequest.errors:type_name -> ai.v1.CompileError
-	0,  // 10: ai.v1.GenerationService.StreamGenerate:input_type -> ai.v1.GenerateRequest
-	10, // 11: ai.v1.GenerationService.CancelGeneration:input_type -> ai.v1.CancelRequest
-	12, // 12: ai.v1.GenerationService.ReportCompileFeedback:input_type -> ai.v1.CompileFeedbackRequest
-	3,  // 13: ai.v1.GenerationService.StreamGenerate:output_type -> ai.v1.GenerateResponse
-	11, // 14: ai.v1.GenerationService.CancelGeneration:output_type -> ai.v1.CancelResponse
-	14, // 15: ai.v1.GenerationService.ReportCompileFeedback:output_type -> ai.v1.CompileFeedbackResponse
-	13, // [13:16] is the sub-list for method output_type
-	10, // [10:13] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	16, // 10: ai.v1.RuntimeFeedbackRequest.errors:type_name -> ai.v1.RuntimeError
+	9,  // 11: ai.v1.BrainstormTurnResponse.events:type_name -> ai.v1.GraphEvent
+	22, // 12: ai.v1.E2ECaseResult.evidence:type_name -> ai.v1.E2EEvidence
+	23, // 13: ai.v1.ResumeAfterE2ERequest.results:type_name -> ai.v1.E2ECaseResult
+	0,  // 14: ai.v1.GenerationService.StreamGenerate:input_type -> ai.v1.GenerateRequest
+	10, // 15: ai.v1.GenerationService.CancelGeneration:input_type -> ai.v1.CancelRequest
+	12, // 16: ai.v1.GenerationService.ReportCompileFeedback:input_type -> ai.v1.CompileFeedbackRequest
+	18, // 17: ai.v1.GenerationService.ClassifyIntent:input_type -> ai.v1.ClassifyIntentRequest
+	20, // 18: ai.v1.GenerationService.BrainstormTurn:input_type -> ai.v1.BrainstormTurnRequest
+	15, // 19: ai.v1.GenerationService.ReportRuntimeFeedback:input_type -> ai.v1.RuntimeFeedbackRequest
+	24, // 20: ai.v1.GenerationService.ResumeAfterE2E:input_type -> ai.v1.ResumeAfterE2ERequest
+	3,  // 21: ai.v1.GenerationService.StreamGenerate:output_type -> ai.v1.GenerateResponse
+	11, // 22: ai.v1.GenerationService.CancelGeneration:output_type -> ai.v1.CancelResponse
+	14, // 23: ai.v1.GenerationService.ReportCompileFeedback:output_type -> ai.v1.CompileFeedbackResponse
+	19, // 24: ai.v1.GenerationService.ClassifyIntent:output_type -> ai.v1.ClassifyIntentResponse
+	21, // 25: ai.v1.GenerationService.BrainstormTurn:output_type -> ai.v1.BrainstormTurnResponse
+	17, // 26: ai.v1.GenerationService.ReportRuntimeFeedback:output_type -> ai.v1.RuntimeFeedbackResponse
+	3,  // 27: ai.v1.GenerationService.ResumeAfterE2E:output_type -> ai.v1.GenerateResponse
+	21, // [21:28] is the sub-list for method output_type
+	14, // [14:21] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_ai_v1_generation_proto_init() }
@@ -1119,7 +1816,7 @@ func file_ai_v1_generation_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ai_v1_generation_proto_rawDesc), len(file_ai_v1_generation_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

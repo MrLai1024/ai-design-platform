@@ -1,0 +1,33 @@
+{
+  "app_id": "gen-redline",
+  "created_at": "2026-08-05T23:24:20",
+  "version": 1,
+  "spec_version": 1,
+  "features_done": [],
+  "stages": {},
+  "updated_at": "2026-08-05T23:40:45",
+  "verdicts": [
+    {
+      "node": "design",
+      "decision": "redo",
+      "reason": "L2：订单管理（PRD 声明，Spec 无对应）\n[恢复策略：重派（带反馈） → design] 失败分类：内容跑偏（置信 medium）\nSpec 遗漏功能点\n历史修复策略参考：重派（带反馈） → design（历史成功 0 次）",
+      "signature": "733bb533",
+      "at": "2026-08-05T23:40:45",
+      "recovery": {
+        "category": "drift",
+        "reason": "Spec 遗漏功能点",
+        "strategy": {
+          "strategy": "redispatch",
+          "target": "design",
+          "reason": "重派同一 worker（携带偏离反馈）"
+        },
+        "attempts": 1,
+        "escalate": false,
+        "scope_change": false,
+        "scope_change_note": "",
+        "suggested_fix": "重派（带反馈） → design（历史成功 0 次）",
+        "signature": "be9008f6005a"
+      }
+    }
+  ]
+}

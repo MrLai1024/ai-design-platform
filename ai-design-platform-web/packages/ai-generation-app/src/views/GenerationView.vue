@@ -14,17 +14,20 @@ import FileExplorer from '@/components/FileExplorer.vue'
 import AnalysisStagePanel from '@/components/AnalysisStagePanel.vue'
 import DesignStagePanel from '@/components/DesignStagePanel.vue'
 import CodeStagePanel from '@/components/CodeStagePanel.vue'
-import ReviewStagePanel from '@/components/ReviewStagePanel.vue'
 import E2EStagePanel from '@/components/E2EStagePanel.vue'
 
 const store = useGenerationStore()
 useCodeParser()
 
 const { submitE2EResults } = useMultiAgent()
+// 由 E2EStagePanel 通过 PreviewFrame defineExpose + preview-iframe 事件注入
+// 真实预览 iframe（I1）。模板表达式会解包 ref —— 写入必须经脚本函数。
 const previewFrameRef = ref<HTMLIFrameElement | null>(null)
-const { currentCaseIndex, executeAll } = useE2ERunner(previewFrameRef)
+const { executeAll } = useE2ERunner(previewFrameRef)
 
-const e2eCurrentIndex = computed(() => currentCaseIndex.value)
+function onPreviewIframe(iframe: HTMLIFrameElement | null): void {
+  previewFrameRef.value = iframe
+}
 
 // Watch for e2e_start event to trigger E2E execution
 watch(
@@ -48,7 +51,6 @@ const currentStageTitle = computed(() => {
     analysis: '📋 需求规格文档',
     design: '📐 详细设计方案',
     code: '💻 功能开发',
-    review: '🔍 质量校验报告',
     e2e: '🧪 E2E 验证',
   }
   return map[store.stage] || '阶段产出'
@@ -88,14 +90,10 @@ onMounted(() => {
       <AnalysisStagePanel v-if="store.stage === 'analysis'" />
       <DesignStagePanel v-else-if="store.stage === 'design'" />
       <CodeStagePanel v-else-if="store.stage === 'code'" />
-      <ReviewStagePanel v-else-if="store.stage === 'review'" />
-      <E2EStagePanel v-else-if="store.stage === 'e2e'" />
-
-      <!-- Manual review banner -->
-      <div v-if="store.needsManualReview" class="manual-review-banner">
-        自动流程已熔断，请人工复核
-        <span v-if="store.loopBreakReason">原因：{{ store.loopBreakReason }}</span>
-      </div>
+      <E2EStagePanel
+        v-else-if="store.stage === 'e2e'"
+        @preview-iframe="onPreviewIframe"
+      />
 
       <!-- 初始状态占位 -->
       <div
@@ -121,25 +119,6 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.manual-review-banner {
-  margin: 0 16px 8px;
-  padding: 10px 14px;
-  background: #fef3c7;
-  border: 1px solid #f59e0b;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 500;
-  color: #92400e;
-}
-
-.manual-review-banner span {
-  display: block;
-  margin-top: 4px;
-  font-size: 12px;
-  font-weight: 400;
-  color: #a16207;
-}
-
 .e2e-container {
   overflow-y: auto;
 }

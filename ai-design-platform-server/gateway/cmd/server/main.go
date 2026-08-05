@@ -48,6 +48,8 @@ func main() {
 	graphHandler := handler.NewGraphSSEHandler(aiClient)
 	e2eHandler := handler.NewE2EHandler(graphHandler, aiClient)
 	prdHandler := handler.NewPRDHandler(aiClient)
+	intentHandler := handler.NewIntentHandler(aiClient)
+	brainstormHandler := handler.NewBrainstormHandler(aiClient)
 
 	// Gin 路由器
 	gin.SetMode(gin.ReleaseMode)
@@ -80,7 +82,10 @@ func main() {
 		api.POST("/e2e/result", e2eHandler.SubmitE2EResult)
 		api.POST("/generation/confirm", e2eHandler.ConfirmStage)
 		api.POST("/generation/compile_feedback", e2eHandler.SubmitCompileFeedback)
+		api.POST("/generation/runtime-feedback", e2eHandler.SubmitRuntimeFeedback)
 		api.POST("/generation/feedback", graphHandler.SubmitFeedback)
+		api.POST("/generation/intent", intentHandler.ClassifyIntent)
+		api.POST("/generation/brainstorm", brainstormHandler.Turn)
 	}
 
 	// HTTP 服务器

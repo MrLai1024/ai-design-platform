@@ -1,8 +1,9 @@
 // src/stores/generation.ts
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { ChatMessage, FileEntry, Stage, StageStatus, StageOutputs, CodeViewTab, RightPanelView, StepNode, E2ETestCase, E2ECaseResult, RollbackEvent, StagePhase, ToolTraceEntry, ReviewAgentState, ReviewFinding, AgentLogEntry, PlannerTaskDef, TaskGroup } from '@/types/generation'
+import type { ChatMessage, FileEntry, Stage, StageStatus, StageOutputs, CodeViewTab, RightPanelView, StepNode, E2ETestCase, E2ECaseResult, E2EDiagnosis, RollbackEvent, StagePhase, ToolTraceEntry, AgentLogEntry, PlannerTaskDef, TaskGroup, ManagerCardPayload } from '@/types/generation'
 import type { RequirementsState, AnalysisPanelMode, AnalysisMode } from '@/types/requirements'
+import { generateId } from '@/utils/id'
 
 export const useGenerationStore = defineStore('generation', () => {
   // ── State ──
@@ -20,16 +21,18 @@ export const useGenerationStore = defineStore('generation', () => {
     analysis: 'pending',
     design: 'pending',
     code: 'pending',
-    review: 'pending',
     e2e: 'pending',
   })
   const stageOutputs = ref<StageOutputs>({
     analysis: null,
     design: null,
     code: null,
-    review: null,
     e2e: null,
   })
+  // 9.3 (C1): 各阶段最近一次 Manager 把关裁决 — redo/rollback 时确认按钮
+  // 必须 resume 同一 runner (恢复计数/反馈随 runner 状态延续), 而非带失败
+  // 产物重新起跑。
+  const lastVerdicts = ref<Record<string, string>>({})
   const codeViewTab = ref<CodeViewTab>('preview')
   const rightPanelView = ref<RightPanelView>('preview')
 
@@ -37,10 +40,18 @@ export const useGenerationStore = defineStore('generation', () => {
   const e2eTestCases = ref<E2ETestCase[]>([])
   const e2eResults = ref<E2ECaseResult[]>([])
   const e2eRunning = ref(false)
+  // Test Diagnoser 三方分类结果（6.4）：expected_broken / selector_coupled /
+  // real_regression；rollback_case_ids 之外的失败不触发代码回退。
+  const e2eDiagnosis = ref<E2EDiagnosis | null>(null)
   const rollbackEvents = ref<RollbackEvent[]>([])
+  // 熔断状态（原右侧 banner；现由对话框求援卡片承载，任务组 9 恢复阶梯消费）
   const needsManualReview = ref(false)
   const loopBreakReason = ref<string | null>(null)
   const currentGenerationId = ref<string | null>(null)
+  // 人工接管模式（占位：任务组 9 接入真实接管流程）
+  const manualMode = ref(false)
+  // 头脑风暴已收敛（双因子收敛：覆盖度达标 + 用户确认）→ 显示「🚀 开始设计」
+  const brainstormConverged = ref(false)
 
   // ── 需求分析面板状态 ──
   const requirementsState = ref<RequirementsState | null>(null)
@@ -71,10 +82,6 @@ export const useGenerationStore = defineStore('generation', () => {
   const taskGroups = ref<Map<string, TaskGroup>>(new Map())
   const currentTaskId = ref<string | null>(null)
   const plannerReasoning = ref<string>('')
-
-  // ── Review 阶段 ──
-  const reviewAgents = ref<ReviewAgentState[]>([])
-  const reviewReportHtml = ref<string | null>(null)
 
   // ── E2E 阶段 ──
   const e2eTestCasesMd = ref<string | null>(null)
@@ -109,7 +116,6 @@ export const useGenerationStore = defineStore('generation', () => {
       { key: 'analysis', label: '需求分析' },
       { key: 'design', label: '方案设计' },
       { key: 'code', label: '功能开发' },
-      { key: 'review', label: '质量校验' },
       { key: 'e2e', label: 'E2E验证' },
     ]
     return stages.map((s) => ({
@@ -133,15 +139,6 @@ export const useGenerationStore = defineStore('generation', () => {
     awaitingConfirm.value && stagePhase.value === 'complete'
   )
 
-  const reviewIssueSummary = computed(() => {
-    const all = reviewAgents.value.flatMap(a => a.findings)
-    return {
-      total: all.length,
-      critical: all.filter(i => i.severity === 'critical').length,
-      high: all.filter(i => i.severity === 'high').length,
-    }
-  })
-
   const compileStatus = computed(() => {
     const compiles = toolTraces.value.filter(t => t.tool === 'compile_project')
     const last = compiles.at(-1)
@@ -154,6 +151,28 @@ export const useGenerationStore = defineStore('generation', () => {
   // ── Actions ──
   function addMessage(msg: ChatMessage): void {
     messages.value.push(msg)
+  }
+
+  /** 新增一条 Manager 结构化消息卡片（meta 驱动渲染） */
+  function addManagerCard(payload: ManagerCardPayload): string {
+    const id = generateId()
+    const { stage: msgStage, ...meta } = payload
+    const msg: ChatMessage = {
+      id,
+      role: 'assistant',
+      content: '',
+      codeBlocks: [],
+      timestamp: Date.now(),
+      isStreaming: false,
+      stage: msgStage,
+      meta,
+    }
+    messages.value.push(msg)
+    return id
+  }
+
+  function setManualMode(v: boolean): void {
+    manualMode.value = v
   }
 
   function appendToLastMessage(content: string): void {
@@ -273,6 +292,19 @@ export const useGenerationStore = defineStore('generation', () => {
     }
   }
 
+  /** 记录某阶段最近一次 Manager 把关裁决 (9.3: redo/rollback 走 resume 续跑) */
+  function setLastVerdict(stageKey: string, decision: string): void {
+    lastVerdicts.value[stageKey] = decision
+  }
+
+  /** 阶段裁决为 redo/rollback → 清空前端该阶段产物副本 (后端已清, 前端镜像,
+   * 避免失败产物被下次 prefill 继续携带) */
+  function clearFailedStageOutput(stageKey: string): void {
+    if (stageKey in stageOutputs.value) {
+      ;(stageOutputs.value as Record<string, string | null>)[stageKey] = null
+    }
+  }
+
   function setCodeViewTab(tab: CodeViewTab): void {
     codeViewTab.value = tab
     rightPanelView.value = tab
@@ -307,6 +339,9 @@ export const useGenerationStore = defineStore('generation', () => {
     e2eResults.value = []
     e2eRunning.value = false
   }
+  function setE2EDiagnosis(diagnosis: E2EDiagnosis | null): void {
+    e2eDiagnosis.value = diagnosis
+  }
   function addRollbackEvent(event: RollbackEvent): void {
     rollbackEvents.value.push(event)
   }
@@ -318,6 +353,9 @@ export const useGenerationStore = defineStore('generation', () => {
   }
   function setGenerationId(id: string): void {
     currentGenerationId.value = id
+  }
+  function setBrainstormConverged(v: boolean): void {
+    brainstormConverged.value = v
   }
 
   // ── 需求分析 Actions ──
@@ -481,33 +519,6 @@ export const useGenerationStore = defineStore('generation', () => {
     plannerReasoning.value = text
   }
 
-  // ── Review 阶段 Actions ──
-  function initReviewAgents(agents: Array<{ key: string; name: string; icon: string }>): void {
-    reviewAgents.value = agents.map(a => ({
-      key: a.key,
-      name: a.name,
-      icon: a.icon,
-      status: 'pending' as const,
-      findings: [],
-      totalIssues: 0,
-    }))
-  }
-  function appendAgentFinding(agentKey: string, issue: ReviewFinding): void {
-    const agent = reviewAgents.value.find(a => a.key === agentKey)
-    if (agent) {
-      agent.findings.push(issue)
-      agent.totalIssues = agent.findings.length
-    }
-  }
-  function setAgentDone(agentKey: string): void {
-    const agent = reviewAgents.value.find(a => a.key === agentKey)
-    if (agent) agent.status = 'done'
-  }
-  function setAgentRunning(agentKey: string): void {
-    const agent = reviewAgents.value.find(a => a.key === agentKey)
-    if (agent) agent.status = 'running'
-  }
-
   // ── E2E 阶段 Actions ──
   function setE2ECasesDoc(md: string): void {
     e2eTestCasesMd.value = md
@@ -530,18 +541,22 @@ export const useGenerationStore = defineStore('generation', () => {
     compiledOutput.value = ''
     compileError.value = null
     stage.value = 'idle'
-    stageStatus.value = { analysis: 'pending', design: 'pending', code: 'pending', review: 'pending', e2e: 'pending' }
-    stageOutputs.value = { analysis: null, design: null, code: null, review: null, e2e: null }
+    stageStatus.value = { analysis: 'pending', design: 'pending', code: 'pending', e2e: 'pending' }
+    stageOutputs.value = { analysis: null, design: null, code: null, e2e: null }
+    lastVerdicts.value = {}
     codeViewTab.value = 'preview'
     rightPanelView.value = 'preview'
     // E2E & 回滚 & 审核
     e2eTestCases.value = []
     e2eResults.value = []
     e2eRunning.value = false
+    e2eDiagnosis.value = null
     rollbackEvents.value = []
     needsManualReview.value = false
     loopBreakReason.value = null
     currentGenerationId.value = null
+    manualMode.value = false
+    brainstormConverged.value = false
     requirementsState.value = null
     analysisPanelMode.value = 'prd'
     prdStreamingContent.value = ''
@@ -562,8 +577,6 @@ export const useGenerationStore = defineStore('generation', () => {
     taskGroups.value = new Map()
     currentTaskId.value = null
     plannerReasoning.value = ''
-    reviewAgents.value = []
-    reviewReportHtml.value = null
     e2eTestCasesMd.value = null
     e2eUserConfirmed.value = false
     e2eCurrentCaseId.value = null
@@ -572,20 +585,20 @@ export const useGenerationStore = defineStore('generation', () => {
   return {
     // state
     messages, files, activeFile, isStreaming, compiledOutput, compileError,
-    stage, stageStatus, stageOutputs, codeViewTab, rightPanelView,
-    e2eTestCases, e2eResults, e2eRunning, rollbackEvents, needsManualReview, loopBreakReason, currentGenerationId,
+    stage, stageStatus, stageOutputs, lastVerdicts, codeViewTab, rightPanelView,
+    e2eTestCases, e2eResults, e2eRunning, e2eDiagnosis, rollbackEvents, needsManualReview, loopBreakReason, currentGenerationId, manualMode, brainstormConverged,
     // 需求分析
     requirementsState, analysisPanelMode, prdStreamingContent, prdCurrentSection, prdVersion,
     // getters
     lastAssistantMessage, dirtyFiles, fileList, activeFileEntry,
     currentStepNodes, isStageDone,
     // actions
-    addMessage, appendToLastMessage, appendReasoning, finishReasoning, finalizeLastMessage, setStreaming,
+    addMessage, addManagerCard, setManualMode, appendToLastMessage, appendReasoning, finishReasoning, finalizeLastMessage, setStreaming,
     setFile, updateFileContent, setActiveFile, removeFile, addNewFile,
     markFileClean, setCompiledOutput, setCompileError,
-    setStage, setStageStatus, setStageOutput, setCodeViewTab, setRightPanelView,
+    setStage, setStageStatus, setStageOutput, setLastVerdict, clearFailedStageOutput, setCodeViewTab, setRightPanelView,
     enterCodeStage, completeCurrentStage,
-    setE2ETestCases, addE2EResult, clearE2EResults, addRollbackEvent, setNeedsManualReview, setLoopBreakReason, setGenerationId,
+    setE2ETestCases, addE2EResult, clearE2EResults, setE2EDiagnosis, addRollbackEvent, setNeedsManualReview, setLoopBreakReason, setGenerationId, setBrainstormConverged,
     setRequirementsState, patchRequirementsState, setAnalysisPanelMode,
     appendPRDContent, appendPRDDiff, setPRDCurrentSection, setPRDComplete, setPRDVersion,
     prdReasoningContent, prdReasoningDurationMs, appendPRDReasoning, finishPRDReasoning,
@@ -602,14 +615,11 @@ export const useGenerationStore = defineStore('generation', () => {
     agentLogEntries, addAgentLogEntry, updateLastAgentLogEntry,
     plannerTasks, taskGroups, currentTaskId, plannerReasoning,
     setPlannerTasks, setCurrentTask, addTaskLogEntry, updateTaskStatus, setPlannerReasoning,
-    // Review 阶段
-    reviewAgents, reviewReportHtml,
-    initReviewAgents, appendAgentFinding, setAgentDone, setAgentRunning,
     // E2E 阶段
     e2eTestCasesMd, e2eUserConfirmed, e2eCurrentCaseId,
     setE2ECasesDoc, confirmE2ECases, setCurrentE2ECase, setE2EComplete,
     // Computed
-    showStreamDocument, showNextButton, reviewIssueSummary, compileStatus,
+    showStreamDocument, showNextButton, compileStatus,
     resetAll,
   }
 })

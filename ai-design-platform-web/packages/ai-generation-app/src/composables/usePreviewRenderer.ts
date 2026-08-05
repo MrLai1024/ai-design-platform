@@ -4,10 +4,12 @@ import { useGenerationStore } from '@/stores/generation'
 import { scanCode } from '@/utils/securityScan'
 import { buildPreviewHtml } from '@/utils/buildPreviewHtml'
 import { useComponentDocs } from './useComponentDocs'
+import { useRuntimeFeedback } from './useRuntimeFeedback'
 
 export function usePreviewRenderer() {
   const store = useGenerationStore()
   const { getConfig } = useComponentDocs()
+  const runtimeFeedback = useRuntimeFeedback()
   const iframeRef = ref<HTMLIFrameElement | null>(null)
   const iframeReady = ref(false)
   const errorMessage = ref<string | null>(null)
@@ -28,6 +30,10 @@ export function usePreviewRenderer() {
     }
     if (e.data?.type === 'err') {
       errorMessage.value = e.data.message as string
+    }
+    // 5.4 L3：iframe 捕获的运行时错误 → 批量上报后端
+    if (e.data?.type === 'runtime-error' && Array.isArray(e.data.errors)) {
+      runtimeFeedback.capture(e.data.errors)
     }
   }
 

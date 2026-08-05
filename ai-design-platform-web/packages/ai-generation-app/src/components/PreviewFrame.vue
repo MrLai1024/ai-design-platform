@@ -7,10 +7,13 @@ import { initBundler, preloadBundler, bundleProject, getBundlerStatus, type Bund
 import { buildPreviewDoc } from '@/bundler/previewTemplate'
 import { buildPreviewHtml } from '@/utils/buildPreviewHtml'
 import { useComponentDocs } from '@/composables/useComponentDocs'
+import { useRuntimeFeedback } from '@/composables/useRuntimeFeedback'
 
 const store = useGenerationStore()
 const { getConfig } = useComponentDocs()
 const { isCompiling } = useMultiCompiler()
+// 5.4 L3：iframe 运行时错误（console/未捕获/网络失败）→ 批量上报后端
+const runtimeFeedback = useRuntimeFeedback()
 
 const iframeRef = ref<HTMLIFrameElement | null>(null)
 const iframeReady = ref(false)
@@ -27,6 +30,8 @@ const DEBOUNCE_MS = 400
 
 function renderDoc(js: string, css: string): void {
   if (!iframeRef.value) return
+  // 5.4 L3：新构建加载 → 清空旧构建的运行时错误（本地缓冲 + 后端空批次）
+  runtimeFeedback.clear()
   iframeRef.value.srcdoc = buildPreviewDoc({ js, css, cdnUrls: getConfig().cdnUrls })
   iframeReady.value = false
   errorMessage.value = null
@@ -152,6 +157,10 @@ function handleMessage(e: MessageEvent): void {
   if (e.data?.type === 'err') {
     errorMessage.value = e.data.message as string
   }
+  // 5.4 L3：iframe 捕获的运行时错误 → 批量上报后端（Verifier L3 证据）
+  if (e.data?.type === 'runtime-error' && Array.isArray(e.data.errors)) {
+    runtimeFeedback.capture(e.data.errors)
+  }
 }
 
 onMounted(async () => {
@@ -179,6 +188,10 @@ function refresh(): void {
     doBundle()
   }
 }
+
+// Group 6 (review I1): expose the real iframe so the E2E runner (bound via
+// E2EStagePanel's previewIframeRef) can drive the preview document.
+defineExpose({ iframe: iframeRef })
 </script>
 
 <template>

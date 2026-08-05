@@ -30,6 +30,26 @@ class GenerationServiceStub:
                 request_serializer=ai_dot_v1_dot_generation__pb2.CompileFeedbackRequest.SerializeToString,
                 response_deserializer=ai_dot_v1_dot_generation__pb2.CompileFeedbackResponse.FromString,
                 _registered_method=True)
+        self.ClassifyIntent = channel.unary_unary(
+                '/ai.v1.GenerationService/ClassifyIntent',
+                request_serializer=ai_dot_v1_dot_generation__pb2.ClassifyIntentRequest.SerializeToString,
+                response_deserializer=ai_dot_v1_dot_generation__pb2.ClassifyIntentResponse.FromString,
+                _registered_method=True)
+        self.BrainstormTurn = channel.unary_unary(
+                '/ai.v1.GenerationService/BrainstormTurn',
+                request_serializer=ai_dot_v1_dot_generation__pb2.BrainstormTurnRequest.SerializeToString,
+                response_deserializer=ai_dot_v1_dot_generation__pb2.BrainstormTurnResponse.FromString,
+                _registered_method=True)
+        self.ReportRuntimeFeedback = channel.unary_unary(
+                '/ai.v1.GenerationService/ReportRuntimeFeedback',
+                request_serializer=ai_dot_v1_dot_generation__pb2.RuntimeFeedbackRequest.SerializeToString,
+                response_deserializer=ai_dot_v1_dot_generation__pb2.RuntimeFeedbackResponse.FromString,
+                _registered_method=True)
+        self.ResumeAfterE2E = channel.unary_stream(
+                '/ai.v1.GenerationService/ResumeAfterE2E',
+                request_serializer=ai_dot_v1_dot_generation__pb2.ResumeAfterE2ERequest.SerializeToString,
+                response_deserializer=ai_dot_v1_dot_generation__pb2.GenerateResponse.FromString,
+                _registered_method=True)
 
 
 class GenerationServiceServicer:
@@ -58,6 +78,45 @@ class GenerationServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ClassifyIntent(self, request, context):
+        """ClassifyIntent classifies the user's dialog input so the Manager can
+        route it (reply_qa / proceed / feedback / escalate / ask_why).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def BrainstormTurn(self, request, context):
+        """BrainstormTurn runs one turn of the agenda-driven clarification
+        (task group 3). First call without generation_id creates a session;
+        subsequent calls pass it back. Returns discrete manager_message cards
+        (no SSE needed).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReportRuntimeFeedback(self, request, context):
+        """ReportRuntimeFeedback receives runtime errors captured by the preview
+        iframe (console errors / uncaught exceptions / failed network requests)
+        so the Verifier's L3 signal and the Debugger's evidence chain can
+        consume them. Replace semantics: each batch is the current build's
+        snapshot; the frontend sends an empty batch to clear on new loads.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ResumeAfterE2E(self, request, context):
+        """ResumeAfterE2E resumes the graph with the completed E2E run results
+        (task group 6): the Test Diagnoser classifies failed cases (3-way), the
+        e2e gate routes real regressions back to the code worker, and the stream
+        carries the manager verdicts / diagnosis cards.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GenerationServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -75,6 +134,26 @@ def add_GenerationServiceServicer_to_server(servicer, server):
                     servicer.ReportCompileFeedback,
                     request_deserializer=ai_dot_v1_dot_generation__pb2.CompileFeedbackRequest.FromString,
                     response_serializer=ai_dot_v1_dot_generation__pb2.CompileFeedbackResponse.SerializeToString,
+            ),
+            'ClassifyIntent': grpc.unary_unary_rpc_method_handler(
+                    servicer.ClassifyIntent,
+                    request_deserializer=ai_dot_v1_dot_generation__pb2.ClassifyIntentRequest.FromString,
+                    response_serializer=ai_dot_v1_dot_generation__pb2.ClassifyIntentResponse.SerializeToString,
+            ),
+            'BrainstormTurn': grpc.unary_unary_rpc_method_handler(
+                    servicer.BrainstormTurn,
+                    request_deserializer=ai_dot_v1_dot_generation__pb2.BrainstormTurnRequest.FromString,
+                    response_serializer=ai_dot_v1_dot_generation__pb2.BrainstormTurnResponse.SerializeToString,
+            ),
+            'ReportRuntimeFeedback': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReportRuntimeFeedback,
+                    request_deserializer=ai_dot_v1_dot_generation__pb2.RuntimeFeedbackRequest.FromString,
+                    response_serializer=ai_dot_v1_dot_generation__pb2.RuntimeFeedbackResponse.SerializeToString,
+            ),
+            'ResumeAfterE2E': grpc.unary_stream_rpc_method_handler(
+                    servicer.ResumeAfterE2E,
+                    request_deserializer=ai_dot_v1_dot_generation__pb2.ResumeAfterE2ERequest.FromString,
+                    response_serializer=ai_dot_v1_dot_generation__pb2.GenerateResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -159,6 +238,114 @@ class GenerationService:
             '/ai.v1.GenerationService/ReportCompileFeedback',
             ai_dot_v1_dot_generation__pb2.CompileFeedbackRequest.SerializeToString,
             ai_dot_v1_dot_generation__pb2.CompileFeedbackResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ClassifyIntent(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ai.v1.GenerationService/ClassifyIntent',
+            ai_dot_v1_dot_generation__pb2.ClassifyIntentRequest.SerializeToString,
+            ai_dot_v1_dot_generation__pb2.ClassifyIntentResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def BrainstormTurn(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ai.v1.GenerationService/BrainstormTurn',
+            ai_dot_v1_dot_generation__pb2.BrainstormTurnRequest.SerializeToString,
+            ai_dot_v1_dot_generation__pb2.BrainstormTurnResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReportRuntimeFeedback(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ai.v1.GenerationService/ReportRuntimeFeedback',
+            ai_dot_v1_dot_generation__pb2.RuntimeFeedbackRequest.SerializeToString,
+            ai_dot_v1_dot_generation__pb2.RuntimeFeedbackResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ResumeAfterE2E(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/ai.v1.GenerationService/ResumeAfterE2E',
+            ai_dot_v1_dot_generation__pb2.ResumeAfterE2ERequest.SerializeToString,
+            ai_dot_v1_dot_generation__pb2.GenerateResponse.FromString,
             options,
             channel_credentials,
             insecure,

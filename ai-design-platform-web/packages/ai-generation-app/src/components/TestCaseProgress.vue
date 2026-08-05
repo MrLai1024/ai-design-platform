@@ -1,4 +1,6 @@
-<!-- src/components/TestCaseProgress.vue -->
+<!-- src/components/TestCaseProgress.vue
+  用例执行进度：DSL 用例（scenario 为标题，兼容旧 name）；requires_browser
+  跳过结果显示 ⏭（6.7）。 -->
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useGenerationStore } from '@/stores/generation'
@@ -9,6 +11,22 @@ const totalCases = computed(() => store.e2eTestCases.length)
 const executedCases = computed(() => store.e2eResults.length)
 const passedCases = computed(() => store.e2eResults.filter(r => r.passed).length)
 const progress = computed(() => totalCases.value > 0 ? Math.round((executedCases.value / totalCases.value) * 100) : 0)
+
+function caseLabel(tc: { scenario?: string; name?: string }): string {
+  return tc.scenario || tc.name || ''
+}
+
+function resultIcon(result?: { status?: string; passed?: boolean }): string {
+  if (!result) return '⏸'
+  if (result.status === 'skipped_requires_browser') return '⏭'
+  return result.passed ? '✅' : '❌'
+}
+
+function resultClass(result?: { status?: string; passed?: boolean }): Record<string, boolean> {
+  if (!result) return {}
+  if (result.status === 'skipped_requires_browser') return { 'bg-amber-50': true }
+  return result.passed ? { 'bg-green-50': true } : { 'bg-red-50': true }
+}
 </script>
 
 <template>
@@ -34,17 +52,13 @@ const progress = computed(() => totalCases.value > 0 ? Math.round((executedCases
         :key="tc.id"
         class="flex items-center gap-2 px-3 py-1.5 text-sm rounded"
         :class="{
-          'bg-blue-50': store.e2eCurrentCaseId === tc.id,
-          'bg-green-50': store.e2eResults[idx]?.passed,
-          'bg-red-50': store.e2eResults[idx] && !store.e2eResults[idx].passed,
-          'bg-white': !store.e2eResults[idx] && store.e2eCurrentCaseId !== tc.id,
+          'bg-blue-50': store.e2eCurrentCaseId === tc.id && store.e2eRunning,
+          ...resultClass(store.e2eResults[idx]),
         }"
       >
         <span v-if="store.e2eCurrentCaseId === tc.id && store.e2eRunning" class="text-blue-500 animate-spin">⏳</span>
-        <span v-else-if="store.e2eResults[idx]?.passed">✅</span>
-        <span v-else-if="store.e2eResults[idx] && !store.e2eResults[idx].passed">❌</span>
-        <span v-else>⏸</span>
-        <span>{{ tc.name }}</span>
+        <span v-else>{{ resultIcon(store.e2eResults[idx]) }}</span>
+        <span>{{ caseLabel(tc) }}</span>
         <span v-if="store.e2eResults[idx]?.error" class="text-red-500 text-xs ml-auto truncate max-w-[200px]">
           {{ store.e2eResults[idx].error }}
         </span>
@@ -54,7 +68,7 @@ const progress = computed(() => totalCases.value > 0 ? Math.round((executedCases
     <div v-if="!store.e2eRunning && executedCases > 0" class="mt-2 text-sm text-center">
       <span class="text-green-600">{{ passedCases }} 通过</span>
       <span v-if="executedCases - passedCases > 0" class="text-red-600 ml-2">
-        {{ executedCases - passedCases }} 失败
+        {{ executedCases - passedCases }} 失败/跳过
       </span>
     </div>
   </div>

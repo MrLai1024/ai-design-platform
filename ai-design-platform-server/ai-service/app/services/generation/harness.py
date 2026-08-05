@@ -8,6 +8,7 @@ from typing import Callable, Any
 from collections.abc import Awaitable
 import structlog
 
+from .spec_schema import validate_spec
 from .state import GenerationState, RollbackRecord
 
 logger = structlog.get_logger()
@@ -129,18 +130,25 @@ class LoopControl:
         """
         Returns (allowed, reason).
         allowed=False means the loop should stop (circuit break).
+
+        Task group 9: limits read from state (``max_rollback_per_node`` /
+        ``max_rollback_total``) when present, falling back to the instance
+        defaults — the gate redo paths route through LoopControl too, and the
+        state-carried limits are the single source of truth.
         """
         counts = state.get("rollback_count", {})
+        max_per_node = state.get("max_rollback_per_node", self.max_rollback_per_node)
+        max_total = state.get("max_rollback_total", self.max_rollback_total)
 
         # Rule 1: per-node limit
         node_count = counts.get(target_node, 0)
-        if node_count >= self.max_rollback_per_node:
-            return False, f"Node '{target_node}' rollback limit ({self.max_rollback_per_node}) reached"
+        if node_count >= max_per_node:
+            return False, f"Node '{target_node}' rollback limit ({max_per_node}) reached"
 
         # Rule 2: global limit
         total = sum(counts.values())
-        if total >= self.max_rollback_total:
-            return False, f"Global rollback limit ({self.max_rollback_total}) reached"
+        if total >= max_total:
+            return False, f"Global rollback limit ({max_total}) reached"
 
         # Rule 3: no-improvement check
         records = state.get("rollback_records", [])
@@ -168,23 +176,6 @@ class LoopControl:
             previous_output_hash=previous_output_hash,
             token_cost=token_cost,
         )
-
-    @staticmethod
-    def apply_rollback(
-        state: GenerationState, record: RollbackRecord
-    ) -> GenerationState:
-        counts = state.get("rollback_count", {})
-        target = record["to_node"]
-        counts[target] = counts.get(target, 0) + 1
-
-        records = list(state.get("rollback_records", []))
-        records.append(record)
-
-        return {
-            **state,
-            "rollback_count": counts,
-            "rollback_records": records,
-        }
 
 
 @dataclass
@@ -221,6 +212,18 @@ class EvalHarness:
         return CheckResult(True)
 
     @staticmethod
+    def spec_has_required_fields(spec: dict | None) -> CheckResult:
+        """Check that the architecture spec has all required non-empty fields (4.3).
+
+        Deterministic L1 check — mirrors the D5 schema (spec_version + the 9
+        business fields). Any missing/empty/invalid field fails the check.
+        """
+        problems = validate_spec(spec)
+        if problems:
+            return CheckResult(False, problems)
+        return CheckResult(True)
+
+    @staticmethod
     def validate(state: GenerationState, stage: str) -> CheckResult:
         """Run all checks for a given stage."""
         if stage == "code":
@@ -230,5 +233,9 @@ class EvalHarness:
                 return r1
             return EvalHarness.code_has_vue_template(code)
         if stage == "design":
-            return EvalHarness.design_has_sections(state.get("design_result"))
+            r1 = EvalHarness.design_has_sections(state.get("design_result"))
+            r2 = EvalHarness.spec_has_required_fields(state.get("architecture_spec"))
+            if not r1.passed or not r2.passed:
+                return CheckResult(False, list(r1.errors) + list(r2.errors))
+            return CheckResult(True)
         return CheckResult(True)

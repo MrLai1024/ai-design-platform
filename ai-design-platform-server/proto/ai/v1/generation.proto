@@ -15,6 +15,29 @@ service GenerationService {
   // ReportCompileFeedback receives real bundler compile results from the
   // frontend preview (esbuild-wasm) so the code Executor can fix real errors.
   rpc ReportCompileFeedback(CompileFeedbackRequest) returns (CompileFeedbackResponse);
+
+  // ClassifyIntent classifies the user's dialog input so the Manager can
+  // route it (reply_qa / proceed / feedback / escalate / ask_why).
+  rpc ClassifyIntent(ClassifyIntentRequest) returns (ClassifyIntentResponse);
+
+  // BrainstormTurn runs one turn of the agenda-driven clarification
+  // (task group 3). First call without generation_id creates a session;
+  // subsequent calls pass it back. Returns discrete manager_message cards
+  // (no SSE needed).
+  rpc BrainstormTurn(BrainstormTurnRequest) returns (BrainstormTurnResponse);
+
+  // ReportRuntimeFeedback receives runtime errors captured by the preview
+  // iframe (console errors / uncaught exceptions / failed network requests)
+  // so the Verifier's L3 signal and the Debugger's evidence chain can
+  // consume them. Replace semantics: each batch is the current build's
+  // snapshot; the frontend sends an empty batch to clear on new loads.
+  rpc ReportRuntimeFeedback(RuntimeFeedbackRequest) returns (RuntimeFeedbackResponse);
+
+  // ResumeAfterE2E resumes the graph with the completed E2E run results
+  // (task group 6): the Test Diagnoser classifies failed cases (3-way), the
+  // e2e gate routes real regressions back to the code worker, and the stream
+  // carries the manager verdicts / diagnosis cards.
+  rpc ResumeAfterE2E(ResumeAfterE2ERequest) returns (stream GenerateResponse);
 }
 
 message GenerateRequest {
@@ -80,6 +103,7 @@ message GraphEvent {
   string event_type = 1;    // "stage_start" | "stage_complete" | "stage_rollback"
                             // | "e2e_execute" | "e2e_case_result" | "e2e_complete"
                             // | "human_confirm_required" | "loop_warning" | "loop_break"
+                            // | "verifier_result" | "debugger_diagnosis" | "debugger_stopped"
   string stage = 2;         // "analysis" | "design" | "code" | "review" | "e2e"
   string data = 3;          // JSON-encoded payload (varies by event_type)
 }
@@ -110,4 +134,82 @@ message CompileError {
 
 message CompileFeedbackResponse {
   bool received = 1;
+}
+
+// ── Runtime feedback (preview iframe → Verifier L3 / Debugger evidence) ──
+
+message RuntimeFeedbackRequest {
+  string generation_id = 1;
+  repeated RuntimeError errors = 2;   // empty batch = clear (new build loaded)
+}
+
+message RuntimeError {
+  string type = 1;        // "console_error" | "uncaught" | "unhandledrejection" | "network"
+  string message = 2;
+  string stack = 3;       // optional stack trace
+  string url = 4;         // optional source url / failed request url
+}
+
+message RuntimeFeedbackResponse {
+  bool received = 1;
+}
+
+// ── Manager intent classification (dialog routing) ──
+
+message ClassifyIntentRequest {
+  string text = 1;
+  string stage = 2;           // "analysis" | "design" | "code" | "e2e" | ""
+  string generation_id = 3;
+}
+
+message ClassifyIntentResponse {
+  string intent = 1;          // "reply_qa" | "proceed" | "feedback" | "escalate" | "ask_why"
+  string reason = 2;
+}
+
+// ── Brainstorm turn (agenda-driven clarification, task group 3) ──
+
+message BrainstormTurnRequest {
+  string text = 1;            // user input: requirement (first turn) or answer / choice
+  // Session id. Empty on the first turn → a new session is created and its id
+  // returned. NOTE: an unknown (or stale) id also creates a new session —
+  // sessions are in-memory per process (persistence arrives with the memory
+  // system); the frontend must use the id returned by the previous response.
+  string generation_id = 2;
+  string item_id = 3;         // agenda item id when the user clicked a question_card option
+  string model = 4;           // optional model override (defaults to glm-5.2)
+}
+
+message BrainstormTurnResponse {
+  string generation_id = 1;   // session id (create on first turn, reuse afterwards)
+  bool converged = 2;         // true when the agenda is converged → 开始设计 button
+  double coverage = 3;        // agenda coverage (answered / total, 0..1)
+  repeated GraphEvent events = 4;  // manager_message cards produced by this turn
+}
+
+// Runner evidence for one E2E case (task group 6.3): DOM snapshot +
+// console/network errors collected during the case execution.
+message E2EEvidence {
+  string dom_snapshot = 1;          // body outerHTML (truncated)
+  repeated string console_errors = 2;  // JSON-serialized console errors
+  repeated string network_errors = 3;  // JSON-serialized network errors
+  string screenshot_note = 4;       // visual screenshot availability note
+}
+
+// One E2E case result (6.3). status ∈ "" | "passed" | "failed" |
+// "skipped_requires_browser" (6.7).
+message E2ECaseResult {
+  string case_id = 1;
+  bool passed = 2;
+  string error = 3;
+  string status = 4;
+  string screenshot = 5;            // legacy HTML snapshot (data URL)
+  E2EEvidence evidence = 6;
+}
+
+// ResumeAfterE2E request — the full completed run's results (one call per
+// run; the Diagnoser classifies failures as a batch).
+message ResumeAfterE2ERequest {
+  string generation_id = 1;
+  repeated E2ECaseResult results = 2;
 }

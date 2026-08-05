@@ -80,6 +80,113 @@ func (c *AIClient) ReportCompileFeedback(ctx context.Context, generationID strin
 	return resp.Received, nil
 }
 
+// RuntimeError mirrors one iframe-captured runtime error from the preview.
+type RuntimeError struct {
+	Type    string `json:"type"`    // "console_error" | "uncaught" | "unhandledrejection" | "network"
+	Message string `json:"message"`
+	Stack   string `json:"stack,omitempty"`
+	URL     string `json:"url,omitempty"`
+}
+
+// ReportRuntimeFeedback 转发预览 iframe 的运行时错误到 AI 服务（Verifier L3 证据）。
+// 替换语义：errors 为当前构建的快照；空批次 = 清空（新构建加载）。
+func (c *AIClient) ReportRuntimeFeedback(ctx context.Context, generationID string, errs []RuntimeError) (bool, error) {
+	pbErrs := make([]*pb.RuntimeError, len(errs))
+	for i, e := range errs {
+		pbErrs[i] = &pb.RuntimeError{Type: e.Type, Message: e.Message, Stack: e.Stack, Url: e.URL}
+	}
+	resp, err := c.genCli.ReportRuntimeFeedback(ctx, &pb.RuntimeFeedbackRequest{
+		GenerationId: generationID,
+		Errors:       pbErrs,
+	})
+	if err != nil {
+		return false, err
+	}
+	return resp.Received, nil
+}
+
+// E2EEvidence mirrors the runner's per-case evidence (task group 6.3).
+type E2EEvidence struct {
+	DOMSnapshot    string   `json:"dom_snapshot,omitempty"`
+	ConsoleErrors  []string `json:"console_errors,omitempty"`
+	NetworkErrors  []string `json:"network_errors,omitempty"`
+	ScreenshotNote string   `json:"screenshot_note,omitempty"`
+}
+
+// E2ECaseResult mirrors one executed E2E case (6.3/6.7). Status ∈ "" |
+// "passed" | "failed" | "skipped_requires_browser".
+type E2ECaseResult struct {
+	CaseID     string      `json:"case_id"`
+	Passed     bool        `json:"passed"`
+	Error      string      `json:"error,omitempty"`
+	Status     string      `json:"status,omitempty"`
+	Screenshot string      `json:"screenshot,omitempty"`
+	Evidence   *E2EEvidence `json:"evidence,omitempty"`
+}
+
+// ResumeAfterE2E 转发完整一轮 E2E 结果到 AI 服务：Test Diagnoser 三方分类 →
+// e2e gate 路由（真实回归回功能实现节点）。返回服务器流（GraphEvents SSE）。
+func (c *AIClient) ResumeAfterE2E(
+	ctx context.Context,
+	generationID string,
+	results []E2ECaseResult,
+) (pb.GenerationService_ResumeAfterE2EClient, error) {
+	pbResults := make([]*pb.E2ECaseResult, len(results))
+	for i, r := range results {
+		pbRes := &pb.E2ECaseResult{
+			CaseId:     r.CaseID,
+			Passed:     r.Passed,
+			Error:      r.Error,
+			Status:     r.Status,
+			Screenshot: r.Screenshot,
+		}
+		if r.Evidence != nil {
+			pbRes.Evidence = &pb.E2EEvidence{
+				DomSnapshot:    r.Evidence.DOMSnapshot,
+				ConsoleErrors:  r.Evidence.ConsoleErrors,
+				NetworkErrors:  r.Evidence.NetworkErrors,
+				ScreenshotNote: r.Evidence.ScreenshotNote,
+			}
+		}
+		pbResults[i] = pbRes
+	}
+	stream, err := c.genCli.ResumeAfterE2E(ctx, &pb.ResumeAfterE2ERequest{
+		GenerationId: generationID,
+		Results:      pbResults,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ResumeAfterE2E RPC failed: %w", err)
+	}
+	return stream, nil
+}
+
+// ClassifyIntent 分类用户对话意图（Manager 意图路由）。
+func (c *AIClient) ClassifyIntent(ctx context.Context, text, stage, generationID string) (string, string, error) {
+	resp, err := c.genCli.ClassifyIntent(ctx, &pb.ClassifyIntentRequest{
+		Text:         text,
+		Stage:        stage,
+		GenerationId: generationID,
+	})
+	if err != nil {
+		return "", "", err
+	}
+	return resp.Intent, resp.Reason, nil
+}
+
+// BrainstormTurn 运行一轮议程驱动的澄清（任务组 3）。
+// 首次调用不传 generationID → 创建会话并返回其 id；后续调用带上继续。
+func (c *AIClient) BrainstormTurn(ctx context.Context, text, generationID, itemID string) (*pb.BrainstormTurnResponse, error) {
+	resp, err := c.genCli.BrainstormTurn(ctx, &pb.BrainstormTurnRequest{
+		Text:         text,
+		GenerationId: generationID,
+		ItemId:       itemID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
 // Close 关闭 gRPC 连接。
 func (c *AIClient) Close() error {
 	return c.conn.Close()

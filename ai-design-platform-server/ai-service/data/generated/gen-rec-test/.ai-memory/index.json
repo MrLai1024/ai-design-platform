@@ -1,0 +1,33 @@
+{
+  "app_id": "gen-rec-test",
+  "created_at": "2026-08-05T23:44:30",
+  "version": 1,
+  "spec_version": 1,
+  "features_done": [],
+  "stages": {},
+  "updated_at": "2026-08-05T23:45:21",
+  "verdicts": [
+    {
+      "node": "code",
+      "decision": "redo",
+      "reason": "编译未通过（1 处错误）",
+      "signature": "f155b216",
+      "at": "2026-08-05T23:45:21",
+      "recovery": {
+        "category": "compile",
+        "reason": "编译失败：1 处错误",
+        "strategy": {
+          "strategy": "escalate",
+          "target": null,
+          "reason": "自主闭环超 2 轮红线，必须向用户汇报"
+        },
+        "attempts": 3,
+        "escalate": true,
+        "scope_change": false,
+        "scope_change_note": "",
+        "suggested_fix": "重派（带反馈） → code（历史成功 0 次）",
+        "signature": "8285c8f928ab"
+      }
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "latest_problem": {
+    "category": "compile",
+    "problem": "code 失败：编译失败：1 处错误",
+    "result": "escalated",
+    "ts": "2026-08-05T23:45:21"
+  },
+  "agenda": [],
+  "assumptions": [],
+  "decisions": [],
+  "generation_id": "gen-rec-test",
+  "updated_at": "2026-08-05T23:45:21",
+  "stage": "code",
+  "phase": "reviewed",
+  "active_node": "gate",
+  "latest_verdict": {
+    "node": "code",
+    "decision": "redo",
+    "reason": "编译未通过（1 处错误）"
+  }
+}

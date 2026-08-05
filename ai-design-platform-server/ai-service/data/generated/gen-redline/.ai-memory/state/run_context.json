@@ -1,0 +1,21 @@
+{
+  "stage": "design",
+  "phase": "reviewed",
+  "active_node": "gate",
+  "agenda": [],
+  "assumptions": [],
+  "decisions": [],
+  "generation_id": "gen-redline",
+  "updated_at": "2026-08-05T23:40:45",
+  "latest_problem": {
+    "category": "drift",
+    "problem": "design 失败：Spec 遗漏功能点",
+    "result": "pending",
+    "ts": "2026-08-05T23:40:45"
+  },
+  "latest_verdict": {
+    "node": "design",
+    "decision": "redo",
+    "reason": "L2：订单管理（PRD 声明，Spec 无对应）\n[恢复策略：重派（带反馈） → design] 失败分类：内容跑偏（置信 medium）\nSpec 遗漏功能点\n历史修复策略参考：重派（带反馈） → design（历史成功 0 次）"
+  }
+}
