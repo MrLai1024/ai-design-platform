@@ -205,4 +205,47 @@ describe('useMultiAgent — 9.3 continuity fixes (C1/I5 review)', () => {
     expect(body.skip_analysis).toBe(true)
     expect(body.messages).toHaveLength(2)
   })
+
+  it('10.1: sendFeedback POSTs then resumes the same runner (disposition consumption)', async () => {
+    const store = useGenerationStore()
+    store.setStage('code')
+    store.setGenerationId('gen-fb-x')
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          received: true,
+          category: 'omission',
+          category_label: '遗漏',
+          action: '重派功能实现任务（携带反馈）',
+          result: 'dispatched',
+          reason: '需求已声明但未生成',
+        }),
+      })
+      .mockResolvedValueOnce(sseResponse([
+        { _t: 'manager_message', stage: 'code', card: 'feedback_card', title: '反馈处置 · 功能实现', content: '反馈摘要：缺少订单列表组件', data: { node: 'code', category: 'omission' } },
+      ]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { sendFeedback } = useMultiAgent()
+    await sendFeedback('缺少订单列表组件')
+
+    // 1) 反馈 POST
+    const postCall = fetchMock.mock.calls[0]!
+    expect(postCall[0]).toBe('/api/v1/generation/feedback')
+    const postBody = JSON.parse((postCall[1] as RequestInit).body as string)
+    expect(postBody.generation_id).toBe('gen-fb-x')
+    expect(postBody.stage).toBe('code')
+    expect(postBody.feedback).toBe('缺少订单列表组件')
+    // 2) 处置挂起在当前 runner → 后续 confirmStage 必须 resume 同一 runner
+    //    (fresh-start 新 UUID 会丢失反馈)。
+    const resumeCall = fetchMock.mock.calls[1]!
+    expect(resumeCall[0]).toBe('/api/v1/generation/stream')
+    const resumeBody = JSON.parse((resumeCall[1] as RequestInit).body as string)
+    expect(resumeBody.mode).toBe('resume')
+    expect(resumeBody.generation_id).toBe('gen-fb-x')
+    expect(resumeBody.messages).toEqual([])
+    // 3) 处置卡经 manager_message 分发到对话框
+    expect(store.messages.at(-1)!.meta?.card).toBe('feedback_card')
+  })
 })

@@ -1,6 +1,6 @@
 <!-- src/components/ManagerCard.vue — Manager 结构化消息卡片（按 card 类型内部分流渲染） -->
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { ManagerCardMeta } from '@/types/generation'
 
 const props = defineProps<{
@@ -20,6 +20,7 @@ const CARD_LABELS: Record<string, string> = {
   proposal_card: '方案建议',
   coverage_matrix: '覆盖矩阵',
   question_card: '提问',
+  feedback_card: '反馈处置',
 }
 
 const cardLabel = computed(() => CARD_LABELS[props.meta.card] || 'Manager')
@@ -38,9 +39,21 @@ const cardStyle = computed(() => {
       return 'border-blue-200 bg-blue-50'
     case 'coverage_matrix':
       return 'border-indigo-200 bg-indigo-50'
+    case 'feedback_card':
+      return 'border-yellow-200 bg-yellow-50'
     default:
       return 'border-gray-200 bg-white'
   }
+})
+
+// 10.2: 反馈处置卡 — 默认折叠的摘要行 (反馈摘要 + 处置动作 + 结果),
+// 点击展开可见处置过程 (分类、重派任务、验证结果)。
+const feedbackExpanded = ref(false)
+const feedbackResultLabel = computed(() => {
+  const result = props.meta.data?.result
+  if (result === 'awaiting_confirm') return '待确认'
+  if (result === 'rejected') return '已忽略'
+  return result === 'dispatched' ? '已重派' : '处理中'
 })
 
 const verdictPassed = computed<boolean | null>(() =>
@@ -76,9 +89,38 @@ const matrix = computed(() => props.meta.data?.matrix as Record<string, any> | u
       <span v-if="meta.title" class="text-xs font-semibold text-gray-800">{{ meta.title }}</span>
     </div>
 
+    <!-- 反馈处置（feedback_card，10.2）：折叠摘要行 + 展开处置过程 -->
+    <div v-if="meta.card === 'feedback_card'" class="feedback-disposition">
+      <div
+        class="flex items-center gap-2 cursor-pointer hover:bg-yellow-100/50 rounded px-1 -mx-1 py-0.5"
+        data-testid="feedback-card-toggle"
+        @click="feedbackExpanded = !feedbackExpanded"
+      >
+        <span class="text-[10px] text-gray-400 shrink-0">{{ feedbackExpanded ? '▼' : '▶' }}</span>
+        <span class="text-[10px] text-gray-400 shrink-0">💬</span>
+        <span class="text-xs text-gray-700 truncate flex-1">
+          反馈：{{ (meta.data?.feedback as string)?.slice(0, 40) }}{{ ((meta.data?.feedback as string)?.length || 0) > 40 ? '...' : '' }}
+        </span>
+        <span class="text-[10px] text-gray-500 shrink-0">
+          {{ meta.data?.category_label || meta.data?.category || '' }} · {{ feedbackResultLabel }}
+        </span>
+      </div>
+      <div v-if="feedbackExpanded" class="mt-1.5 pt-1.5 border-t border-yellow-100 text-xs text-gray-600 space-y-1">
+        <div class="whitespace-pre-wrap break-words">"{{ meta.data?.feedback }}"</div>
+        <div><span class="text-gray-400">分类：</span>{{ meta.data?.category_label || meta.data?.category || '未知' }}</div>
+        <div v-if="meta.data?.reason"><span class="text-gray-400">依据：</span>{{ meta.data.reason }}</div>
+        <div><span class="text-gray-400">处置动作：</span>{{ meta.data?.action || '—' }}</div>
+        <div><span class="text-gray-400">结果：</span>{{ feedbackResultLabel }}</div>
+        <!-- NOTE (spec drift, review): 后端在反馈消费点发射本卡, 验证结果由
+             同流后续把关裁决卡 (verdict_card) 呈现 — spec 场景 "处置与重派
+             执行完成 THEN 卡片" 的严格时序未实现, 见 dialog.py 注释。 -->
+        <div class="text-[10px] text-gray-400">验证结果：见后续 Manager 把关裁决卡片</div>
+      </div>
+    </div>
+
     <!-- 把关裁决（verdict_card）：通过/未通过标识 -->
     <div
-      v-if="meta.card === 'verdict_card' && verdictPassed !== null"
+      v-else-if="meta.card === 'verdict_card' && verdictPassed !== null"
       class="mb-1 text-xs font-semibold"
       :class="verdictPassed ? 'text-green-700' : 'text-red-700'"
     >
@@ -87,7 +129,7 @@ const matrix = computed(() => props.meta.data?.matrix as Record<string, any> | u
 
     <!-- 正文 -->
     <div
-      v-if="meta.content"
+      v-if="meta.card !== 'feedback_card' && meta.content"
       class="text-xs text-gray-700 whitespace-pre-wrap break-words"
     >
       {{ meta.content }}

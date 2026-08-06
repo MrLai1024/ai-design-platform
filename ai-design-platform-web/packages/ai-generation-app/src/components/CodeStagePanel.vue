@@ -31,13 +31,13 @@ function onAgentLogClick(entry: AgentLogEntry): void {
 }
 
 function onSendFeedback(text: string): void {
-  // Add feedback entry to AgentLog
+  // Add feedback entry to AgentLog (10.2: 处置结果改由对话框 feedback_card 呈现)
   store.addAgentLogEntry({
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
     type: 'feedback_summary',
     timestamp: Date.now(),
     feedbackText: text,
-    feedbackResult: '正在处理...',
+    feedbackResult: '处置结果见对话框卡片',
   })
   sendFeedback(text)
 }

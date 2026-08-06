@@ -16,6 +16,7 @@ const {
   startIncrementalGeneration,
   regenIncrementalStep,
   confirmStage,
+  forceResumeNextConfirm,
   sendFeedback,
   routeUserMessage,
   cancel: cancelAgent,
@@ -131,7 +132,10 @@ async function handleCardOptionClick(msg: ChatMessage, option: string): Promise<
   } else if (card === 'confirm_card' && (msg.meta?.data as any)?.scope_confirm) {
     // 9.3 (I5): 范围变更确认卡 — 「确认」→ resume (后端批准范围变更,
     // 进入重派反馈); 「重新生成」→ feedback (后端拒绝, 范围不变更)。
+    // 10.1: 用户反馈引发的范围确认 — 处置挂起在当前 runner, 「确认」必须
+    // resume 同一 runner (fresh-start 新 UUID 会丢失处置)。
     if (option === '确认') {
+      forceResumeNextConfirm()
       confirmStage(store.stage)
     } else if (option === '重新生成') {
       await sendFeedback(option)

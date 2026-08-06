@@ -36,6 +36,9 @@ func (f *fakeGenCli) ReportRuntimeFeedback(ctx context.Context, in *pb.RuntimeFe
 func (f *fakeGenCli) ResumeAfterE2E(ctx context.Context, in *pb.ResumeAfterE2ERequest, opts ...grpc.CallOption) (pb.GenerationService_ResumeAfterE2EClient, error) {
 	return nil, nil
 }
+func (f *fakeGenCli) ReportUserFeedback(ctx context.Context, in *pb.UserFeedbackRequest, opts ...grpc.CallOption) (*pb.UserFeedbackResponse, error) {
+	return &pb.UserFeedbackResponse{Received: true, Category: "omission"}, nil
+}
 
 func TestReportRuntimeFeedback(t *testing.T) {
 	fake := &fakeGenCli{}

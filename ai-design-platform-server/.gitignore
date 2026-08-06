@@ -11,6 +11,9 @@ __pycache__/
 .venv/
 *.egg-info/
 
+# Runtime artifacts (ai-service 生成/记忆运行时落盘)
+ai-service/data/
+
 # IDE
 .idea/
 .vscode/

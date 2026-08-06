@@ -15,6 +15,14 @@ export function useMultiAgent() {
   // 8.x 增量开发模式: 全程跑在同一 runner 实例 (resume), confirmStage 不得
   // 走 fresh-start 预填路径。
   const isIncremental = ref(false)
+  // 10.1: 反馈提交 / 反馈范围确认卡「确认」后的下一次 confirmStage 强制
+  // resume 同一 runner — Manager 处置 (重派指令/范围确认卡) 挂起在当前
+  // runner 上, fresh-start (新 UUID) 会丢失处置。
+  let forceResume = false
+
+  function forceResumeNextConfirm(): void {
+    forceResume = true
+  }
   let currentAbortController: AbortController | null = null
 
   /** 读取 SSE 流并按帧分发 graph 事件 (startGraphGeneration / 增量开发共用) */
@@ -53,7 +61,7 @@ export function useMultiAgent() {
   async function sendFeedback(feedback: string): Promise<void> {
     if (!store.currentGenerationId) return
     try {
-      await fetch('/api/v1/generation/feedback', {
+      const resp = await fetch('/api/v1/generation/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -62,6 +70,10 @@ export function useMultiAgent() {
           feedback,
         }),
       })
+      if (!resp.ok) throw new Error(`Feedback failed: ${resp.status}`)
+      // 10.1: 处置挂起在当前 runner 上 — 后续 confirmStage 必须 resume
+      // 同一 runner (fresh-start 新 UUID 会丢失反馈)。
+      forceResume = true
       // After feedback is received, restart the graph stream to pick up changes
       await confirmStage(store.stage)
     } catch (e: any) {
@@ -520,6 +532,11 @@ export function useMultiAgent() {
     isTransitioning.value = true
     store.setAwaitingConfirm(false)
 
+    // 10.1: 反馈提交 / 反馈范围确认卡「确认」→ 本次 confirmStage 强制 resume
+    // 同一 runner (Manager 处置挂起在当前 runner, fresh-start 新 UUID 会丢失)。
+    const forceResumeNow = forceResume
+    forceResume = false
+
     // 8.x 增量模式: 全程 resume 同一 runner 实例 (graph 入口逐级确认
     // diff → manifest → 处置清单), 不携带预填消息。
     if (isIncremental.value) {
@@ -540,8 +557,12 @@ export function useMultiAgent() {
       mode: 'graph',
     }
 
-    console.log('[confirmStage] stage=', stage, 'needsFreshStart=', needsFreshStart, 'failedVerdict=', failedVerdict, 'stageOutputs.analysis=', !!store.stageOutputs.analysis, 'docStreamingContent=', !!store.docStreamingContent)
-    if (needsFreshStart && !failedVerdict) {
+    // 10.1: 反馈后的 confirmStage → resume 同一 runner (Manager 处置消费)。
+    if (forceResumeNow) {
+      body.messages = []
+      body.generation_id = store.currentGenerationId
+      body.mode = 'resume'
+    } else if (needsFreshStart && !failedVerdict) {
       // Pre-fill completed stages
       const prefillMessages: Array<{role: string; content: string}> = []
       prefillMessages.push({ role: 'user', content: store.stageOutputs.analysis || store.docStreamingContent })
@@ -681,6 +702,7 @@ export function useMultiAgent() {
     isIncremental,
     regenIncrementalStep,
     confirmStage,
+    forceResumeNextConfirm,
     submitE2EResults,
     sendFeedback,
     classifyUserIntent,

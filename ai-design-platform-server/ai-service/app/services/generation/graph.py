@@ -190,6 +190,9 @@ class GraphRunner:
         # Mid-term memory (7.5): trajectory archive; None → no trajectory.
         self._memory_db = memory_db
         self._generation_id: str | None = None
+        # 10.1: RPC (ReportUserFeedback) 处置挂起的用户反馈 — 下次 run/resume
+        # 入口消费 (注入重派指令 + 发射处置卡)。
+        self._pending_feedback: dict | None = None
 
     def _e2e_node_events(self, node_output: dict) -> list[dict]:
         """Events for one e2e worker output (task group 6).
@@ -269,6 +272,202 @@ class GraphRunner:
         self._active_registry.report_runtime_errors(errors)
         return True
 
+    # ── 10.1 用户反馈消费 (run/resume 入口) ──
+
+    def _inject_approved_scope(self, state: dict) -> None:
+        """已确认的范围变更 (``scope_change_approved``) → failure_details.instruction
+        (code worker 重派指令通道)。
+
+        只在 run() 入口消费 — 手动阶段 gate (_gate_manual_stage) 没有
+        manager.py 的 redo 注入点; LangGraph 阶段由 manager_gate (redo) 注入,
+        本函数带去重守卫, 双路径共存不重复。
+        """
+        approved = state.get("scope_change_approved")
+        if not approved:
+            return
+        note = approved if isinstance(approved, str) else ""
+        if not note.strip():
+            return
+        fd = dict(state.get("failure_details") or {})
+        instruction = fd.get("instruction", "")
+        block = f"[用户已确认的范围变更] {note.strip()}"
+        if block in instruction:
+            return
+        fd["instruction"] = (instruction + "\n" if instruction else "") + block
+        fd.setdefault("source", "code")
+        fd.setdefault("failed_items", [])
+        fd.setdefault("rollback_target", "code")
+        state["failure_details"] = fd
+
+    def _pending_feedback_checkpoint_sync(
+        self,
+        state: dict,
+        pending: dict,
+        redo_updates: dict,
+    ) -> bool:
+        """LangGraph 已启动的线程: 把反馈处置同步进 checkpoint.
+
+        Returns True 时调用方必须保留 ``self._state`` 的 ``code_result``
+        (resume 走 LangGraph 续跑 — code worker 以清空产物 + 重派指令重跑,
+        gate 不会复用旧裁决); False → 无 checkpoint, 调用方清除
+        ``self._state`` 产物并走 run() 重跑。
+        """
+        gid = self._generation_id or state.get("generation_id") or ""
+        if not gid:
+            return False
+        config = {"configurable": {"thread_id": gid}}
+        try:
+            snap = self.app.get_state(config)
+            values = snap.values or {}
+            if not values:
+                return False
+            self.app.update_state(config, redo_updates)
+            logger.info(
+                "feedback_checkpoint_synced",
+                generation_id=gid, category=pending.get("category"),
+            )
+            return True
+        except Exception as e:  # pragma: no cover - fail-open
+            logger.warning("feedback_checkpoint_sync_failed", generation_id=gid, error=str(e))
+            return False
+
+    async def _consume_pending_feedback(self, state: dict | None) -> tuple[list[dict], bool]:
+        """10.1: 消费挂起的用户反馈 — 注入重派指令 / 范围确认, 返回处置卡事件.
+
+        Returns ``(events, halt)``; ``halt=True`` 时调用方必须立即停止
+        (范围变更: 等 confirm_card 答复, 不得自行重派)。
+
+        - 遗漏/纠偏 → ``failure_details.instruction`` 注入 (U9 redo 通道) +
+          清空当前 code 产物 → 重派执行 (run 重跑 phase 3 / resume 从
+          checkpoint 续跑 code worker)。
+        - 范围变更 → ``pending_scope_change`` (U9 范围确认机制) + confirm_card;
+          用户确认 (resume) 后经 consume_scope_confirmation 批准进入重派反馈。
+        - 兜底通道: 网关 metadata ``code_feedback`` 注入 (runner 重建等,
+          RPC 未及处置) — 在消费点等价分类 + 记录。
+        """
+        from .dialog import (
+            CARD_CONFIRM,
+            confirm_card_event,
+            feedback_disposition_card_event,
+        )
+        from .recovery import SCOPE_OPTIONS
+
+        if state is None:
+            return [], False
+
+        pending = self._pending_feedback
+        if pending is None:
+            # 兜底: metadata code_feedback (fresh start / runner 重建)。
+            text = (state.get("code_feedback") or "").strip()
+            if not text or rejects_scope_change(text):
+                return [], False
+            from .feedback import classify_user_feedback, record_feedback_problem
+
+            classification = await classify_user_feedback(
+                text, state.get("stage", ""), llm_fn=self._llm_fn
+            )
+            category = classification["category"]
+            if category == "scope_change":
+                action, result = "范围变更待确认（confirm_card）", "awaiting_confirm"
+            else:
+                action, result = "重派功能实现任务（携带反馈）", "dispatched"
+            record_feedback_problem(
+                state.get("generation_id") or "unknown",
+                text, classification, action, result,
+            )
+            from .feedback import FEEDBACK_CATEGORY_LABELS
+
+            pending = self._pending_feedback = {
+                "feedback": text,
+                "stage": state.get("stage", ""),
+                "category": category,
+                "reason": classification["reason"],
+                "confidence": classification["confidence"],
+                "scope_note": classification.get("scope_note", ""),
+                "action": action,
+                "result": result,
+                "category_label": FEEDBACK_CATEGORY_LABELS.get(category, category),
+            }
+            state["code_feedback"] = ""  # 消费即清, 防重复处置
+
+        self._pending_feedback = None  # 消费即清 (run/resume 双入口防重复)
+
+        category = pending["category"]
+        stage = pending.get("stage") or state.get("stage") or "code"
+        events: list[dict] = []
+
+        if category == "scope_change":
+            note = (pending.get("scope_note") or pending.get("feedback") or "").strip()
+            state["pending_scope_change"] = {
+                "note": f"用户反馈提出的范围变更：{note}",
+                "node": "code",
+                "signature": "user-feedback",
+            }
+            confirm = confirm_card_event(
+                stage,
+                f"用户反馈提出新增需求范围，Manager 需你确认后才执行：\n{note}",
+                options=list(SCOPE_OPTIONS),
+            )
+            confirm["data"] = {**confirm.get("data", {}), "scope_confirm": True}
+            events.append(feedback_disposition_card_event(stage, pending["feedback"], pending))
+            events.append(confirm)
+            synced = self._pending_feedback_checkpoint_sync(
+                state, pending,
+                {"pending_scope_change": state["pending_scope_change"]},
+            )
+            if not synced:
+                # 无 checkpoint (手动阶段暂停) — 清空产物, 用户确认 (resume)
+                # 后转 run() 重跑: consume_scope_confirmation 批准 →
+                # _inject_approved_scope → 重派指令携带确认范围。
+                state["code_result"] = None
+                state["generated_files"] = {}
+                state["compile_errors"] = None
+            logger.info("feedback_scope_change_pending", stage=stage)
+            return events, True
+
+        # 遗漏/纠偏 → 重派指令注入 (failure_details.instruction, U9 redo 通道)。
+        fd = dict(state.get("failure_details") or {})
+        instruction = fd.get("instruction", "")
+        block = (
+            f"[用户反馈（Manager 处置：{pending.get('category_label', category)}）] "
+            f"{pending['feedback']}"
+        )
+        if pending.get("reason"):
+            block += f"\n分类理由：{pending['reason']}"
+        fd["instruction"] = (instruction + "\n" if instruction else "") + block
+        fd.setdefault("source", "code")
+        fd.setdefault("failed_items", [])
+        fd.setdefault("rollback_target", "code")
+        state["failure_details"] = fd
+
+        redo_updates = {
+            "failure_details": fd,
+            "code_result": None,
+            "generated_files": {},
+            "compile_errors": None,
+        }
+        if self._pending_feedback_checkpoint_sync(state, pending, redo_updates):
+            # checkpoint 已同步 — 保留 self._state.code_result, resume 走
+            # LangGraph 续跑 (code worker 以清空产物重跑)。
+            pass
+        else:
+            # 无 checkpoint (手动阶段暂停) — 清空产物, resume 转 run() 重跑
+            # phase 3 (planner + executor 携带重派指令)。
+            # 磁盘覆盖契约 (review): 重派只清内存产物, 磁盘上 project_root 的
+            # 文件不删除 — 与既有 U9 redo 语义一致 (executor 以覆盖写为契约,
+            # 相同路径重写; 若新计划路径变少, 旧文件残留是既有行为, 由编译/
+            # E2E 把关暴露而非静默删除, 避免误删用户文件)。
+            state["code_result"] = None
+            state["generated_files"] = {}
+            state["compile_errors"] = None
+
+        events.append(feedback_disposition_card_event(stage, pending["feedback"], pending))
+        logger.info(
+            "feedback_redispatch_pending",
+            stage=stage, category=category, result=pending.get("result"),
+        )
+        return events, False
+
     async def run(
         self,
         state: GenerationState,
@@ -296,6 +495,15 @@ class GraphRunner:
             if paused:
                 return  # 等待用户确认 (resume 后从下一级继续)
 
+        # ── 10.1 用户反馈消费 (run 入口) ──
+        # RPC (ReportUserFeedback) 处置挂起的反馈 → 重派指令注入 + 处置卡;
+        # 范围变更 → confirm_card (halt, 等用户确认, 不得自行重派)。
+        fb_events, fb_halt = await self._consume_pending_feedback(state)
+        for ev in fb_events:
+            yield ev
+        if fb_halt:
+            return
+
         # ── 9.3 求援/范围确认 resume 消费 (手动阶段) ──
         # 「继续自主」→ 重置该问题自主尝试计数后继续; 范围确认卡 resume →
         # 批准范围变更 (进入 design_gate_feedback 的重派反馈)。
@@ -303,6 +511,9 @@ class GraphRunner:
 
         consume_escalation_reset(state)
         consume_scope_confirmation(state)
+
+        # 10.1: 已确认的范围变更 → code 重派指令 (手动阶段 gate 无注入点)。
+        self._inject_approved_scope(state)
 
         # ── Phase 1: Stream PRD with reasoning in real-time ──
         if not state.get("analysis_result"):
@@ -1129,6 +1340,15 @@ class GraphRunner:
         text — a scope-card 「重新生成/取消」 answer REJECTS the pending scope
         change (it never self-applies); any other resume approves it.
         """
+        # ── 10.1 用户反馈消费 (resume 入口) ──
+        # RPC 处置挂起的反馈 → 重派指令注入 + 处置卡; 范围变更 → confirm_card
+        # (halt — 等用户确认后下次 resume 才执行重派)。
+        fb_events, fb_halt = await self._consume_pending_feedback(self._state)
+        for ev in fb_events:
+            yield ev
+        if fb_halt:
+            return
+
         # 9.3 范围卡拒绝 (手动阶段): 「重新生成/取消」→ 清除待确认标记, 不批准。
         if (
             rejects_scope_change(code_feedback)
@@ -1147,6 +1367,27 @@ class GraphRunner:
 
         self._generation_id = generation_id
         config = {"configurable": {"thread_id": generation_id}}
+
+        # 11.2 (review fix): 手动阶段 (1-3) 不触碰 LangGraph checkpoint —
+        # 首次进入 phase 4 的 resume 若直接 astream(Command(resume=True)),
+        # langgraph 会在**空线程**上从空 state 静默重跑 (gate 判空产物 redo,
+        # 产物全丢)。空 checkpoint + 已有 code 产物 = 手动阶段刚完成 →
+        # 回退 run(): 跳过已完成阶段, 以 astream(state) 创建 checkpoint 进入
+        # phase 4 (与 run() 首进 phase 4 的语义一致)。
+        try:
+            snap = self.app.get_state(config)
+            thread_started = bool(snap.values)
+        except Exception as e:  # pragma: no cover - fail-open
+            logger.warning("resume_checkpoint_probe_failed", error=str(e))
+            thread_started = False
+        if not thread_started and self._state is not None:
+            # (review nit): 空 checkpoint + 无 state (fresh runner 误调 resume)
+            # 不进入回退 — 有 state 才能续跑; 无 state 时下方 LangGraph 路径
+            # 保持原语义 (servicer 正常流程不会到达, 防御性守卫)。
+            logger.info("resume_phase4_fallback_run", generation_id=generation_id)
+            async for event in self.run(self._state, generation_id):
+                yield event
+            return
 
         # ── 9.3 求援/范围确认 resume 消费 (LangGraph checkpoint 内标记) ──
         # 「继续自主」→ 重置该问题自主尝试计数; 范围确认卡 resume → 批准
@@ -1180,6 +1421,20 @@ class GraphRunner:
                 elif consume_scope_confirmation(probe):
                     updates["scope_change_approved"] = probe.get("scope_change_approved")
                     updates["pending_scope_change"] = None
+            # 10.1: 已确认的范围变更 → checkpoint failure_details (code worker
+            # 重跑即消费; 带去重守卫, 与 manager_gate redo 注入共存不重复)。
+            if updates.get("scope_change_approved"):
+                note = updates["scope_change_approved"]
+                if isinstance(note, str) and note.strip():
+                    fd = dict(probe.get("failure_details") or {})
+                    instruction = fd.get("instruction", "")
+                    block = f"[用户已确认的范围变更] {note.strip()}"
+                    if block not in instruction:
+                        fd["instruction"] = (instruction + "\n" if instruction else "") + block
+                        fd.setdefault("source", "code")
+                        fd.setdefault("failed_items", [])
+                        fd.setdefault("rollback_target", "code")
+                        updates["failure_details"] = fd
             if updates:
                 self.app.update_state(config, updates)
                 logger.info(
@@ -1500,11 +1755,15 @@ class GraphRunner:
 
             # 8.6 增量变更收尾: e2e 过关 → changes/ 记录定稿 + state.json 功能
             # 状态推进 + index.json 版本推进 (fail-open)。
+            # 11.4 (review fix): 必须等执行结果回填 (e2e_results 非空) — 用例
+            # 待确认阶段的 e2e pass 裁决 (results=None) 不得提前定稿/推进版本
+            # (否则 change_revision 虚增、changes/ 记录在执行前即标 completed)。
             if (
                 decision == "pass"
                 and node == "e2e"
                 and state.get("incremental_mode")
                 and state.get("change_manifest")
+                and state.get("e2e_results") is not None
             ):
                 try:
                     from .incremental import finalize_incremental_change

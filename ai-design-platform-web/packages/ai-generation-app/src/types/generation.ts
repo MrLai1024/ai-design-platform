@@ -34,6 +34,7 @@ export type ManagerCardType =
   | 'proposal_card'
   | 'coverage_matrix'
   | 'question_card'
+  | 'feedback_card'
 
 /** Manager 卡片元数据 */
 export interface ManagerCardMeta {

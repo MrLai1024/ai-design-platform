@@ -160,6 +160,37 @@ func (c *AIClient) ResumeAfterE2E(
 	return stream, nil
 }
 
+// UserFeedbackDisposition mirrors the ai-service's disposal of a user
+// feedback (task group 10): category/action/result feed the POST response.
+type UserFeedbackDisposition struct {
+	Category      string `json:"category"`        // omission | correction | scope_change | scope_reject
+	CategoryLabel string `json:"category_label"`  // 遗漏 | 纠偏 | 范围变更 | 拒绝范围变更
+	Action        string `json:"action"`          // 处置动作
+	Result        string `json:"result"`          // dispatched | awaiting_confirm | rejected
+	Reason        string `json:"reason"`          // 分类理由
+}
+
+// ReportUserFeedback 转发用户反馈到 AI 服务 — Manager 处置 (分类 → 问题记录
+// → 重派/范围确认), disposition 随 POST 响应返回; 无效 generation 返回
+// gRPC NOT_FOUND (调用方映射 404)。
+func (c *AIClient) ReportUserFeedback(ctx context.Context, generationID, stage, feedback string) (UserFeedbackDisposition, error) {
+	resp, err := c.genCli.ReportUserFeedback(ctx, &pb.UserFeedbackRequest{
+		GenerationId: generationID,
+		Stage:        stage,
+		Feedback:     feedback,
+	})
+	if err != nil {
+		return UserFeedbackDisposition{}, err
+	}
+	return UserFeedbackDisposition{
+		Category:      resp.Category,
+		CategoryLabel: resp.CategoryLabel,
+		Action:        resp.Action,
+		Result:        resp.Result,
+		Reason:        resp.Reason,
+	}, nil
+}
+
 // ClassifyIntent 分类用户对话意图（Manager 意图路由）。
 func (c *AIClient) ClassifyIntent(ctx context.Context, text, stage, generationID string) (string, string, error) {
 	resp, err := c.genCli.ClassifyIntent(ctx, &pb.ClassifyIntentRequest{

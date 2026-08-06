@@ -713,7 +713,6 @@ async def planner_node(
     design_doc = state.get("design_doc") or state.get("design_result", "")
     failure = state.get("failure_details")
     reflect_count = state.get("planner_reflect_count", 0)
-    code_feedback = state.get("code_feedback", "")
 
     incremental = bool(state.get("incremental_mode") and state.get("change_manifest"))
     if incremental:
@@ -728,24 +727,6 @@ async def planner_node(
         )
     else:
         user_prompt = build_planner_user_prompt(spec, design_doc, failure)
-
-    # Self-review mode: user feedback triggers a comparison of design vs generated files
-    if code_feedback:
-        generated_files_summary = ""
-        for path, content in state.get("generated_files", {}).items():
-            generated_files_summary += f"- {path} ({len(content)} chars)\n"
-        spec_block = (
-            f"## 架构 Spec\n{json.dumps(spec, ensure_ascii=False, indent=2)}\n\n"
-            if spec
-            else ""
-        )
-        user_prompt = (
-            f"{spec_block}设计方案：\n{design_doc}\n\n"
-            f"已生成的文件：\n{generated_files_summary}\n"
-            f"用户反馈：{code_feedback}\n\n"
-            f"请对比 Spec/设计方案和已生成文件，找出遗漏或差异。输出补充 Task DAG（仅包含需要新增或修改的任务）。"
-            f"如果没有遗漏，输出空 tasks 列表。"
-        )
 
     # REASON + ACT: 一次性输出 DAG
     def on_thinking(text: str):

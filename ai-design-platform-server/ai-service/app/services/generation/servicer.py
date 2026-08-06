@@ -25,6 +25,8 @@ from ai.v1.generation_pb2 import (
     ToolCall as ProtoToolCall,
     Usage as ProtoUsage,
     GraphEvent as ProtoGraphEvent,
+    UserFeedbackRequest,
+    UserFeedbackResponse,
 )
 from ai.v1.generation_pb2_grpc import GenerationServiceServicer
 
@@ -59,9 +61,12 @@ class GenerationServicer(GenerationServiceServicer):
         """Server-streaming RPC: stream tokens or LangGraph events to the caller."""
         generation_id = request.generation_id
         model = request.model or "glm-5.2"
-        mode = request.metadata.get("mode", "chat")  # "chat" or "graph"
+        mode = request.metadata.get("mode", "chat")  # "chat" | "graph" | "resume"
 
-        if mode == "graph":
+        # review fix: "resume" 必须进 _stream_graph (其内部按 existing_runner
+        # 分流) — 此前仅 "graph" 路由过去, 前端 confirmStage/增量恢复发的
+        # mode="resume" 落进 _stream_chat, 空消息直接打到 LLM (GLM 400)。
+        if mode in ("graph", "resume"):
             async for response in self._stream_graph(generation_id, request, context):
                 yield response
         else:
@@ -124,6 +129,26 @@ class GenerationServicer(GenerationServiceServicer):
         # 8.1 增量开发入口: 用户对已有应用 (同 generation_id 的 .ai-memory) 提出
         # 新需求 → 加载记忆 → diff → manifest → 用例处置 → 增量流水线。
         incremental = request.metadata.get("incremental") == "true"
+
+        # ── resume 无 runner 且无任何可恢复内容 → 明确报错 (review fix) ──
+        # 绝不静默以空 requirement 重新起跑 (会从空需求重新生成 PRD/design/code,
+        # 前端收到无法察觉的空白产物)。增量入口 (incremental=true) 是例外 —
+        # 前端 resumeIncremental 注释明确: runner 丢失 (刷新) 时回到增量入口
+        # 而非误跑全新流水线。skip_analysis 预填路径带完整产物, 同样放行。
+        if mode == "resume" and not incremental and not skip_analysis:
+            has_content = any(
+                m.role == "user" and (m.content or "").strip()
+                for m in request.messages
+            )
+            if not has_content:
+                logger.warning("resume_no_runner_no_content gen=%s", generation_id)
+                yield GenerateResponse(
+                    error=GenerationError(
+                        code="NOT_FOUND",
+                        message="生成会话已失效（runner 丢失），无法恢复，请重新发起生成",
+                    )
+                )
+                return
 
         # Fresh start — build initial state
         user_messages = []
@@ -337,10 +362,10 @@ class GenerationServicer(GenerationServiceServicer):
                 error=GenerationError(code="INTERNAL", message=str(e))
             )
         finally:
-            # Only clean up if graph completed (not interrupted)
-            if context.cancelled():
-                self._active_generations.pop(generation_id, None)
-                self._active_runners.pop(generation_id, None)
+            # 中断/取消只清运行标记, 保留 runner (review fix) — 停止按钮
+            # (前端 abort → context.cancelled()) 后用户会反馈并 resume 同一
+            # runner 消费 TG10 处置; resume 路径本就永不清理 runner。
+            self._active_generations.pop(generation_id, None)
 
     async def _stream_chat(
         self,
@@ -469,6 +494,51 @@ class GenerationServicer(GenerationServiceServicer):
             gid, len(errors), consumed,
         )
         return RuntimeFeedbackResponse(received=True)
+
+    async def ReportUserFeedback(
+        self,
+        request: UserFeedbackRequest,
+        context: grpc.aio.ServicerContext,
+    ) -> UserFeedbackResponse:
+        """10.1: 接收用户反馈 — 进入 Manager 恢复决策 (分类 → 处置 → 问题记录)。
+
+        The disposition is stored on the runner (``_pending_feedback``) and
+        consumed at the next graph entry (run/resume): 遗漏/纠偏 → 重派指令
+        (failure_details.instruction) + 处置卡; 范围变更 → confirm_card。
+
+        无效 generation_id (无活跃 runner) → NOT_FOUND (gateway 映射 404)。
+        """
+        from .feedback import dispose_user_feedback
+
+        gid = request.generation_id
+        runner = self._active_runners.get(gid)
+        if runner is None:
+            logger.warning("user_feedback_no_runner gen=%s", gid)
+            await context.abort(
+                grpc.StatusCode.NOT_FOUND,
+                f"No active generation: {gid}",
+            )
+            return UserFeedbackResponse(received=False)
+
+        disposition = await dispose_user_feedback(
+            runner,
+            gid,
+            request.stage,
+            request.feedback,
+            llm_fn=runner._llm_fn,
+        )
+        logger.info(
+            "user_feedback_received gen=%s category=%s result=%s",
+            gid, disposition["category"], disposition["result"],
+        )
+        return UserFeedbackResponse(
+            received=True,
+            category=disposition["category"],
+            category_label=disposition["category_label"],
+            action=disposition["action"],
+            result=disposition["result"],
+            reason=disposition["reason"],
+        )
 
     async def ResumeAfterE2E(
         self,

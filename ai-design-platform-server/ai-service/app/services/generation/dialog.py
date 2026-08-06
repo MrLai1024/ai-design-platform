@@ -40,6 +40,7 @@ CARD_CONFIRM = "confirm_card"
 CARD_PROPOSAL = "proposal_card"
 CARD_COVERAGE = "coverage_matrix"
 CARD_QUESTION = "question_card"
+CARD_FEEDBACK = "feedback_card"
 
 STAGE_LABELS = {
     "analysis": "需求分析",
@@ -210,6 +211,39 @@ def coverage_matrix_event(
         "title": f"E2E 覆盖矩阵 · {label}",
         "content": content or "",
         "data": data,
+    })
+
+
+def feedback_disposition_card_event(
+    stage: str,
+    feedback: str,
+    disposition: dict,
+) -> dict:
+    """Manager speech: 反馈处置结果卡片 (10.2, 对话框折叠摘要)。
+
+    折叠行 = 反馈摘要 + 处置动作 + 结果; 展开 (前端渲染 data) = 处置过程
+    (分类、重派任务、验证结果)。随反馈消费在 run/resume 入口发射。
+    不携带 content — 前端 feedback_card 完全由 data 派生渲染 (40 字摘要 +
+    分类 + 结果标签), 重复的 content 串无人消费 (review fix)。
+
+    NOTE (spec drift, review): spec 场景 "处置与重派执行完成 THEN 卡片" —
+    实现在反馈消费点 (run/resume 入口) 即发射, 结果字段为处置决策
+    (dispatched/awaiting_confirm); 重派后的验证结果由同流后续把关裁决卡呈现。
+    """
+    label = STAGE_LABELS.get(stage, stage)
+    category = disposition.get("category") or ""
+    return _manager_message(stage, {
+        "card": CARD_FEEDBACK,
+        "title": f"反馈处置 · {label}",
+        "data": {
+            "node": stage,
+            "feedback": feedback,
+            "category": category,
+            "category_label": disposition.get("category_label") or category,
+            "reason": disposition.get("reason") or "",
+            "action": disposition.get("action") or "",
+            "result": disposition.get("result") or "",
+        },
     })
 
 

@@ -1,20 +1,47 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	pb "ai-design-platform/gen/go/ai/v1"
 	"ai-design-platform/gateway/internal/client"
 	"github.com/gin-gonic/gin"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+// rejectsScopeMarker mirrors ai-service recovery.REJECT_SCOPE_MARKERS —
+// 范围确认卡「重新生成/取消」的拒绝标记反馈不进入 Manager 处置 (U9 语义:
+// resume 侧 rejects_scope_change 消费), 仅经 feedbackStore 注入。
+func rejectsScopeMarker(feedback string) bool {
+	text := strings.Trim(feedback, " 。！!？?，,、\t")
+	if text == "" {
+		return false
+	}
+	return text == "重新生成" || text == "取消" || text == "重来" || text == "不要" ||
+		strings.HasPrefix(text, "重新生成")
+}
+
+// GraphAIClient is the subset of *client.AIClient the SSE handler needs —
+// an interface so handler tests can stub the feedback disposal (10.1).
+type GraphAIClient interface {
+	StreamGenerate(ctx context.Context, req *pb.GenerateRequest) (pb.GenerationService_StreamGenerateClient, error)
+	ReportUserFeedback(ctx context.Context, generationID, stage, feedback string) (client.UserFeedbackDisposition, error)
+}
 
 // GraphSSEHandler handles LangGraph streaming via SSE.
 type GraphSSEHandler struct {
-	aiClient      *client.AIClient
-	feedbackStore map[string]string // generation_id -> feedback_text
+	aiClient      GraphAIClient
+	feedbackStore map[string]string // generation_id -> feedback_text (scope-reject markers / deferred feedback)
+	// 本网关实例服务过的 generation_id (StreamGeneration 登记)。SubmitFeedback
+	// 用它在 ai-service NOT_FOUND (runner 丢失, 如 ai-service 重启) 时区分
+	// 「曾存在的 generation → 暂存 defer」与「不存在的 generation → 404」。
+	seenGenerations map[string]bool
 }
 
 // FeedbackRequest for user feedback on code stage.
@@ -46,7 +73,11 @@ type GenerationRequest struct {
 }
 
 func NewGraphSSEHandler(aiClient *client.AIClient) *GraphSSEHandler {
-	return &GraphSSEHandler{aiClient: aiClient, feedbackStore: make(map[string]string)}
+	return &GraphSSEHandler{
+		aiClient:        aiClient,
+		feedbackStore:   make(map[string]string),
+		seenGenerations: make(map[string]bool),
+	}
 }
 
 // StreamGeneration handles POST /api/v1/generation/stream
@@ -67,6 +98,7 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 	if generationID == "" {
 		generationID = newUUID()
 	}
+	h.seenGenerations[generationID] = true
 
 	pbMessages := make([]*pb.Message, len(req.Messages))
 	for i, m := range req.Messages {
@@ -192,6 +224,11 @@ func (h *GraphSSEHandler) StreamGeneration(c *gin.Context) {
 }
 
 // SubmitFeedback handles POST /api/v1/generation/feedback
+//
+// 10.1 迁移: 反馈转发 AI 服务 ReportUserFeedback — Manager 处置 (分类 →
+// 问题记录 → 重派/范围确认), 处置结果随 200 返回。无效 generation_id
+// (无活跃 runner) → 404。反馈文本仍保留在 feedbackStore — 范围确认卡
+// 「重新生成/取消」拒绝标记 (U9) 经 metadata code_feedback 注入 resume。
 func (h *GraphSSEHandler) SubmitFeedback(c *gin.Context) {
 	var req FeedbackRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -202,7 +239,43 @@ func (h *GraphSSEHandler) SubmitFeedback(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "generation_id and feedback required"})
 		return
 	}
-	h.feedbackStore[req.GenerationID] = req.Feedback
-	slog.Info("feedback_stored", "generation_id", req.GenerationID, "feedback_len", len(req.Feedback))
-	c.JSON(http.StatusOK, gin.H{"received": true})
+	// U9 范围确认拒绝标记 (「重新生成/取消」) 保留 feedbackStore 注入 —
+	// resume 侧 rejects_scope_change 消费, 不走 Manager 处置。
+	if rejectsScopeMarker(req.Feedback) {
+		h.feedbackStore[req.GenerationID] = req.Feedback
+		slog.Info("feedback_stored_scope_reject", "generation_id", req.GenerationID)
+		c.JSON(http.StatusOK, gin.H{"received": true, "category": "scope_reject", "result": "rejected"})
+		return
+	}
+
+	disp, err := h.aiClient.ReportUserFeedback(c.Request.Context(), req.GenerationID, req.Stage, req.Feedback)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			if h.seenGenerations[req.GenerationID] {
+				// 曾存在但 runner 丢失 (如 ai-service 重启) — 暂存 feedbackStore,
+				// 下次同 generation 流注入 metadata code_feedback, ai-service
+				// 消费点 (run/resume 入口兜底) 等价处置。review fix: 停止后
+				// 反馈/刷新等场景不得因 runner 瞬时缺失丢反馈。
+				h.feedbackStore[req.GenerationID] = req.Feedback
+				slog.Warn("feedback_deferred_no_runner", "generation_id", req.GenerationID, "error", err)
+				c.JSON(http.StatusOK, gin.H{"received": true, "result": "deferred"})
+				return
+			}
+			slog.Warn("feedback_generation_not_found", "generation_id", req.GenerationID, "error", err)
+			c.JSON(http.StatusNotFound, gin.H{"error": "unknown generation_id"})
+			return
+		}
+		slog.Error("feedback_report_failed", "generation_id", req.GenerationID, "error", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "AI service unavailable"})
+		return
+	}
+	slog.Info("feedback_disposed", "generation_id", req.GenerationID, "category", disp.Category, "result", disp.Result)
+	c.JSON(http.StatusOK, gin.H{
+		"received":       true,
+		"category":       disp.Category,
+		"category_label": disp.CategoryLabel,
+		"action":         disp.Action,
+		"result":         disp.Result,
+		"reason":         disp.Reason,
+	})
 }

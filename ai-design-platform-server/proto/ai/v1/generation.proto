@@ -38,6 +38,13 @@ service GenerationService {
   // e2e gate routes real regressions back to the code worker, and the stream
   // carries the manager verdicts / diagnosis cards.
   rpc ResumeAfterE2E(ResumeAfterE2ERequest) returns (stream GenerateResponse);
+
+  // ReportUserFeedback receives user feedback on the generated output so the
+  // Manager can dispose it (task group 10): the feedback is classified
+  // (遗漏/纠偏 → redispatch the worker with the feedback; 范围变更 →
+  // confirm_card), recorded in the problem records, and consumed on the next
+  // graph entry (run/resume) as redo feedback + a disposition card.
+  rpc ReportUserFeedback(UserFeedbackRequest) returns (UserFeedbackResponse);
 }
 
 message GenerateRequest {
@@ -152,6 +159,23 @@ message RuntimeError {
 
 message RuntimeFeedbackResponse {
   bool received = 1;
+}
+
+// ── User feedback (task group 10: feedback → Manager recovery decision) ──
+
+message UserFeedbackRequest {
+  string generation_id = 1;
+  string stage = 2;           // "analysis" | "design" | "code" | "e2e" | ""
+  string feedback = 3;
+}
+
+message UserFeedbackResponse {
+  bool received = 1;
+  string category = 2;        // "omission" | "correction" | "scope_change" | "scope_reject"
+  string category_label = 3;  // 遗漏 | 纠偏 | 范围变更 | 拒绝范围变更
+  string action = 4;          // 处置动作（重派功能实现任务 / 范围变更确认 / 拒绝范围变更）
+  string result = 5;          // "dispatched" | "awaiting_confirm" | "rejected"
+  string reason = 6;          // 分类理由
 }
 
 // ── Manager intent classification (dialog routing) ──

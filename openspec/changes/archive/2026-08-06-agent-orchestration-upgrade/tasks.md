@@ -81,15 +81,25 @@
 
 ## 10. 反馈链路迁移
 
-- [ ] 10.1 `POST /api/v1/generation/feedback` 注入点从 Planner 迁移到 Manager 恢复决策,反馈入问题记录
-- [ ] 10.2 前端 AgentLog 反馈入口保留,处置结果改由对话框卡片呈现(折叠摘要)
-- [ ] 10.3 编译反馈消费方从 Executor 迁移到 Verifier(L1)+ Debugger(证据)
-- [ ] 10.4 新增运行时错误上报(console/未捕获异常/网络失败,关联 generation_id),供 Verifier L3 与 Diagnoser 使用
+- [x] 10.1 `POST /api/v1/generation/feedback` 注入点从 Planner 迁移到 Manager 恢复决策,反馈入问题记录
+- [x] 10.2 前端 AgentLog 反馈入口保留,处置结果改由对话框卡片呈现(折叠摘要)
+- [x] 10.3 编译反馈消费方从 Executor 迁移到 Verifier(L1)+ Debugger(证据)
+- [x] 10.4 新增运行时错误上报(console/未捕获异常/网络失败,关联 generation_id),供 Verifier L3 与 Diagnoser 使用
 
 ## 11. 验证与回归
 
-- [ ] 11.1 按 9 个 spec 的场景逐条核对实现(每条场景一个可执行验证)
-- [ ] 11.2 端到端:新需求全流程(头脑风暴→PRD→Spec→实现→E2E)跑通,验证对话框消息完整
-- [ ] 11.3 端到端:失败注入验证(编译错/跑偏/中断)走通恢复阶梯与红线
-- [ ] 11.4 增量开发演练:已有应用加功能→diff→manifest→回归对账
-- [ ] 11.5 崩溃恢复演练:代码节点中断后重启恢复
+- [x] 11.1 按 9 个 spec 的场景逐条核对实现(每条场景一个可执行验证)
+      → `spec-traceability.md`(86 场景全映射)+ `tests/test_spec_traceability.py`
+      (程序化守卫: 场景解析 × 矩阵 × 测试存在性 × worker 无记忆访问静态断言)
+- [x] 11.2 端到端:新需求全流程(头脑风暴→PRD→Spec→实现→E2E)跑通,验证对话框消息完整
+      → `tests/test_e2e_full_flow.py`(卡片序列 + 记忆产物 + 终裁 END)
+- [x] 11.3 端到端:失败注入验证(编译错/跑偏/中断)走通恢复阶梯与红线
+      → `tests/test_failure_injection.py`((a) 编译错→Debugger 修复闭环;
+      (b) 同证据→无进展→求援红线→继续自主→通过; (c) 设计漂移→L2 重做→
+      带反馈重生成; (d) 中断→由 11.5 覆盖)
+- [x] 11.4 增量开发演练:已有应用加功能→diff→manifest→回归对账
+      → `tests/test_incremental_drill.py`(存量文件不动 + changes/ 记录 +
+      state.json 推进 + index 版本)
+- [x] 11.5 崩溃恢复演练:代码节点中断后重启恢复
+      → `tests/test_crash_recovery_drill.py`(index 阶段恢复 + 跳过已完成 +
+      代码阶段续跑 + 产物一致)

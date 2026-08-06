@@ -2,7 +2,7 @@
 
 ## Purpose
 
-定义前端 esbuild 打包结果的反馈闭环：前端将结构化打包错误上报后端并暂存于 generation 运行时状态，Executor 在 ReAct 循环中消费真实编译错误以生成修复动作，最终由 AgentLog 以编译卡片形式向用户展示真实编译结果。
+定义前端打包与运行错误的反馈闭环：前端将 esbuild 打包错误与运行时错误结构化上报后端并暂存于 generation 运行时状态，Verifier 的四层验证以 L1 编译为第一道验证并消费真实编译错误，Debugger 以错误列表为根因诊断证据，最终由 AgentLog 以编译卡片形式向用户展示真实编译结果。
 
 ## Requirements
 
@@ -22,26 +22,26 @@
 
 ### Requirement: 后端接收并暂存编译错误
 
-后端 SHALL 提供 compile feedback 接收通道，将上报的错误写入对应 generation 的运行时状态，供 Executor 后续消费。
+后端 SHALL 提供 compile feedback 接收通道，将上报的错误写入对应 generation 的运行时状态，供 Verifier 与 Debugger 消费。
 
 #### Scenario: 错误写入 generation 状态
 
 - **WHEN** 后端收到某 generation_id 的编译错误上报
-- **THEN** 错误列表被存入该 generation 对应的状态对象，可被同一会话的后续节点读取
+- **THEN** 错误列表被存入该 generation 对应的状态对象，可被 Verifier 的 L1 验证与 Debugger 的证据链读取
 
-### Requirement: Executor 消费真实编译错误
+### Requirement: Verifier 消费真实编译错误
 
-Executor 的 ReAct 循环 SHALL 在调用编译工具时获得前端上报的真实打包错误，并据此生成修复动作，替代原有的文件可读性检查。
+Verifier 的四层验证信号 SHALL 以 L1(编译)为第一道验证：Verifier 在验证时获得前端上报的真实打包错误,并据此判定验证失败；Debugger 以该错误列表作为根因诊断证据。
 
 #### Scenario: 编译工具返回真实错误
 
-- **WHEN** Executor 调用 `compile_project` 且存在前端上报的错误
-- **THEN** 工具返回结构化错误列表（file/line/message），LLM 在下一轮 Reason 中针对错误生成修复代码
+- **WHEN** Verifier 执行 L1 验证且存在前端上报的错误
+- **THEN** 验证判定失败,错误列表(file/line/message)作为证据交给 Debugger 诊断
 
 #### Scenario: 无上报错误时编译通过
 
-- **WHEN** Executor 调用 `compile_project` 且前端最近一次打包成功
-- **THEN** 工具返回成功，任务正常完成
+- **WHEN** Verifier 执行 L1 验证且前端最近一次打包成功
+- **THEN** L1 验证通过,继续 L2 契约验证
 
 ### Requirement: AgentLog 展示真实编译结果
 
@@ -56,3 +56,12 @@ Executor 的 ReAct 循环 SHALL 在调用编译工具时获得前端上报的真
 
 - **WHEN** 打包成功
 - **THEN** AgentLog 出现绿色编译通过卡片
+
+### Requirement: 运行时错误上报
+
+前端 SHALL 将 E2E 执行与页面运行期间的 console 错误、未捕获异常及网络请求失败结构化上报至后端，作为 Verifier L3 验证与 Test Diagnoser 诊断的证据。
+
+#### Scenario: console 错误上报
+
+- **WHEN** E2E 执行期间页面产生未捕获异常
+- **THEN** 前端将该异常(消息、堆栈、发生用例)上报后端并关联 generation_id

@@ -50,6 +50,11 @@ class GenerationServiceStub:
                 request_serializer=ai_dot_v1_dot_generation__pb2.ResumeAfterE2ERequest.SerializeToString,
                 response_deserializer=ai_dot_v1_dot_generation__pb2.GenerateResponse.FromString,
                 _registered_method=True)
+        self.ReportUserFeedback = channel.unary_unary(
+                '/ai.v1.GenerationService/ReportUserFeedback',
+                request_serializer=ai_dot_v1_dot_generation__pb2.UserFeedbackRequest.SerializeToString,
+                response_deserializer=ai_dot_v1_dot_generation__pb2.UserFeedbackResponse.FromString,
+                _registered_method=True)
 
 
 class GenerationServiceServicer:
@@ -117,6 +122,17 @@ class GenerationServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ReportUserFeedback(self, request, context):
+        """ReportUserFeedback receives user feedback on the generated output so the
+        Manager can dispose it (task group 10): the feedback is classified
+        (遗漏/纠偏 → redispatch the worker with the feedback; 范围变更 →
+        confirm_card), recorded in the problem records, and consumed on the next
+        graph entry (run/resume) as redo feedback + a disposition card.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_GenerationServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -154,6 +170,11 @@ def add_GenerationServiceServicer_to_server(servicer, server):
                     servicer.ResumeAfterE2E,
                     request_deserializer=ai_dot_v1_dot_generation__pb2.ResumeAfterE2ERequest.FromString,
                     response_serializer=ai_dot_v1_dot_generation__pb2.GenerateResponse.SerializeToString,
+            ),
+            'ReportUserFeedback': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReportUserFeedback,
+                    request_deserializer=ai_dot_v1_dot_generation__pb2.UserFeedbackRequest.FromString,
+                    response_serializer=ai_dot_v1_dot_generation__pb2.UserFeedbackResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -346,6 +367,33 @@ class GenerationService:
             '/ai.v1.GenerationService/ResumeAfterE2E',
             ai_dot_v1_dot_generation__pb2.ResumeAfterE2ERequest.SerializeToString,
             ai_dot_v1_dot_generation__pb2.GenerateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReportUserFeedback(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ai.v1.GenerationService/ReportUserFeedback',
+            ai_dot_v1_dot_generation__pb2.UserFeedbackRequest.SerializeToString,
+            ai_dot_v1_dot_generation__pb2.UserFeedbackResponse.FromString,
             options,
             channel_credentials,
             insecure,

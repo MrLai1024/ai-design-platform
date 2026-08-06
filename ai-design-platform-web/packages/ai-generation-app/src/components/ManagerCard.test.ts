@@ -87,4 +87,49 @@ describe('ManagerCard', () => {
     })
     expect(wrapper.findAll('button').length).toBe(0)
   })
+
+  it('renders feedback_card collapsed with summary and expands the disposition', async () => {
+    // 10.2: 反馈处置结果卡片 — 默认折叠 (反馈摘要 + 处置动作 + 结果),
+    // 点击展开处置过程 (分类、重派任务、验证结果)。
+    const wrapper = mountCard({
+      card: 'feedback_card',
+      title: '反馈处置 · 功能实现',
+      content: '反馈摘要：缺少订单列表组件\n处置动作：重派功能实现任务（携带反馈）\n结果：已重派功能实现任务',
+      data: {
+        node: 'code',
+        feedback: '缺少订单列表组件',
+        category: 'omission',
+        category_label: '遗漏',
+        reason: '需求已声明但未生成',
+        action: '重派功能实现任务（携带反馈）',
+        result: 'dispatched',
+      },
+    })
+    // 折叠行: 反馈摘要 + 分类 + 结果 (展开内容不可见)
+    expect(wrapper.text()).toContain('反馈处置')
+    expect(wrapper.text()).toContain('缺少订单列表组件')
+    expect(wrapper.text()).toContain('遗漏 · 已重派')
+    expect(wrapper.text()).not.toContain('需求已声明但未生成')
+
+    // 点击展开 → 处置过程可见
+    await wrapper.find('[data-testid="feedback-card-toggle"]').trigger('click')
+    expect(wrapper.text()).toContain('需求已声明但未生成')
+    expect(wrapper.text()).toContain('处置动作：重派功能实现任务（携带反馈）')
+    expect(wrapper.text()).toContain('验证结果')
+  })
+
+  it('feedback_card shows awaiting-confirm result label', () => {
+    const wrapper = mountCard({
+      card: 'feedback_card',
+      title: '反馈处置 · 功能实现',
+      data: {
+        node: 'code',
+        feedback: '新增导出 Excel 功能',
+        category: 'scope_change',
+        category_label: '范围变更',
+        result: 'awaiting_confirm',
+      },
+    })
+    expect(wrapper.text()).toContain('范围变更 · 待确认')
+  })
 })

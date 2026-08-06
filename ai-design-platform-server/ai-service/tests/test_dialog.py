@@ -9,6 +9,7 @@ from app.services.generation.dialog import (
     confirm_card_event,
     coverage_matrix_event,
     diagnosis_card_event,
+    feedback_disposition_card_event,
     gate_speech_events,
     proposal_card_event,
     summary_card_event,
@@ -86,6 +87,32 @@ def test_confirm_and_proposal_and_coverage_builders():
     ev3 = coverage_matrix_event("e2e", {"TC-001": "pass", "TC-002": "fail"})
     assert ev3["data"]["card"] == "coverage_matrix"
     assert ev3["data"]["data"]["matrix"]["TC-001"] == "pass"
+
+
+def test_feedback_disposition_card_collapsed():
+    """8.5 (code-feedback-loop spec): 反馈处置结果卡默认折叠 —
+    卡片只携带折叠摘要行 (反馈摘要 + 处置动作 + 结果), 处置过程
+    (分类/重派任务/验证结果) 进 data 供展开渲染。"""
+    ev = feedback_disposition_card_event("code", "缺少订单列表组件", {
+        "category": "omission",
+        "category_label": "遗漏",
+        "reason": "需求已声明但未生成",
+        "action": "重派功能实现任务（携带反馈）",
+        "result": "dispatched",
+    })
+    data = ev["data"]
+    assert data["card"] == "feedback_card"
+    # 折叠行摘要: 反馈文本 + 处置动作 + 结果
+    assert data["data"]["feedback"] == "缺少订单列表组件"
+    assert data["data"]["action"] == "重派功能实现任务（携带反馈）"
+    assert data["data"]["result"] == "dispatched"
+    # 展开详情: 分类 + 理由 (重派任务/验证结果由同流把关裁决卡呈现)
+    assert data["data"]["category"] == "omission"
+    assert data["data"]["category_label"] == "遗漏"
+    assert data["data"]["reason"] == "需求已声明但未生成"
+    assert data["data"]["node"] == "code"
+    # 折叠语义: 不携带大段 content (前端完全由 data 派生渲染)
+    assert not data.get("content")
 
 
 def test_gate_speech_events_pass_and_fail():

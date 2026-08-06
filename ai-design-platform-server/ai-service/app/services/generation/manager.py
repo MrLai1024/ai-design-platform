@@ -483,19 +483,19 @@ async def manager_gate(
         escalated, state = gate_loop_check(state, worker, recovery, target="code")
         if not escalated and state.get("scope_change_approved"):
             # M5: 用户已确认的范围变更进入 code 重跑 prompt (failure_details
-            # 通道 — code_node 的重派指令消费点)。
+            # 通道 — code_node 的重派指令消费点)。10.1: 带去重守卫 — resume
+            # 入口可能已把确认范围注入 checkpoint failure_details, 防重复。
             note = state["scope_change_approved"]
             if isinstance(note, str) and note.strip():
                 fd = dict(state.get("failure_details") or {})
                 instruction = fd.get("instruction", "")
-                fd["instruction"] = (
-                    (instruction + "\n" if instruction else "")
-                    + f"[用户已确认的范围变更] {note.strip()}"
-                )
-                fd.setdefault("source", "code")
-                fd.setdefault("failed_items", [])
-                fd.setdefault("rollback_target", "code")
-                state["failure_details"] = fd
+                block = f"[用户已确认的范围变更] {note.strip()}"
+                if block not in instruction:
+                    fd["instruction"] = (instruction + "\n" if instruction else "") + block
+                    fd.setdefault("source", "code")
+                    fd.setdefault("failed_items", [])
+                    fd.setdefault("rollback_target", "code")
+                    state["failure_details"] = fd
         state["manager_next"] = (
             worker if escalated and worker in ("code", "e2e") else "code"
         )

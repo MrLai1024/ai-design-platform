@@ -2,57 +2,43 @@
 
 ## Purpose
 
-后端反馈接收 → Planner 自我审查（对比设计文档 → 补充 Task DAG）→ Executor 续写 → 反馈卡片折叠。实现用户反馈驱动的 Agent 自我纠偏闭环，使生成产出与设计文档保持一致。
+后端反馈接收 → Manager 处置用户反馈（分类：遗漏/纠偏/范围变更）→ 重派对应 worker 或经 confirm_card 确认后更新需求 → 反馈处置结果以折叠卡片呈现。实现用户反馈驱动的 Agent 纠偏闭环，使生成产出与用户需求保持一致。
 
 ## Requirements
 
 ### Requirement: 反馈端点接收
 
-后端 SHALL 提供 `POST /api/v1/generation/feedback` 端点，接收 `{ generation_id, feedback }` 并将其注入对应 generation 的 Planner ReAct 循环。
+后端 SHALL 提供 `POST /api/v1/generation/feedback` 端点，接收 `{ generation_id, feedback }` 并将其注入对应 generation 的 Manager 恢复决策流程，作为问题记录与重派反馈的输入。
 
 #### Scenario: 反馈成功接收
 
 - **WHEN** 前端 POST 反馈到端点，携带有效的 generation_id 和反馈文本
-- **THEN** 后端返回 200，反馈文本被保存到该 generation 的状态中
+- **THEN** 后端返回 200，反馈文本被写入该 generation 的问题记录，进入 Manager 恢复决策
 
 #### Scenario: 无效 generation_id
 
 - **WHEN** 前端 POST 反馈到端点，携带不存在的 generation_id
 - **THEN** 后端返回 404 错误
 
-### Requirement: Planner 自我审查
+### Requirement: Manager 处置用户反馈
 
-收到用户反馈后，Planner SHALL 对比设计文档与已生成文件，找出遗漏或差异，输出补充 Task DAG。
+收到用户反馈后,Manager SHALL 对反馈分类(遗漏/纠偏/范围变更),并据此决策:遗漏与纠偏重派对应 worker 并携带反馈;范围变更以 confirm_card 请求用户确认后更新需求。
 
-#### Scenario: 发现遗漏
+#### Scenario: 遗漏类反馈
 
-- **WHEN** 用户反馈指出某组件缺失，且设计文档中确实定义了该组件
-- **THEN** Planner 输出包含该组件对应 task 的补充 DAG
+- **WHEN** 用户反馈指出某组件缺失，且架构 Spec 中确实定义了该组件
+- **THEN** Manager 重派功能实现 worker，反馈作为重派任务的一部分进入任务 DAG
 
-#### Scenario: 无遗漏
+#### Scenario: 范围变更类反馈
 
-- **WHEN** 用户反馈描述的问题在已生成文件中已被覆盖
-- **THEN** Planner 输出空 DAG，AgentLog 追加 "经审查未发现遗漏" 卡片
+- **WHEN** 用户反馈提出新增超出当前需求范围的功能
+- **THEN** Manager 输出 confirm_card 请求用户确认，确认后更新需求规格并继续
 
-### Requirement: Executor 执行补充任务
+### Requirement: 反馈处置结果卡片
 
-Planner 输出补充 DAG 后，Executor SHALL 按顺序执行新增 task，与初次生成流程一致。
-
-#### Scenario: 补充文件生成
-
-- **WHEN** Planner 输出补充 DAG 包含 task-8（生成 UserProfile.vue）
-- **THEN** Executor 依次执行 task，AgentLog 实时展示 task 分组、工具调用、文件生成与编译结果
-
-### Requirement: 反馈卡片折叠
-
-每条完成的反馈 SHALL 在 AgentLog 中显示为一条折叠摘要卡片。
+每条用户反馈的处置结果 SHALL 在对话框中由 Manager 呈现为一条折叠摘要卡片(反馈摘要 + 处置动作 + 结果)。
 
 #### Scenario: 卡片默认折叠
 
-- **WHEN** 反馈对应的所有补充 task 执行完成
-- **THEN** AgentLog 中该反馈显示为一行折叠摘要（反馈文本摘要 + 处理结果），历史 task 执行过程默认隐藏
-
-#### Scenario: 点击展开历史
-
-- **WHEN** 用户点击折叠的反馈卡片
-- **THEN** 卡片展开，显示该反馈触发的完整 task 执行过程（包含思考气泡、工具调用、文件生成等子卡片）
+- **WHEN** 反馈对应的处置与重派执行完成
+- **THEN** 对话框出现一行折叠摘要卡片，展开可见处置过程（分类、重派任务、验证结果）
