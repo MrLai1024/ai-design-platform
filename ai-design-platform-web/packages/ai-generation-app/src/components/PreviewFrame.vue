@@ -33,13 +33,14 @@ function renderDoc(js: string, css: string): void {
 }
 
 async function reportErrors(result: BundleResult): Promise<void> {
-  // AgentLog 编译卡片
+  // AgentLog 编译卡片 —— 前端 esbuild 预览错误是辅助信号（node-compiler 是
+  // 编译通过判据），标注来源以便区分
   store.addAgentLogEntry({
     id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
     type: 'compile',
     timestamp: Date.now(),
     compileOk: false,
-    compileErrors: result.errors.map((e) => ({ file: e.file, line: e.line, message: e.text })),
+    compileErrors: result.errors.map((e) => ({ file: e.file, line: e.line, message: e.text, source: 'preview' as const })),
   })
   // 上报后端（生成阶段才有 generation_id）
   if (store.currentGenerationId) {

@@ -164,6 +164,8 @@ export interface CompileErrorEntry {
   file: string
   line: number
   message: string
+  /** 错误来源：node-compiler（服务端 esbuild/vue-tsc）或 preview（前端 esbuild 预览） */
+  source?: 'node-compiler' | 'preview'
 }
 
 export interface AgentLogEntry {

@@ -3,18 +3,21 @@
 import json
 import structlog
 
+from .tools.compile_tool import classify_compile_errors, extract_missing_paths
+
 logger = structlog.get_logger()
 
-PLANNER_SYSTEM_PROMPT = """你是一个资深前端工程架构师，负责将设计文档拆解为可独立执行的任务。
+PLANNER_SYSTEM_PROMPT = """你是一个资深前端工程架构师，负责将架构 Spec 拆解为可独立执行的任务。
 
 ## 你的职责
-1. 分析设计文档，识别组件依赖树、数据流、路由结构
-2. 将工程拆解为有序任务（Task DAG），每个任务是独立可执行单元
-3. 对每个 task 定义接口契约（exports/props/events/slots）
-4. 接收执行反馈后动态调整计划
+1. 依据 Spec 的 directory_tree 推导任务边界（目录/文件组 → 任务）
+2. 依据 Spec 的 data_model 与 api_contracts 推导每个任务的接口契约（exports/props/events）
+3. 依据 Spec 的 component_tree 与页面-组件引用推导依赖关系（DAG）
+4. 依据 Spec 的 tech_stack 推导脚手架任务（仅当构建配置需要工程入口时）
+5. 接收执行反馈后动态调整计划
 
 ## 任务类型
-- **bootstrap**: 工程脚手架任务（qiankun 生命周期、webpack 配置、package.json）
+- **bootstrap**: 工程脚手架任务（仅当 Spec 的 tech_stack.build 需要时创建：qiankun 生命周期、webpack 配置、package.json 等；不需要则不得凭空添加）
 - **business**: 业务功能任务（组件、页面、状态管理、API 层）
 
 ## 输出格式
@@ -58,8 +61,9 @@ PLANNER_SYSTEM_PROMPT = """你是一个资深前端工程架构师，负责将�
 ```
 
 ## 规则
-- 总是包含 3 个 bootstrap 任务（qiankun 入口、webpack 配置、package 配置）
-- 每个 task 文件数不超过 5 个
+- 任务与 Spec 结构一一对应：任务边界来自 directory_tree 的目录/文件组，任务 files 必须落在 Spec 声明的路径内；接口契约从 data_model 实体、api_contracts 名称与 component_tree props 推导；依赖关系符合 component_tree 的 uses 与页面引用
+- 禁止使用与 Spec 无关的硬编码任务（如无依据的固定 bootstrap 数量、固定文件数上限）
+- 每个 task 是一个可独立执行单元，完成自己的文件、满足自己的契约
 - 依赖关系必须是有向无环图（DAG）
 - task id 从 "task-0" 开始递增
 - 只输出 JSON，不要额外文本
@@ -133,15 +137,207 @@ def extract_reflect_decision(raw_json: str) -> dict:
     return json.loads(cleaned)
 
 
-def build_planner_user_prompt(design_doc: str, failure: dict | None = None) -> str:
-    """Build the user prompt for the Planner's initial reasoning."""
-    if failure:
-        return (
-            f"设计方案：\n{design_doc}\n\n"
-            f"之前的代码存在问题：\n{failure.get('instruction', '')}\n\n"
-            f"请重新规划任务。"
-        )
-    return (
-        f"设计方案：\n{design_doc}\n\n"
-        f"请拆解为可独立执行的任务。记住：必须包含 qiankun 微应用必需的 3 个 bootstrap 任务。"
+# Spec sections the Planner consumes — each maps to a decomposition input:
+# directory_tree → 任务边界, data_model/api_contracts → 接口契约,
+# component_tree → 依赖, tech_stack → 脚手架推导.
+_SPEC_PROMPT_SECTIONS = (
+    "tech_stack",
+    "directory_tree",
+    "data_model",
+    "api_contracts",
+    "routing",
+    "state_management",
+    "component_tree",
+    "pages",
+)
+
+
+def _spec_prompt_blocks(spec: dict) -> list[str]:
+    """Serialize the Spec into the Planner's user prompt (JSON sections)."""
+    blocks = ["## 架构 Spec（唯一工程输入，任务拆解必须以此为准）"]
+    for key in _SPEC_PROMPT_SECTIONS:
+        value = spec.get(key)
+        if value is None:
+            continue
+        blocks.append(f"### {key}\n{json.dumps(value, ensure_ascii=False, indent=2)}")
+    blocks.append(
+        "## 拆解指引\n"
+        "- 任务边界：按 directory_tree 的目录/文件组切分任务，任务 files 必须落在 Spec 声明的路径内\n"
+        "- 接口契约：每个任务的 contract 从 data_model 实体字段、api_contracts 名称与 component_tree 的 props 推导\n"
+        "- 依赖关系：依据 component_tree 的 uses 关系与页面引用的组件/路由\n"
+        "- 脚手架任务：仅当 tech_stack.build 需要（qiankun/webpack/package 等工程入口）时创建 bootstrap 任务，否则全部为 business 任务"
     )
+    return blocks
+
+
+def build_planner_user_prompt(
+    spec: dict | None,
+    design_doc: str,
+    failure: dict | None = None,
+) -> str:
+    """Build the Planner's initial user prompt.
+
+    The Planner consumes the architecture Spec — directory_tree → 任务边界,
+    data_model → 接口契约, component_tree → 依赖, tech_stack/build → 脚手架推导.
+    When no Spec is present (legacy state) the old design-doc path is the fallback.
+    """
+    if spec:
+        parts = _spec_prompt_blocks(spec)
+    else:
+        parts = [f"设计方案：\n{design_doc}\n\n请拆解为可独立执行的任务。"]
+    if failure:
+        parts.append(
+            "之前的代码存在问题：\n"
+            f"{failure.get('instruction', '')}\n\n"
+            "请基于上述输入重新规划任务。"
+        )
+    return "\n\n".join(parts)
+
+
+def build_incremental_planner_prompt(
+    spec: dict | None,
+    design_doc: str,
+    missing_files: list[str],
+    existing_files: dict[str, str],
+) -> str:
+    """Incremental replan prompt — the executor produced code that imports
+    files no task generated. Replan outputs ONLY the delta tasks that produce
+    those missing files; existing files are read-only context, never targets.
+
+    This is the "execution feedback → replan" loop: a planning gap (import of
+    an unplanned file) is fixed by adding tasks, not by rewriting existing
+    code or blindly re-running failed tasks.
+    """
+    if spec:
+        parts = _spec_prompt_blocks(spec)
+    else:
+        parts = [f"设计方案：\n{design_doc}"]
+    if existing_files:
+        file_summary = "\n".join(
+            f"- {p}（{len(c)} chars）" for p, c in sorted(existing_files.items())
+        )
+    else:
+        file_summary = "（无）"
+    missing_list = "\n".join(f"- {p}" for p in missing_files)
+    parts.append(
+        "## 增量重规划上下文（重要）\n"
+        f"执行反馈：已生成的代码 import 了以下文件，但没有任何任务生成它们：\n{missing_list}\n\n"
+        f"已生成的文件（绝对不要重建/覆盖）：\n{file_summary}\n\n"
+        "## 增量任务拆解要求\n"
+        "- **只输出能生成上述缺失文件的 delta 任务**：为每个缺失文件分配一个任务（文件多时可分组）\n"
+        "- 缺失文件的依赖也要覆盖：若缺失文件自身 import 其他缺失文件，任务需按依赖排序\n"
+        "- 已生成文件作为只读上下文（已存在，不作为生成目标）\n"
+        "- 任务契约从 Spec 的 data_model / api_contracts / component_tree 推导\n"
+        "- task id 从 task-0 开始递增；只输出 JSON"
+    )
+    return "\n\n".join(parts)
+
+
+def plan_final_compile_fix(
+    errors: list[dict],
+    fix_round: int = 0,
+    max_fix_rounds: int = 3,
+) -> dict:
+    """Decide the response to a failed FINAL full compile.
+
+    The final full compile (esbuild + vue-tsc) is the last gate after all
+    tasks are done — vue-tsc type errors only surface here, and so do missing
+    files that were never planned. Generation must NOT just stop on failure;
+    the errors are fed back into the loop:
+
+      "done"   — compile passed (or no errors), nothing to do
+      "replan" — every error is a missing-import signal → incremental
+                 planner emits delta tasks for the missing files
+      "fix"    — real code/type defects → a repair task targets the failing
+                 files (executor re-engages with the error list)
+      "abort"  — env errors (nothing to fix in code), no extractable paths,
+                 or the fix-round budget is exhausted
+
+    Returns: {"action", "reason", "missing_files"|"fix_files", ...}
+    """
+    if not errors:
+        return {"action": "done", "reason": "最终编译通过"}
+
+    if fix_round >= max_fix_rounds:
+        return {"action": "abort", "reason": f"超过最大修复轮次（{max_fix_rounds} 轮）"}
+
+    kind = classify_compile_errors(errors)
+    if kind == "env":
+        return {
+            "action": "abort",
+            "reason": "最终编译失败是环境错误（如项目目录不存在/编译服务不可达），没有可修复的代码",
+        }
+
+    if kind == "missing_file":
+        missing_files = extract_missing_paths(errors)
+        if missing_files:
+            return {
+                "action": "replan",
+                "missing_files": missing_files,
+                "reason": f"最终编译发现 {len(missing_files)} 个未生成文件，增量重规划",
+            }
+        return {"action": "abort", "reason": "缺失文件错误但无法提取路径，无法重规划"}
+
+    # code (or mixed): repair task over the files carrying errors
+    fix_files = sorted({
+        e.get("file", "") for e in errors
+        if e.get("file") and e.get("kind") != "env"
+    })
+    if fix_files:
+        return {
+            "action": "fix",
+            "fix_files": fix_files,
+            "reason": f"最终编译有 {len(errors)} 个代码错误，创建修复任务",
+        }
+    return {"action": "abort", "reason": "代码错误但没有带文件信息的条目，无法定位修复目标"}
+
+
+def build_fix_task(
+    fix_round: int,
+    fix_files: list[str],
+    errors: list[dict],
+) -> dict:
+    """A repair task that re-engages the executor on files failing the final
+    full compile. The error list rides in ``contract.errors`` so the executor
+    sees the exact defects; it runs with full-compile verification (the type
+    errors that quick checks can't see).
+    """
+    error_summary = "\n".join(
+        f"- {e.get('file') or '?'}:{e.get('line', 0)} {e.get('message', '')}"[:300]
+        for e in errors[:10]
+    )
+    return {
+        "id": f"task-fix-{fix_round}",
+        "type": "fix",
+        "description": (
+            f"修复最终编译错误（第 {fix_round + 1} 轮），目标文件：{', '.join(fix_files)}\n"
+            f"{error_summary}"
+        ),
+        "deps": [],
+        "files": fix_files,
+        "contract": {"errors": errors[:20]},
+        "status": "pending",
+    }
+
+
+def merge_delta_tasks(tasks: list[dict], delta_tasks: list[dict]) -> int:
+    """Merge incremental-planner delta tasks into the DAG.
+
+    The incremental planner restarts task ids at task-0 — clashing with ids
+    already in the DAG (failed tasks keep their ids). Renumber clashing deltas
+    instead of dropping them: a dropped delta means the missing file is never
+    produced and the loop dead-ends. Returns the number merged.
+    """
+    existing_ids = {t["id"] for t in tasks}
+    merged = 0
+    for dt in delta_tasks:
+        if dt["id"] in existing_ids:
+            n = 0
+            while f"task-delta-{n}" in existing_ids:
+                n += 1
+            dt["id"] = f"task-delta-{n}"
+        existing_ids.add(dt["id"])
+        dt["status"] = "pending"
+        tasks.append(dt)
+        merged += 1
+    return merged

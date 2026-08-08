@@ -48,6 +48,7 @@ func main() {
 	graphHandler := handler.NewGraphSSEHandler(aiClient)
 	e2eHandler := handler.NewE2EHandler(graphHandler, aiClient)
 	prdHandler := handler.NewPRDHandler(aiClient)
+	compileHandler := handler.NewCompileHandler(cfg.NodeCompilerAddr)
 
 	// Gin 路由器
 	gin.SetMode(gin.ReleaseMode)
@@ -80,6 +81,7 @@ func main() {
 		api.POST("/e2e/result", e2eHandler.SubmitE2EResult)
 		api.POST("/generation/confirm", e2eHandler.ConfirmStage)
 		api.POST("/generation/compile_feedback", e2eHandler.SubmitCompileFeedback)
+		api.POST("/generation/compile", compileHandler.SubmitCompile)
 		api.POST("/generation/feedback", graphHandler.SubmitFeedback)
 	}
 

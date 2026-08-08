@@ -1,0 +1,28 @@
+{
+  "name": "node-compiler",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Server-side compile worker — esbuild bundle check + vue-tsc type check for generated Vue projects",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.0",
+    "@vue/compiler-sfc": "^3.4.0",
+    "esbuild": "^0.21.0",
+    "vue": "^3.4.0",
+    "vue-router": "^4.3.0",
+    "pinia": "^2.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vue-tsc": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

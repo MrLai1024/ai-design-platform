@@ -270,6 +270,8 @@ function taskTypeLabel(type: string): string {
                 <span>⚡ 编译{{ entry.compileOk ? '通过' : '失败' }}</span>
                 <span v-if="entry.compileOk">✅</span>
                 <span v-else>❌ {{ entry.compileErrors?.length || 0 }} errors</span>
+                <span v-if="entry.compileErrors?.some((e) => e.source === 'preview')"
+                      class="text-[10px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-600 border border-orange-200">预览</span>
               </div>
               <div v-if="!entry.compileOk && entry.compileErrors" class="space-y-0.5 mt-1">
                 <div v-for="(err, i) in entry.compileErrors.slice(0, 5)" :key="i"

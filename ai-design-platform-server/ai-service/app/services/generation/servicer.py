@@ -140,6 +140,7 @@ class GenerationServicer(GenerationServiceServicer):
             "requirements_state_json": None,
             "analysis_result": pre_filled_analysis,
             "design_result": pre_filled_design,
+            "architecture_spec": None,
             "code_result": pre_filled_code,
             "review_result": None,
             "e2e_results": None,
@@ -273,6 +274,9 @@ class GenerationServicer(GenerationServiceServicer):
         gid = request.generation_id
         if gid in self._active_generations:
             self._active_generations[gid] = "cancelling"
+            from .nodes import cancel_background_spec
+
+            cancel_background_spec(gid)
             return CancelResponse(success=True)
         return CancelResponse(success=False)
 

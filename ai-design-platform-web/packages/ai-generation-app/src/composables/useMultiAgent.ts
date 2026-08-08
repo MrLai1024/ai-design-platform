@@ -316,6 +316,12 @@ export function useMultiAgent() {
       }
       body.messages = prefillMessages
       body.skip_analysis = true
+      // Carry the generation_id across fresh-start confirms — otherwise the
+      // gateway generates a NEW id per request and backend state (incl. the
+      // background architecture-spec task) is unreachable on the next phase.
+      if (store.currentGenerationId) {
+        body.generation_id = store.currentGenerationId
+      }
     } else {
       // Resume graph for code+
       body.messages = []

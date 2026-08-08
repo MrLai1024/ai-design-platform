@@ -11,6 +11,8 @@ Topology:
                               (via code -> review -> e2e)
 """
 
+import asyncio
+import os as _os
 from typing import AsyncIterator
 
 from langgraph.graph import StateGraph, END
@@ -21,7 +23,7 @@ from .state import GenerationState
 from .nodes import (
     analysis_node,
     design_node,
-    code_node,
+    code_passthrough_node,
     review_node,
     e2e_node,
     planner_node,
@@ -33,6 +35,37 @@ from .harness import LoopControl
 import structlog
 
 logger = structlog.get_logger()
+
+async def _stream_executor_events(gen_task, queue):
+    """Drain executor events from the queue while the executor task runs."""
+    while not gen_task.done() or not queue.empty():
+        try:
+            yield await asyncio.wait_for(queue.get(), timeout=0.1)
+        except asyncio.TimeoutError:
+            pass
+
+
+def _apply_task_result(task, result, tasks, dag, state, generated_files, project_root):
+    """Merge one executor result into the task/DAG/state/disk. Shared by the
+    main planner loop and the final-compile repair loop."""
+    task["status"] = result["status"]
+    task["executor_summary"] = result["summary"]
+    task["compile_errors"] = result["compile_errors"]
+    task["failure_kind"] = result.get("failure_kind", "done")
+    task["missing_paths"] = result.get("missing_paths", [])
+    task["partial_paths"] = result.get("partial_paths", [])
+    for path, content in result.get("generated_files", {}).items():
+        generated_files[path] = content
+        full_path = _os.path.join(project_root, path)
+        _os.makedirs(_os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, "w", encoding="utf-8") as wf:
+            wf.write(content)
+    dag["completed_tasks"] = sum(
+        1 for t in tasks if t.get("status") in ("done", "failed")
+    )
+    state["planner_dag"] = dag
+    state["generated_files"] = generated_files
+    state["context_summary"] = state.get("context_summary", {"key_exports": {}, "completed_tasks": []})
 
 
 def decide_after_review(state: GenerationState) -> str:
@@ -60,7 +93,7 @@ def build_graph() -> StateGraph:
     # Add nodes
     workflow.add_node("analysis", analysis_node)
     workflow.add_node("design", design_node)
-    workflow.add_node("code", code_node)
+    workflow.add_node("code", code_passthrough_node)
     workflow.add_node("review", review_node)
     workflow.add_node("e2e", e2e_node)
 
@@ -249,6 +282,21 @@ class GraphRunner:
             state["design_doc"] = design_full
             state["stage_phase"] = "complete"
 
+            # Kick off architecture-spec generation in the background — the
+            # user reviews the design doc meanwhile; the planner awaits it
+            # inside its own task, so the confirm click and the code-stage
+            # entry are never blocked by spec generation.
+            if state.get("analysis_result"):
+                from .nodes import generate_architecture_spec, _spec_background_tasks
+
+                _spec_background_tasks[generation_id] = asyncio.create_task(
+                    generate_architecture_spec(
+                        analysis_result=state["analysis_result"],
+                        design_doc=design_full,
+                    )
+                )
+                logger.info("architecture_spec_background_started gen=%s", generation_id)
+
             yield self._make_event("design_gen_done", "design", {
                 "full_content": design_full,
             })
@@ -264,16 +312,21 @@ class GraphRunner:
         if not state.get("generated_files"):
             import asyncio as _asyncio
             from .tools.registry import ToolRegistry
-            import tempfile, os as _os, json as _json, re
+            import os as _os, json as _json
+            from .state import resolve_project_root
 
-            _raw_name = state.get("requirement", "project")[:30]
-            _safe_name = re.sub(r'[^\w]', '_', _raw_name)[:30].strip('_') or "ai-gen-project"
-            project_root = _os.path.join(tempfile.gettempdir(), "ai-gen", _safe_name)
+            project_root = resolve_project_root(generation_id, state.get("requirement", ""))
+            _os.makedirs(project_root, exist_ok=True)
+            _safe_name = _os.path.basename(project_root)
 
             registry = ToolRegistry(project_root)
             self._active_registry = registry
 
+            # Emit the code-stage entry event FIRST — the frontend switches to
+            # the 功能开发 node immediately (规划中); the spec is awaited inside
+            # the planner task, so the user never waits on the confirm click.
             yield self._make_event("stage_start", "code", {"phase": "planning"})
+            state["generation_id"] = generation_id
 
             event_queue: _asyncio.Queue = _asyncio.Queue()
 
@@ -325,38 +378,14 @@ class GraphRunner:
                     exec_gen_task = _asyncio.create_task(
                         executor_task(state, task, exec_queue, project_root, registry)
                     )
-
-                    while not exec_gen_task.done() or not exec_queue.empty():
-                        try:
-                            evt = await _asyncio.wait_for(exec_queue.get(), timeout=0.1)
-                            yield evt
-                        except _asyncio.TimeoutError:
-                            pass
-
+                    async for evt in _stream_executor_events(exec_gen_task, exec_queue):
+                        yield evt
                     result = exec_gen_task.result()
-                    task["status"] = result["status"]
-                    task["executor_summary"] = result["summary"]
-                    task["compile_errors"] = result["compile_errors"]
-
-                    # Merge generated files
-                    for path, content in result.get("generated_files", {}).items():
-                        generated_files[path] = content
-                        # Also write to disk
-                        full_path = _os.path.join(project_root, path)
-                        _os.makedirs(_os.path.dirname(full_path), exist_ok=True)
-                        with open(full_path, "w", encoding="utf-8") as wf:
-                            wf.write(content)
 
                     if result.get("compile_errors"):
                         all_compile_errors = result["compile_errors"]
-
-                    # Update state for context management
-                    dag["completed_tasks"] = sum(
-                        1 for t in tasks if t.get("status") in ("done", "failed")
-                    )
-                    state["planner_dag"] = dag
-                    state["generated_files"] = generated_files
-                    state["context_summary"] = state.get("context_summary", {"key_exports": {}, "completed_tasks": []})
+                    _apply_task_result(task, result, tasks, dag, state,
+                                       generated_files, project_root)
 
                 # ── Step 3: Planner REFLECT ──
                 state["generated_files"] = generated_files
@@ -372,6 +401,93 @@ class GraphRunner:
 
                 state = reflect_task.result()
 
+                # ── Step 3.5: Planning-gap check — a DONE task imported files
+                # (partial "Could not resolve") that NO task plans to produce.
+                # Partial was tolerated so the task could finish; now check the
+                # missing files against the planned set — unplanned ones are a
+                # planning gap → merge into the replan request below.
+                planned_files: set[str] = set()
+                for t in tasks:
+                    planned_files.update(t.get("files", []) or [])
+                gap_paths: list[str] = []
+                seen_gap: set[str] = set()
+                for t in tasks:
+                    for p in t.get("partial_paths", []) or []:
+                        p_clean = p.lstrip("./")
+                        if not p_clean or p_clean in seen_gap:
+                            continue
+                        is_planned = any(
+                            f == p_clean or f.startswith(p_clean + "/")
+                            for f in planned_files
+                        )
+                        if not is_planned:
+                            gap_paths.append(p_clean)
+                            seen_gap.add(p_clean)
+                if gap_paths:
+                    logger.info("planning_gap_detected gen=%s missing=%s",
+                                generation_id, gap_paths)
+
+                # ── Step 3.6: Execution-feedback replan — a task failed because
+                # its code imports files no task produces (missing_file), OR the
+                # planning-gap check above found unplanned partial imports.
+                # Run the incremental planner to emit ONLY delta tasks for the
+                # missing files, merge them into the DAG, then continue.
+                replan = state.get("replan_request")
+                missing_files: list[str] = []
+                if replan:
+                    missing_files = list(replan.get("missing_files", []))
+                # merge gap paths into the replan (dedup)
+                for p in gap_paths:
+                    if p not in missing_files:
+                        missing_files.append(p)
+                if replan or gap_paths:
+                    state["replan_request"] = None
+                    if missing_files:
+                        from .planner import (
+                            PLANNER_SYSTEM_PROMPT,
+                            build_incremental_planner_prompt,
+                            extract_task_dag,
+                            merge_delta_tasks,
+                        )
+                        from .nodes import _llm_generate
+
+                        design_doc = state.get("design_doc") or state.get("design_result", "")
+                        spec = state.get("architecture_spec")
+                        replan_prompt = build_incremental_planner_prompt(
+                            spec, design_doc, missing_files, generated_files,
+                        )
+                        logger.info("incremental_replan gen=%s missing=%s",
+                                    generation_id, missing_files)
+                        yield self._make_event("planner_reflect", "code", {
+                            "decision": "replan_missing_files",
+                            "missing_files": missing_files,
+                            "message": f"发现 {len(missing_files)} 个未规划文件，增量重规划...",
+                        })
+                        raw = await _llm_generate(
+                            system_prompt=PLANNER_SYSTEM_PROMPT,
+                            user_content=replan_prompt,
+                            enable_thinking=True,
+                        )
+                        try:
+                            delta = extract_task_dag(raw)
+                        except Exception as e:
+                            logger.error("incremental_replan_parse_failed", error=str(e))
+                            delta = {"tasks": []}
+                        # Renumber clashing ids (the incremental planner
+                        # restarts at task-0) instead of dropping — a dropped
+                        # delta means the missing file is never produced.
+                        merged = merge_delta_tasks(tasks, delta.get("tasks", []))
+                        dag["tasks"] = tasks
+                        dag["total_tasks"] = len(tasks)
+                        state["planner_dag"] = dag
+                        logger.info("incremental_replan_merged gen=%s count=%s",
+                                    generation_id, merged)
+                        if merged:
+                            yield self._make_event("planner_dag", "code", {
+                                "tasks": tasks,
+                                "reasoning": f"增量重规划：补充 {merged} 个任务（缺失文件：{', '.join(missing_files)}）",
+                            })
+
                 # Check exit conditions
                 if state.get("stage_phase") == "complete":
                     break  # All done, all passed
@@ -384,16 +500,142 @@ class GraphRunner:
                 if not still_pending:
                     break  # All tasks processed (some may have failed)
 
-            # Final compilation check
-            compile_result = await registry.invoke("compile_project", {})
-            compile_ok = compile_result.ok
-            errors = compile_result.data.get("errors", []) if not compile_ok else []
-            all_compile_errors = errors if not compile_ok else None
+            # ── Step 4: Final full compile + repair loop ──
+            # The final compile (esbuild + vue-tsc) is the last gate — type
+            # errors only surface here (executor quick checks skip vue-tsc),
+            # and so do missing files that were never planned by any task.
+            # Failure is fed BACK into the loop instead of stopping:
+            #   missing_file → incremental replan (delta tasks for the files)
+            #   code errors  → a repair task targeting the failing files,
+            #                  executed with full-compile verification
+            # Loop until compile passes, no new work can be added, or the
+            # fix-round budget is exhausted.
+            max_fix_rounds = 3
+            fix_round = 0
+            while fix_round < max_fix_rounds:
+                compile_result = await registry.invoke("compile_project", {"full": True})
+                compile_ok = compile_result.ok
+                errors = compile_result.data.get("errors", []) if not compile_ok else []
+                all_compile_errors = errors if not compile_ok else None
 
-            yield self._make_event("compile_status", "code", {
-                "ok": compile_ok,
-                "errors": errors,
-            })
+                yield self._make_event("compile_status", "code", {
+                    "ok": compile_ok,
+                    "errors": errors,
+                })
+                if compile_ok:
+                    break
+
+                from .planner import (
+                    PLANNER_SYSTEM_PROMPT,
+                    build_fix_task,
+                    build_incremental_planner_prompt,
+                    extract_task_dag,
+                    merge_delta_tasks,
+                    plan_final_compile_fix,
+                )
+                from .nodes import _llm_generate
+
+                fix_plan = plan_final_compile_fix(errors, fix_round, max_fix_rounds)
+                if fix_plan["action"] == "abort":
+                    logger.warning("final_compile_abort", reason=fix_plan["reason"],
+                                   errors=[e.get("message") for e in errors][:3])
+                    yield self._make_event("planner_reflect", "code", {
+                        "decision": "final_compile_abort",
+                        "reason": fix_plan["reason"],
+                    })
+                    break
+
+                if fix_plan["action"] == "replan":
+                    design_doc = state.get("design_doc") or state.get("design_result", "")
+                    spec = state.get("architecture_spec")
+                    replan_prompt = build_incremental_planner_prompt(
+                        spec, design_doc, fix_plan["missing_files"], generated_files,
+                    )
+                    logger.info("final_compile_replan gen=%s missing=%s",
+                                generation_id, fix_plan["missing_files"])
+                    yield self._make_event("planner_reflect", "code", {
+                        "decision": "final_compile_replan",
+                        "missing_files": fix_plan["missing_files"],
+                        "message": fix_plan["reason"],
+                    })
+                    raw = await _llm_generate(
+                        system_prompt=PLANNER_SYSTEM_PROMPT,
+                        user_content=replan_prompt,
+                        enable_thinking=True,
+                    )
+                    try:
+                        delta = extract_task_dag(raw)
+                    except Exception as e:
+                        logger.error("final_compile_replan_parse_failed", error=str(e))
+                        delta = {"tasks": []}
+                    merged = merge_delta_tasks(tasks, delta.get("tasks", []))
+                    dag["tasks"] = tasks
+                    dag["total_tasks"] = len(tasks)
+                    state["planner_dag"] = dag
+                    logger.info("final_compile_replan_merged gen=%s count=%s",
+                                generation_id, merged)
+                    if merged:
+                        yield self._make_event("planner_dag", "code", {
+                            "tasks": tasks,
+                            "reasoning": f"最终编译修复重规划：补充 {merged} 个任务（缺失文件：{', '.join(fix_plan['missing_files'])}）",
+                        })
+
+                elif fix_plan["action"] == "fix":
+                    fix_task = build_fix_task(fix_round, fix_plan["fix_files"], errors)
+                    tasks.append(fix_task)
+                    dag["tasks"] = tasks
+                    dag["total_tasks"] = len(tasks)
+                    state["planner_dag"] = dag
+                    yield self._make_event("planner_reflect", "code", {
+                        "decision": "final_compile_repair",
+                        "fix_files": fix_plan["fix_files"],
+                        "message": fix_plan["reason"],
+                    })
+                    yield self._make_event("planner_dag", "code", {
+                        "tasks": tasks,
+                        "reasoning": f"最终编译修复：创建修复任务 {fix_task['id']}（{', '.join(fix_plan['fix_files'])}）",
+                    })
+
+                # Execute the newly added tasks — fix tasks have no deps; delta
+                # tasks may carry internal deps, so run the deps-satisfied ones
+                # until nothing is left. Fix tasks verify via full compile
+                # (vue-tsc) so the executor sees the type errors while it works.
+                while True:
+                    new_pending = [t for t in tasks if t.get("status") in ("pending", None)]
+                    if not new_pending:
+                        break
+                    progressed = False
+                    for task in new_pending:
+                        deps_ok = all(
+                            any(
+                                dt["id"] == dep_id and dt.get("status") == "done"
+                                for dt in tasks
+                            )
+                            for dep_id in task.get("deps", [])
+                        )
+                        if not deps_ok:
+                            continue
+                        progressed = True
+                        task["status"] = "running"
+                        registry.set_generated_files(generated_files)
+                        state["generated_files"] = generated_files
+                        exec_queue: _asyncio.Queue = _asyncio.Queue()
+                        exec_gen_task = _asyncio.create_task(
+                            executor_task(
+                                state, task, exec_queue, project_root, registry,
+                                compile_full=(task.get("type") == "fix"),
+                            )
+                        )
+                        async for evt in _stream_executor_events(exec_gen_task, exec_queue):
+                            yield evt
+                        result = exec_gen_task.result()
+                        if result.get("compile_errors"):
+                            all_compile_errors = result["compile_errors"]
+                        _apply_task_result(task, result, tasks, dag, state,
+                                           generated_files, project_root)
+                    if not progressed:
+                        break  # delta-task dep deadlock → next compile reveals it
+                fix_round += 1
 
             state["generated_files"] = generated_files
             state["compile_errors"] = all_compile_errors

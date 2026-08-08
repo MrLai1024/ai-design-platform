@@ -22,3 +22,6 @@ __pycache__/
 
 # Docker
 .docker/
+
+tests
+data

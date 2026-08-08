@@ -27,6 +27,16 @@ services:
       timeout: 5s
       retries: 5
 
+  node-compiler:
+    build:
+      context: ./node-compiler
+      dockerfile: Dockerfile
+    ports:
+      - "5199:5199"
+    environment:
+      - PORT=5199
+    restart: unless-stopped
+
   ai-service:
     build:
       context: ./ai-service
@@ -37,9 +47,12 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - LOG_LEVEL=DEBUG
+      - NODE_COMPILER_ADDR=http://node-compiler:5199
     depends_on:
       redis:
         condition: service_healthy
+      node-compiler:
+        condition: service_started
     volumes:
       - ./gen/python:/gen/python:ro
     restart: unless-stopped
@@ -55,11 +68,14 @@ services:
       - AI_SERVICE_ADDR=ai-service:50051
       - DATABASE_URL=postgres://aiplatform:aiplatform@postgres:5432/aiplatform?sslmode=disable
       - REDIS_ADDR=redis:6379
+      - NODE_COMPILER_ADDR=node-compiler:5199
       - LOG_LEVEL=debug
     depends_on:
       postgres:
         condition: service_healthy
       ai-service:
+        condition: service_started
+      node-compiler:
         condition: service_started
     restart: unless-stopped
 

@@ -1,4 +1,25 @@
+import os
+import re
 from typing import TypedDict, Literal, NotRequired
+
+
+def resolve_project_root(generation_id: str | None, requirement: str = "") -> str:
+    """Resolve the persistent project directory for a generation.
+
+    Single source of truth for generated files: ``<AI_GEN_DATA_DIR>/<app_id>/``
+    (default ``data/generated/<app_id>/`` under the ai-service cwd).
+
+    ALWAYS returns an ABSOLUTE path — the path is consumed across processes
+    (node-compiler worker, gateway) whose cwd differs from ai-service's.
+    app_id = generation_id when present, else a sanitized requirement slug.
+    """
+    base = os.path.abspath(os.environ.get("AI_GEN_DATA_DIR", "data/generated"))
+    if generation_id:
+        app_id = re.sub(r"[^\w-]", "_", generation_id)[:64].strip("_") or "gen"
+    else:
+        raw = (requirement or "project")[:30]
+        app_id = re.sub(r"[\W_]+", "_", raw)[:30].strip("_") or "ai-gen-project"
+    return os.path.join(base, app_id)
 
 
 class E2ETestStep(TypedDict):
@@ -104,6 +125,9 @@ class GenerationState(TypedDict):
     # Design document MD (for streaming, separate from design_result)
     design_doc: str | None
 
+    # Structured architecture spec (JSON, machine-readable design contract)
+    architecture_spec: dict | None
+
     # Code generation — multi-file project output
     generated_files: dict[str, str]            # filename -> code content
     compile_errors: list[dict] | None          # [{file, line, message}]
@@ -121,3 +145,8 @@ class GenerationState(TypedDict):
     planner_dag: TaskDAG | None                    # Planner 输出的任务 DAG
     planner_reflect_count: int                     # Planner 重规划次数
     context_summary: dict | None                   # 全局摘要 {key_exports: {...}, completed_tasks: [...]}
+
+    # Execution-feedback replan: set by planner_reflect when a task failed
+    # because generated code imports files no task produces (missing_file).
+    # graph.py consumes it to run the incremental planner and merge delta tasks.
+    replan_request: NotRequired[dict]              # {missing_files: [...], failed_task_ids: [...]}

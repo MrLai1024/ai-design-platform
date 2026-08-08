@@ -149,7 +149,7 @@ export function handleCodeSSEEvent(event: any): void {
     case 'planner_reflect':
       s.agentLogEntries.push({
         id: entryId(), type: 'phase_summary', timestamp: Date.now(),
-        summary: `Planner 决策: ${event.decision} — ${event.reason || ''}`,
+        summary: `Planner 决策: ${event.decision} — ${event.reason || event.message || ''}`,
       })
       break
 

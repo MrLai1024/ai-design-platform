@@ -30,8 +30,8 @@ const emit = defineEmits<{
       <!-- 节点 -->
       <button
         class="flex flex-col items-center gap-1.5 transition-colors"
-        :class="node.status === 'done' ? 'cursor-pointer hover:opacity-80' : 'cursor-default'"
-        :disabled="node.status !== 'done'"
+        :class="node.status !== 'pending' ? 'cursor-pointer hover:opacity-80' : 'cursor-default'"
+        :disabled="node.status === 'pending'"
         @click="emit('node-click', node)"
       >
         <span
