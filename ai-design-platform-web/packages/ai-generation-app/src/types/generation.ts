@@ -172,7 +172,9 @@ export interface AgentLogEntry {
   id: string
   type: 'thinking' | 'tool_call' | 'tool_result' | 'file_start'
        | 'file_complete' | 'compile' | 'phase_summary' | 'cancel' | 'feedback_summary'
+       | 'agent_message'
   timestamp: number
+  agentMessage?: string
   thinkingText?: string
   thinkingDone?: boolean
   toolName?: string

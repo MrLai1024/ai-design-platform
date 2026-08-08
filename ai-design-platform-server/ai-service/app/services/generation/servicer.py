@@ -32,7 +32,7 @@ from app.services.llm.provider import (
 from app.services.llm.router import resolve_provider
 from .graph import GraphRunner
 from .nodes import set_provider
-from .state import GenerationState
+from .state import GenerationState, extract_feedback_history
 
 logger = logging.getLogger(__name__)
 
@@ -126,11 +126,19 @@ class GenerationServicer(GenerationServiceServicer):
             if len(user_messages) >= 3 and user_messages[2].get("role") == "assistant":
                 pre_filled_code = user_messages[2].get("content")
 
+        # Extract the previous run's live facts BEFORE the new runner below
+        # overwrites _active_runners — feedback replanning needs the project's
+        # real state (last compile errors, failed tasks), not an empty slate.
+        # The runner is in-memory: when it's gone (restart) keep an empty
+        # history — never fabricate facts.
+        feedback_history = extract_feedback_history(existing_runner)
+
         logger.info(
-            "stream_graph_state_init gen=%s skip_analysis=%s mode=%s has_analysis=%s analysis_len=%d has_design=%s design_len=%d has_code=%s",
+            "stream_graph_state_init gen=%s skip_analysis=%s mode=%s has_analysis=%s analysis_len=%d has_design=%s design_len=%d has_code=%s feedback_history=%s",
             generation_id, skip_analysis, mode, bool(pre_filled_analysis),
             len(pre_filled_analysis or ""), bool(pre_filled_design),
             len(pre_filled_design or ""), bool(pre_filled_code),
+            {k: len(v) for k, v in feedback_history.items()},
         )
 
         state: GenerationState = {
@@ -166,6 +174,7 @@ class GenerationServicer(GenerationServiceServicer):
             "e2e_test_cases_md": None,
             "e2e_user_confirmed": False,
             "code_feedback": code_feedback,
+            "feedback_history": feedback_history,
         }
 
         runner = GraphRunner()

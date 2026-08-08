@@ -322,6 +322,18 @@ class GraphRunner:
             registry = ToolRegistry(project_root)
             self._active_registry = registry
 
+            # Feedback replan: recover the project's actual files BEFORE the
+            # planner runs — otherwise it sees an empty project and guesses.
+            # The recovered set is also this round's baseline (executor merges
+            # into it) so the next code_result stays complete across feedback
+            # rounds. Empty on a first-time entry (nothing generated yet).
+            from .state import restore_generated_files as _restore_files
+            generated_files = _restore_files(state, project_root)
+            if generated_files:
+                state["generated_files"] = generated_files
+                logger.info("feedback_project_restored gen=%s files=%s",
+                            generation_id, len(generated_files))
+
             # Emit the code-stage entry event FIRST — the frontend switches to
             # the 功能开发 node immediately (规划中); the spec is awaited inside
             # the planner task, so the user never waits on the confirm click.
@@ -345,10 +357,27 @@ class GraphRunner:
             tasks = dag.get("tasks", [])
 
             if not tasks:
-                yield self._make_event("error", "code", {"reason": "Planner produced no tasks"})
-                return
+                # Feedback replan: an empty task list is the planner's explicit
+                # "no changes needed" verdict — it reviewed the recovered
+                # project state and judged nothing needs doing. Legitimate
+                # outcome, not a dead end: proceed to the final-compile
+                # arbitration (which re-checks everything anyway). Without
+                # feedback an empty DAG is a real failure (nothing was planned
+                # at all). Parse failures never reach here — planner_node
+                # falls back to a non-empty scaffold DAG.
+                from .planner import is_empty_delta_tolerable
+                if is_empty_delta_tolerable(state.get("code_feedback"), True):
+                    logger.info("feedback_no_changes gen=%s", generation_id)
+                    yield self._make_event("planner_reflect", "code", {
+                        "decision": "no_changes",
+                        "failed_task_ids": [],
+                    })
+                else:
+                    yield self._make_event("error", "code", {"reason": "Planner produced no tasks"})
+                    return
 
-            generated_files: dict[str, str] = {}
+            # generated_files baseline was set above (restore_files) — executor
+            # merges new files into it; all_compile_errors tracks the latest.
             all_compile_errors: list[dict] | None = None
             max_planner_rounds = 3
 
@@ -458,10 +487,12 @@ class GraphRunner:
                         )
                         logger.info("incremental_replan gen=%s missing=%s",
                                     generation_id, missing_files)
+                        # Event carries data only (zero backend voice) — the
+                        # frontend renders the status card per decision.
                         yield self._make_event("planner_reflect", "code", {
                             "decision": "replan_missing_files",
                             "missing_files": missing_files,
-                            "message": f"发现 {len(missing_files)} 个未规划文件，增量重规划...",
+                            "failed_task_ids": replan.get("failed_task_ids", []) if replan else [],
                         })
                         raw = await _llm_generate(
                             system_prompt=PLANNER_SYSTEM_PROMPT,
@@ -471,11 +502,23 @@ class GraphRunner:
                         try:
                             delta = extract_task_dag(raw)
                         except Exception as e:
+                            # A parse failure is NOT the planner saying "no
+                            # changes" — surface it instead of silently
+                            # continuing with an empty delta (which would
+                            # dead-end the loop later without a trace).
                             logger.error("incremental_replan_parse_failed", error=str(e))
-                            delta = {"tasks": []}
+                            yield self._make_event("error", "code", {
+                                "reason": f"增量重规划输出解析失败: {e}",
+                            })
+                            return
                         # Renumber clashing ids (the incremental planner
                         # restarts at task-0) instead of dropping — a dropped
                         # delta means the missing file is never produced.
+                        if delta.pop("truncated", False):
+                            # A repaired tail means the delta itself is
+                            # incomplete — never silent; the next compile
+                            # round re-exposes whatever is still missing.
+                            logger.warning("incremental_replan_truncated gen=%s", generation_id)
                         merged = merge_delta_tasks(tasks, delta.get("tasks", []))
                         dag["tasks"] = tasks
                         dag["total_tasks"] = len(tasks)
@@ -483,9 +526,11 @@ class GraphRunner:
                         logger.info("incremental_replan_merged gen=%s count=%s",
                                     generation_id, merged)
                         if merged:
+                            # reasoning rides from the model's own output —
+                            # never backend-assembled speech.
                             yield self._make_event("planner_dag", "code", {
                                 "tasks": tasks,
-                                "reasoning": f"增量重规划：补充 {merged} 个任务（缺失文件：{', '.join(missing_files)}）",
+                                "reasoning": delta.get("reasoning", ""),
                             })
 
                 # Check exit conditions
@@ -556,7 +601,6 @@ class GraphRunner:
                     yield self._make_event("planner_reflect", "code", {
                         "decision": "final_compile_replan",
                         "missing_files": fix_plan["missing_files"],
-                        "message": fix_plan["reason"],
                     })
                     raw = await _llm_generate(
                         system_prompt=PLANNER_SYSTEM_PROMPT,
@@ -566,18 +610,29 @@ class GraphRunner:
                     try:
                         delta = extract_task_dag(raw)
                     except Exception as e:
+                        # Same rule as the main replan path: a parse failure is
+                        # not "no changes" — surface it; the last compile
+                        # errors stay recorded (all_compile_errors).
                         logger.error("final_compile_replan_parse_failed", error=str(e))
-                        delta = {"tasks": []}
+                        yield self._make_event("error", "code", {
+                            "reason": f"最终编译修复重规划输出解析失败: {e}",
+                        })
+                        break
                     merged = merge_delta_tasks(tasks, delta.get("tasks", []))
                     dag["tasks"] = tasks
                     dag["total_tasks"] = len(tasks)
                     state["planner_dag"] = dag
                     logger.info("final_compile_replan_merged gen=%s count=%s",
                                 generation_id, merged)
+                    if delta.pop("truncated", False):
+                        # Same rule as the main replan path: a repaired tail
+                        # is an incomplete delta — surface it; the next fix
+                        # round re-exposes whatever is still missing.
+                        logger.warning("final_compile_replan_truncated gen=%s", generation_id)
                     if merged:
                         yield self._make_event("planner_dag", "code", {
                             "tasks": tasks,
-                            "reasoning": f"最终编译修复重规划：补充 {merged} 个任务（缺失文件：{', '.join(fix_plan['missing_files'])}）",
+                            "reasoning": delta.get("reasoning", ""),
                         })
 
                 elif fix_plan["action"] == "fix":
@@ -589,11 +644,13 @@ class GraphRunner:
                     yield self._make_event("planner_reflect", "code", {
                         "decision": "final_compile_repair",
                         "fix_files": fix_plan["fix_files"],
-                        "message": fix_plan["reason"],
                     })
+                    # No model reasoning exists for a deterministic fix task —
+                    # update the task list without touching the visible
+                    # planner analysis (frontend keeps it when reasoning is
+                    # absent).
                     yield self._make_event("planner_dag", "code", {
                         "tasks": tasks,
-                        "reasoning": f"最终编译修复：创建修复任务 {fix_task['id']}（{', '.join(fix_plan['fix_files'])}）",
                     })
 
                 # Execute the newly added tasks — fix tasks have no deps; delta
@@ -636,6 +693,16 @@ class GraphRunner:
                     if not progressed:
                         break  # delta-task dep deadlock → next compile reveals it
                 fix_round += 1
+
+            # Repair loop exhausted (or aborted) with errors still unresolved —
+            # surface an explicit exit instead of silently ending: the user can
+            # keep driving the agent via feedback (feedback → fresh-start →
+            # recovered project state → replan). Decision carries data only.
+            if not compile_ok:
+                yield self._make_event("planner_reflect", "code", {
+                    "decision": "needs_feedback",
+                    "error_count": len(errors),
+                })
 
             state["generated_files"] = generated_files
             state["compile_errors"] = all_compile_errors

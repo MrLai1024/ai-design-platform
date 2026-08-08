@@ -41,12 +41,26 @@ def _ensure_absolute(project_root: str) -> str:
     return os.path.abspath(project_root)
 
 
+# "未找到入口文件" — the final compile found no entry (main.ts/App.vue),
+# usually because the entry task was skipped by the dependency gate. That is
+# a PLANNING GAP (files no task produced), NOT an infrastructure failure:
+# it must trigger replan, never the env abort path (which dead-ends
+# generation). The entry candidates ride as the missing paths.
+_MISSING_ENTRY_RE = re.compile(r"未找到入口文件")
+_MISSING_ENTRY_PATHS_RE = re.compile(r"未找到入口文件（需要\s*([^）]+)）")
+
+
 def is_env_error(err: dict) -> bool:
     """True when an error entry is an environment/infrastructure error (nothing
     to fix in the generated code) rather than a real compile defect."""
-    return err.get("kind") == ENV_ERROR_KIND or (
-        err.get("source") == "node-compiler" and not err.get("file")
-    )
+    if err.get("kind") == ENV_ERROR_KIND:
+        return True
+    if err.get("source") == "node-compiler" and not err.get("file"):
+        # Missing-entry errors are planning gaps, not infra failures.
+        if re.search(_MISSING_ENTRY_RE, err.get("message", "")):
+            return False
+        return True
+    return False
 
 
 # "File not found in project: X" / "Could not resolve X" / vue-tsc
@@ -58,6 +72,7 @@ _MISSING_FILE_RES = (
     r"Could not resolve",
     r"File not found in project",
     r"Cannot find module",
+    _MISSING_ENTRY_RE.pattern,
 )
 
 # Extract the missing path from resolver error messages:
@@ -86,6 +101,14 @@ def extract_missing_paths(errors: list[dict]) -> list[str]:
         if not is_missing_file_error(err):
             continue
         msg = err.get("message", "")
+        # Missing-entry: extract the entry candidates ("需要 src/main.ts 或 App.vue")
+        m = _MISSING_ENTRY_PATHS_RE.search(msg)
+        if m:
+            for raw in re.split(r"[、或,，]", m.group(1)):
+                p = raw.strip()
+                if p and p not in paths:
+                    paths.append(p)
+            continue
         m = _MISSING_PATH_RE.search(msg)
         if not m:
             m = _MISSING_PATH_UNQUOTED_RE.search(msg)

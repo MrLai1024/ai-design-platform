@@ -440,17 +440,25 @@ export const useGenerationStore = defineStore('generation', () => {
 
   // ── Planner/Executor Actions ──
   function setPlannerTasks(tasks: PlannerTaskDef[]): void {
-    plannerTasks.value = tasks
-    taskGroups.value = new Map()
-    for (const t of tasks) {
+    // MERGE, don't reset: incremental replans and the final-compile repair
+    // loop emit planner_dag with ONLY the delta tasks. A full reset wiped
+    // earlier tasks AND their log history from the AgentLog — a run looked
+    // like "only the delta files were generated".
+    const merged = new Map<string, PlannerTaskDef>()
+    for (const t of plannerTasks.value) merged.set(t.id, t)
+    for (const t of tasks) merged.set(t.id, { ...t, ...(t.status === undefined ? { status: 'pending' } : {}) })
+    plannerTasks.value = [...merged.values()]
+
+    for (const t of merged.values()) {
+      const prev = taskGroups.value.get(t.id)
       taskGroups.value.set(t.id, {
         taskId: t.id,
         description: t.description,
         files: t.files,
         status: t.status,
-        entries: [],
-        fileCount: 0,
-        compileErrors: 0,
+        entries: prev?.entries || [],
+        fileCount: prev?.fileCount || 0,
+        compileErrors: prev?.compileErrors || 0,
       })
     }
   }

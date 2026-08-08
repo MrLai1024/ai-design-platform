@@ -137,7 +137,9 @@ export function handleCodeSSEEvent(event: any): void {
         status: t.status || 'pending',
       }))
       s.setPlannerTasks(tasks)
-      s.setPlannerReasoning(event.reasoning || '')
+      // reasoning is model speech — only update when present (an empty
+      // incremental delta must not wipe the planner's visible analysis)
+      if (event.reasoning) s.setPlannerReasoning(event.reasoning)
       s.agentLogEntries.push({
         id: entryId(), type: 'phase_summary', timestamp: Date.now(),
         summary: `任务拆解完成：${tasks.length} 个任务`,
@@ -146,12 +148,35 @@ export function handleCodeSSEEvent(event: any): void {
       break
     }
 
-    case 'planner_reflect':
+    case 'planner_reflect': {
+      // System-status card — UI text rendered per decision, never backend
+      // speech. Backend events carry only structured data (zero voice).
+      const LABELS: Record<string, string> = {
+        done: '所有任务完成，编译通过',
+        replan_missing_files: `增量重规划：缺 ${event.missing_files?.length || 0} 个文件`,
+        final_compile_replan: `最终编译修复：重规划 ${event.missing_files?.length || 0} 个缺失文件`,
+        final_compile_repair: `最终编译修复：修复 ${event.fix_files?.length || 0} 个文件`,
+        final_compile_abort: `最终编译修复中止：${event.reason || '无法继续'}`,
+        no_changes: '检查完毕，无需修改',
+        has_failures: '存在失败任务，准备重试',
+        needs_feedback: `仍有 ${event.error_count || 0} 个错误未解决，可在下方输入修改意见让 agent 继续完善`,
+      }
       s.agentLogEntries.push({
         id: entryId(), type: 'phase_summary', timestamp: Date.now(),
-        summary: `Planner 决策: ${event.decision} — ${event.reason || event.message || ''}`,
+        summary: LABELS[event.decision] || `Planner 决策: ${event.decision}`,
       })
       break
+    }
+
+    case 'agent_message': {
+      const entry: AgentLogEntry = {
+        id: entryId(), type: 'agent_message', timestamp: Date.now(),
+        agentMessage: event.text || '',
+      }
+      s.agentLogEntries.push(entry)
+      if (event.task_id) s.addTaskLogEntry(event.task_id, entry)
+      break
+    }
 
     case 'task_start':
       s.setCurrentTask(event.task_id)

@@ -1,6 +1,83 @@
+import json
 import os
 import re
 from typing import TypedDict, Literal, NotRequired
+
+
+def extract_feedback_history(runner) -> dict:
+    """Pull the previous run's live facts for the feedback replan.
+
+    User feedback triggers a fresh-start; without these facts the planner
+    would see an empty project (no files, no compile errors, no failed
+    tasks) and guess. Returns pure data — consumed as planner prompt context,
+    never shown verbatim as agent speech. Empty structure when no prior run
+    is available (e.g. service restarted) — facts are never fabricated.
+    """
+    if runner is None or getattr(runner, "_state", None) is None:
+        return {"compile_errors": [], "failed_tasks": []}
+    old_state = runner._state
+    failed_tasks = []
+    for t in (old_state.get("planner_dag") or {}).get("tasks", []) or []:
+        if t.get("status") == "failed":
+            failed_tasks.append({
+                "id": t.get("id"),
+                "description": t.get("description", ""),
+                "failure_kind": t.get("failure_kind", "code"),
+                "missing_paths": t.get("missing_paths", []) or [],
+            })
+    return {
+        "compile_errors": old_state.get("compile_errors") or [],
+        "failed_tasks": failed_tasks,
+    }
+
+
+# Upper bound for the disk-scan fallback — a huge generated dir must not
+# stall the feedback replan; the code_result path (complete, authoritative)
+# covers normal flows anyway.
+MAX_RESTORE_FILES = 500
+
+
+def restore_generated_files(state, project_root: str) -> dict:
+    """Recover the project's generated files for a feedback replan.
+
+    Sources, most complete first:
+    1. ``state["code_result"]`` — JSON serialization of generated_files
+       written at the end of the code phase; the fresh-start prefill carries
+       it back.
+    2. Disk scan of the persistent project dir (dot-dirs skipped, bounded).
+
+    Returns {path: content}; never raises. The result becomes the baseline of
+    the new code phase so the next code_result stays complete.
+    """
+    code_result = state.get("code_result")
+    if code_result:
+        try:
+            parsed = json.loads(code_result)
+        except (ValueError, TypeError):
+            parsed = None
+        if isinstance(parsed, dict):
+            return {p: c for p, c in parsed.items() if isinstance(c, str)}
+    return scan_project_files(project_root)
+
+
+def scan_project_files(project_root: str) -> dict:
+    """Read all project files under a root (skip dot-dirs, bounded)."""
+    files: dict[str, str] = {}
+    if not os.path.isdir(project_root):
+        return files
+    for dirpath, dirnames, filenames in os.walk(project_root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for name in filenames:
+            if len(files) >= MAX_RESTORE_FILES:
+                return files
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, project_root).replace("\\", "/")
+            try:
+                with open(full, "r", encoding="utf-8") as f:
+                    files[rel] = f.read()
+            except (OSError, UnicodeDecodeError):
+                continue  # binary/undecodable — skip
+    return files
 
 
 def resolve_project_root(generation_id: str | None, requirement: str = "") -> str:
@@ -150,3 +227,9 @@ class GenerationState(TypedDict):
     # because generated code imports files no task produces (missing_file).
     # graph.py consumes it to run the incremental planner and merge delta tasks.
     replan_request: NotRequired[dict]              # {missing_files: [...], failed_task_ids: [...]}
+
+    # Live facts of the previous run, injected on feedback fresh-start by the
+    # servicer (extracted from the old runner BEFORE it is overwritten):
+    # {compile_errors: [...], failed_tasks: [{id, description, failure_kind, missing_paths}]}
+    # Feeds the planner's feedback prompt; never shown verbatim to the user.
+    feedback_history: NotRequired[dict]

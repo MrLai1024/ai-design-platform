@@ -524,67 +524,85 @@ async def planner_node(
 
     user_prompt = build_planner_user_prompt(architecture_spec, design_doc, failure)
 
-    # Self-review mode: user feedback triggers a comparison of design vs generated files
+    # Self-review mode: user feedback replans against the project's ACTUAL
+    # state — recovered files, last compile errors, failed tasks (injected by
+    # the servicer on fresh-start). Any input goes through this same path; the
+    # agent decides what needs doing. No keyword matching.
     if code_feedback:
-        generated_files_summary = ""
-        for path, content in state.get("generated_files", {}).items():
-            generated_files_summary += f"- {path} ({len(content)} chars)\n"
-        user_prompt = (
-            f"设计方案：\n{design_doc}\n\n"
-            f"已生成的文件：\n{generated_files_summary}\n"
-            f"用户反馈：{code_feedback}\n\n"
-            f"请对比设计方案和已生成文件，找出遗漏或差异。输出补充 Task DAG（仅包含需要新增或修改的任务）。"
-            f"如果没有遗漏，输出空 tasks 列表。"
+        from .planner import build_feedback_planner_prompt
+        from .state import resolve_project_root
+
+        user_prompt = build_feedback_planner_prompt(
+            design_doc=design_doc,
+            generated_files=state.get("generated_files") or {},
+            feedback_history=state.get("feedback_history"),
+            code_feedback=code_feedback,
+            project_root=resolve_project_root(
+                state.get("generation_id"), state.get("requirement", ""),
+            ),
         )
 
     # REASON + ACT: 一次性输出 DAG (planner_start already emitted at the top)
     def on_thinking(text: str):
         queue.put_nowait(_make_queue_event("thinking_chunk", "code", {"text": text}))
 
+    # The DAG JSON is LARGER than the Spec JSON (each task carries
+    # files/contract/deps) AND thinking consumes budget — 16k gives both room
+    # (8192 still truncated a 11-task DAG with thinking enabled). The
+    # tolerant parser + truncated flag below handle any remaining truncation.
     raw_response = await _llm_generate(
         system_prompt=PLANNER_SYSTEM_PROMPT,
         user_content=user_prompt,
         enable_thinking=True,
+        max_tokens=16384,
         on_reasoning=on_thinking,
     )
 
     try:
         dag = extract_task_dag(raw_response)
+        if dag.pop("truncated", False):
+            # Output hit the token ceiling — a repaired tail is silently
+            # INCOMPLETE (only the leading tasks survived). Never accept a
+            # partial DAG quietly: retry once with an explicit completeness
+            # hint (a second generation usually fits — the model has seen
+            # the shape). Still truncated → keep the best result; the
+            # final-compile repair loop replans whatever surfaces missing.
+            logger.warning("planner_dag_truncated_retry gen=%s", state.get("generation_id"))
+            queue.put_nowait(_make_queue_event("thinking_chunk", "code", {
+                "text": "任务规划输出不完整（被截断），重新生成完整任务列表...",
+            }))
+            retry_prompt = (
+                f"{user_prompt}\n\n"
+                f"注意：你上次的输出被截断了（只输出了部分任务）。请重新输出【完整】的 JSON："
+                f"包含全部任务，不要省略任何任务。"
+            )
+            raw_retry = await _llm_generate(
+                system_prompt=PLANNER_SYSTEM_PROMPT,
+                user_content=retry_prompt,
+                enable_thinking=True,
+                max_tokens=16384,
+                on_reasoning=on_thinking,
+            )
+            try:
+                retry_dag = extract_task_dag(raw_retry)
+                if not retry_dag.pop("truncated", False):
+                    dag = retry_dag
+                else:
+                    dag = retry_dag  # still truncated — keep the fuller attempt
+            except Exception:
+                pass  # retry unusable — keep the truncated first result
     except Exception as e:
         logger.error("planner_extract_failed", error=str(e))
-        # Fallback: minimal DAG with code generation task
-        dag = {
-            "reasoning": "Fallback due to parse error",
-            "tasks": [
-                {
-                    "id": "task-bootstrap-0",
-                    "type": "bootstrap",
-                    "description": "qiankun lifecycle entry",
-                    "deps": [],
-                    "files": ["src/main.ts", "src/public-path.ts"],
-                    "contract": {"exports": ["bootstrap", "mount", "unmount"]},
-                    "status": "pending",
-                },
-                {
-                    "id": "task-bootstrap-1",
-                    "type": "bootstrap",
-                    "description": "webpack + package config",
-                    "deps": [],
-                    "files": ["webpack/webpack.common.js", "package.json", "tsconfig.json"],
-                    "contract": {"exports": []},
-                    "status": "pending",
-                },
-                {
-                    "id": "task-code-0",
-                    "type": "business",
-                    "description": "Main app component and all business code",
-                    "deps": ["task-bootstrap-0"],
-                    "files": _estimate_files(design_doc),
-                    "contract": {"exports": ["App"]},
-                    "status": "pending",
-                },
-            ],
-        }
+        # Spec-driven fallback — one business task per top-level directory
+        # group from directory_tree. NEVER a hardcoded scaffold: the old
+        # hardcoded qiankun/webpack template generated a project that
+        # contradicted the Spec (Vite). Empty when no Spec — graph.py
+        # surfaces the explicit "no tasks" error instead of a wrong project.
+        from .planner import build_spec_fallback_dag
+
+        dag = build_spec_fallback_dag(architecture_spec, design_doc)
+        if not dag["tasks"]:
+            logger.error("planner_fallback_empty spec_missing=%s", architecture_spec is None)
 
     task_dag = {
         "tasks": dag["tasks"],
@@ -831,6 +849,14 @@ async def executor_task(
         elif response.get("content"):
             content = response["content"]
             messages.append({"role": "assistant", "content": content})
+            # The agent's own words, streamed verbatim — the dialogue surface.
+            # Internal markers and blank text never reach the UI.
+            text = content.replace("__TASK_DONE__", "").strip()
+            if text:
+                queue.put_nowait(_make_queue_event("agent_message", "code", {
+                    "text": text,
+                    "task_id": task_id,
+                }))
             if "__TASK_DONE__" in content:
                 break
 
@@ -923,30 +949,43 @@ async def planner_reflect_node(
     ]
 
     if all_done and not failed_tasks and not compile_errors:
-        # All good
+        # All good — event carries only the decision; the frontend renders
+        # the status card text (backend events have zero voice).
         queue.put_nowait(_make_queue_event("planner_reflect", "code", {
             "decision": "done",
-            "reason": "所有任务完成，编译通过",
         }))
         state["context_summary"] = context_summary
         state["stage_phase"] = "complete"
         return state
 
     if all_done and failed_tasks:
-        # Classify failures — missing-file failures are PLANNING gaps (code
-        # imports a file no task produces): don't blindly re-run the executor,
-        # ask the planner for incremental delta tasks instead.
+        # Classify failures — three tiers:
+        #   missing_file  → PLANNING gap (imports a file no task produces):
+        #                   files enter the replan pool immediately.
+        #   code/env      → first failure: retry once (same executor, its
+        #                   message history intact — fixes slips). Still
+        #                   failing after the retry: the retried executor's
+        #                   context is exhausted (12 rounds), repeating it
+        #                   won't converge — hand the task's OWN files to the
+        #                   incremental planner so a FRESH task/executor
+        #                   regenerates them with a clean context.
         missing_paths: list[str] = []
         retryable: list[dict] = []
+        replan_files: list[str] = []
         for t in failed_tasks:
             kind = t.get("failure_kind") or "code"
             if kind == "missing_file":
                 missing_paths.extend(t.get("missing_paths") or [])
+            elif t.get("retry_count", 0) >= 1:
+                replan_files.extend(t.get("files") or [])
             else:
                 retryable.append(t)
 
         retryable_ids = {t["id"] for t in retryable}
 
+        # Merge retried-but-failing tasks' files into the replan pool
+        if replan_files:
+            missing_paths.extend(replan_files)
         if missing_paths:
             # Dedup, keep order
             seen: set[str] = set()
@@ -966,12 +1005,14 @@ async def planner_reflect_node(
                 "decision": "has_failures",
                 "failed_task_ids": sorted(retryable_ids),
             }))
-            # Missing-file-failed tasks stay failed (replan will cover them);
-            # only genuinely retryable (code/env) failures reset to pending.
+            # Replan-covered tasks (missing_file, retried-once) stay failed;
+            # first-time code/env failures reset to pending with retry_count
+            # incremented — one retry, then the replan pool takes over.
             for t in dag.get("tasks", []):
                 if t.get("status") == "failed" and t.get("id") in retryable_ids:
                     t["status"] = "pending"
                     t["compile_errors"] = None
+                    t["retry_count"] = t.get("retry_count", 0) + 1
 
         state["planner_reflect_count"] = state.get("planner_reflect_count", 0) + 1
         state["context_summary"] = context_summary

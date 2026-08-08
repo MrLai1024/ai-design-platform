@@ -171,7 +171,12 @@ function taskTypeLabel(type: string): string {
             </div>
             <div v-if="!collapsedTasks.has(task.id)" class="border-t border-gray-100">
               <template v-for="entry in store.taskGroups.get(task.id)?.entries || []" :key="entry.id">
-                <div v-if="entry.type === 'thinking'" class="text-xs px-2 py-0.5">
+                <div v-if="entry.type === 'agent_message'"
+                     class="mx-2 my-1 p-2 rounded-lg bg-indigo-50 border border-indigo-100 text-[11px] text-indigo-800 whitespace-pre-wrap leading-relaxed">
+                  <div class="flex items-center gap-1 text-indigo-400 text-[10px] mb-0.5">&#129302; Agent</div>
+                  {{ entry.agentMessage }}
+                </div>
+                <div v-else-if="entry.type === 'thinking'" class="text-xs px-2 py-0.5">
                   <div class="flex items-center gap-1 text-gray-400 mb-0.5">
                     <span>&#128173;</span>
                     <span v-if="!entry.thinkingDone" class="text-blue-400 animate-pulse">...</span>
@@ -236,7 +241,12 @@ function taskTypeLabel(type: string): string {
             </div>
 
             <!-- Existing entry types (thinking, tool_call, file_start, compile, phase_summary) -->
-            <div v-if="entry.type === 'thinking'" class="text-xs">
+            <div v-if="entry.type === 'agent_message'"
+                 class="p-2 rounded-lg border border-indigo-100 bg-indigo-50 text-xs text-indigo-800">
+              <div class="flex items-center gap-1 text-indigo-400 text-[10px] mb-0.5">&#129302; Agent</div>
+              <div class="whitespace-pre-wrap text-[11px] leading-relaxed">{{ entry.agentMessage }}</div>
+            </div>
+            <div v-else-if="entry.type === 'thinking'" class="text-xs">
               <div class="flex items-center gap-1 text-gray-400 mb-0.5 px-1">
                 <span>&#128173; 思考过程</span>
                 <span v-if="!entry.thinkingDone" class="text-blue-400 animate-pulse">...</span>

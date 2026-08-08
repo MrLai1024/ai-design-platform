@@ -1,6 +1,8 @@
 """Planner Agent — REASON→ACT(DAG)→OBSERVE→REFLECT loop for task decomposition."""
 
 import json
+import os
+
 import structlog
 
 from .tools.compile_tool import classify_compile_errors, extract_missing_paths
@@ -91,23 +93,107 @@ PLANNER_REFLECT_PROMPT = """你是一个资深前端工程架构师。根据执�
 """
 
 
-def extract_task_dag(raw_json: str) -> dict:
-    """Parse Planner LLM output into TaskDAG dict."""
-    # Strip markdown code fences if present
-    cleaned = raw_json.strip()
-    if cleaned.startswith("```json"):
-        cleaned = cleaned.split("```json", 1)[1]
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("```", 1)[1]
-    if cleaned.endswith("```"):
-        cleaned = cleaned.rsplit("```", 1)[0]
-    cleaned = cleaned.strip()
+def _parse_json_tolerant(raw: str) -> dict | None:
+    """Parse LLM output as JSON — fences, leading prose, truncation tolerant.
 
+    Mirrors the Spec generator's parser: strip ```json fences → raw json.loads
+    → extract the first balanced {...} block (recovers a truncated tail: the
+    model hit the token ceiling mid-JSON and the complete part is still valid).
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    raw_lower = raw.lower()
+    if "```json" in raw_lower:
+        raw = raw.split("```json", 1)[1].split("```")[0].strip()
+    elif "```" in raw_lower:
+        raw = raw.split("```", 1)[1].split("```")[0].strip()
     try:
-        parsed = json.loads(cleaned)
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else None
     except json.JSONDecodeError:
-        logger.error("planner_json_parse_failed", raw=cleaned[:200])
-        raise
+        pass
+    # Fallback 1: first balanced {...} block — tolerant of leading prose.
+    start = raw.find("{")
+    if start >= 0:
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(raw)):
+            ch = raw[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        parsed = json.loads(raw[start : i + 1])
+                        return parsed if isinstance(parsed, dict) else None
+                    except json.JSONDecodeError:
+                        return None
+    # Fallback 2: truncation tolerance — the model hit the token ceiling
+    # mid-JSON and the object never closes. The last COMPLETE element ends
+    # at some '}': cut there, close the remaining brackets, try again.
+    # (A few attempts per '}', each a cheap local parse.)
+    for i in range(len(raw) - 1, start - 1, -1):
+        if raw[i] != "}":
+            continue
+        candidate = raw[start : i + 1]
+        for suffix in ("]}", "}", "]", "}]"):
+            try:
+                parsed = json.loads(candidate + suffix)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+def extract_task_dag(raw_json: str) -> dict:
+    """Parse Planner LLM output into TaskDAG dict — truncation tolerant AND
+    truncation-visible.
+
+    The planner's DAG JSON is LARGER than the Spec JSON (each task carries
+    files/contract/deps) and can hit the token ceiling: a truncated tail must
+    recover the complete leading tasks, NOT fall into the hardcoded scaffold
+    fallback (that produced a qiankun/webpack project for a Vite Spec). But a
+    repaired tail MUST be flagged (`truncated: True`) — silently recovering a
+    partial DAG drops later tasks without anyone noticing (the pipeline
+    "succeeded" with 3 of 11 tasks and the missing ones were never planned).
+    """
+    cleaned = (raw_json or "").strip()
+    low = cleaned.lower()
+    if "```json" in low:
+        cleaned = cleaned.split("```json", 1)[1].split("```")[0].strip()
+    elif "```" in low:
+        cleaned = cleaned.split("```", 1)[1].split("```")[0].strip()
+
+    truncated = False
+    parsed = None
+    try:
+        p = json.loads(cleaned)
+        if isinstance(p, dict):
+            parsed = p
+    except json.JSONDecodeError:
+        pass
+    if parsed is None:
+        # Tolerant repair (balance/truncation) — any success here means the
+        # raw output did NOT parse as-is, i.e. the tail was cut off.
+        parsed = _parse_json_tolerant(raw_json)
+        truncated = parsed is not None
+    if parsed is None:
+        logger.error("planner_json_parse_failed", raw=(raw_json or "")[:200])
+        raise ValueError(f"Failed to parse planner output as JSON: {(raw_json or '')[:200]}")
 
     # Validate and normalize tasks
     tasks = parsed.get("tasks", [])
@@ -117,8 +203,70 @@ def extract_task_dag(raw_json: str) -> dict:
         t.setdefault("deps", [])
         t.setdefault("contract", {})
 
-    return {
+    result = {
         "reasoning": parsed.get("reasoning", ""),
+        "tasks": tasks,
+    }
+    if truncated:
+        result["truncated"] = True
+    return result
+
+
+def _expand_directory_tree(tree: dict) -> list[str]:
+    """Flatten the Spec's directory_tree into concrete file paths.
+
+    Structure: {dir: [file_or_subdir, ...]}; subdirs are strings ending in '/'
+    — expanded recursively when they have their own key, skipped otherwise
+    (no file can be conjured for an undeclared subdir).
+    """
+    files: list[str] = []
+    for dirpath, items in (tree or {}).items():
+        prefix = dirpath if dirpath.endswith("/") else dirpath + "/"
+        for item in items or []:
+            if not isinstance(item, str):
+                continue
+            if item.endswith("/"):
+                if item in tree:
+                    files.extend(_expand_directory_tree({item: tree[item]}))
+                continue
+            files.append(prefix + item)
+    return files
+
+
+def build_spec_fallback_dag(spec: dict | None, design_doc: str) -> dict:
+    """Spec-driven fallback DAG when the planner's LLM output fails to parse.
+
+    One business task per top-level directory group from the Spec's
+    directory_tree — NEVER a hardcoded scaffold: a hardcoded qiankun/webpack
+    template produced a project that contradicts the Spec (e.g. Vite). Empty
+    when no Spec / no files — the caller surfaces an explicit error instead
+    of generating a wrong project.
+    """
+    if not spec:
+        return {"reasoning": "", "tasks": []}
+    files = _expand_directory_tree(spec.get("directory_tree") or {})
+    if not files:
+        return {"reasoning": "", "tasks": []}
+
+    groups: dict[str, list[str]] = {}
+    for f in files:
+        top = f.split("/", 1)[0] + "/"
+        groups.setdefault(top, []).append(f)
+
+    tasks = [
+        {
+            "id": f"task-fallback-{i}",
+            "type": "business",
+            "description": f"生成 {group} 下的文件（Spec 兜底任务）",
+            "deps": [],
+            "files": fs,
+            "contract": {},
+            "status": "pending",
+        }
+        for i, (group, fs) in enumerate(sorted(groups.items()))
+    ]
+    return {
+        "reasoning": "Planner 输出解析失败，已按架构 Spec 的 directory_tree 生成兜底任务",
         "tasks": tasks,
     }
 
@@ -290,6 +438,66 @@ def plan_final_compile_fix(
             "reason": f"最终编译有 {len(errors)} 个代码错误，创建修复任务",
         }
     return {"action": "abort", "reason": "代码错误但没有带文件信息的条目，无法定位修复目标"}
+
+
+def build_feedback_planner_prompt(
+    design_doc: str,
+    generated_files: dict[str, str],
+    feedback_history: dict | None,
+    code_feedback: str,
+    project_root: str = "",
+) -> str:
+    """Feedback replan prompt — the planner sees the project's ACTUAL state
+    (generated files with sizes, last compile errors, failed tasks) plus the
+    user's feedback verbatim. No keyword parsing: any input goes through this
+    same path and the agent decides what (if anything) needs doing. The facts
+    are prompt context (allowed), never displayed verbatim as agent speech.
+    """
+    history = feedback_history or {"compile_errors": [], "failed_tasks": []}
+
+    file_lines = []
+    for path, content in generated_files.items():
+        try:
+            size = f"{os.path.getsize(os.path.join(project_root, path))} B"
+        except OSError:
+            size = f"{len(content)} chars"
+        file_lines.append(f"- {path} ({size})")
+    if not file_lines:
+        file_lines = ["(无)"]
+
+    compile_lines = [
+        f"- [{e.get('source', '')}] {e.get('file', '?')}:{e.get('line', 0)} — {e.get('message', '')}"
+        for e in history.get("compile_errors", [])
+    ] or ["(无)"]
+
+    failed_lines = [
+        f"- {t.get('id', '?')} ({t.get('description', '')}): "
+        f"failure={t.get('failure_kind')}, 缺: {', '.join(t.get('missing_paths', []) or [])}"
+        for t in history.get("failed_tasks", [])
+    ] or ["(无)"]
+
+    return (
+        f"设计方案：\n{design_doc}\n\n"
+        f"## 项目现场（已生成文件，只读，不得重建/覆盖）\n"
+        + "\n".join(file_lines)
+        + "\n\n## 上次最终编译状态\n"
+        + "\n".join(compile_lines)
+        + "\n\n## 失败任务（执行记录）\n"
+        + "\n".join(failed_lines)
+        + f"\n\n用户反馈：{code_feedback}\n\n"
+        f"请基于项目现场与用户反馈判断需要做什么："
+        f"需要修改时输出补充 Task DAG（仅包含需要新增或修改的任务）；"
+        f"无需修改时输出空 tasks 列表。"
+    )
+
+
+def is_empty_delta_tolerable(code_feedback: str | None, parse_succeeded: bool) -> bool:
+    """An empty task list is a legit "no changes needed" verdict ONLY when the
+    model actually produced it (clean parse) AND a user feedback triggered the
+    replan — the planner reviewed the recovered project state and judged
+    nothing needs doing. Parse failures never count: they must surface as
+    errors, not as a silent "nothing to do"."""
+    return bool(code_feedback) and parse_succeeded
 
 
 def build_fix_task(
