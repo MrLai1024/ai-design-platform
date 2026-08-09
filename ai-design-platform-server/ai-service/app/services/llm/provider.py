@@ -20,8 +20,11 @@ class LLMConfig:
 @dataclass
 class Message:
     """一条聊天消息。"""
-    role: str       # "system" | "user" | "assistant"（角色）
+    role: str       # "system" | "user" | "assistant" | "tool"（角色）
     content: str
+    tool_call_id: str | None = None  # tool 消息必需（OpenAI 兼容 API 严格校验）
+    tool_calls: list[dict] | None = None  # assistant 消息的标准 tool_calls 字段
+    reasoning_content: str | None = None  # DeepSeek 思考模式：上一轮思考必须原样回传
 
 
 @dataclass

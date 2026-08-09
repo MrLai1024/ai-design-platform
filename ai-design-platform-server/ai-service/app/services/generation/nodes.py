@@ -382,10 +382,10 @@ EXECUTOR_SYSTEM_PROMPT = """你是一个 Vue 3 前端工程师，负责完成一
 
 ## 工作流程
 1. 理解任务目标、接口契约与架构 Spec 片段
-2. 先调用 list_files 查看项目现状，避免覆盖或重复生成已有文件
-3. 需要了解已有文件接口时，先调用 read_file 读取再动手
+2. 调用 list_files 查看项目现状（**只调用一次**；项目为空是正常的初始状态，直接开始生成，不要反复查询、不要空转）
+3. 需要了解已有文件接口时，调用 read_file 读取
 4. 调用 use_skill 或 mcp_query 获取模板和文档
-5. 调用 write_code 逐个生成文件（只生成 task 范围内的文件）
+5. 调用 write_code 逐个生成文件（只生成 task 范围内的文件）——**每次工具调用都必须推进任务：查询类工具最多用 1-2 次，之后必须调用 write_code 生成文件，禁止只查询不生成**
 6. 全部文件生成后调用 compile_project 检查
 7. 有编译错误时修复后再 compile
 8. 编译通过后输出 __TASK_DONE__
@@ -743,6 +743,19 @@ async def executor_task(
                 if compile_full and tool_name == "compile_project":
                     tool_args["full"] = True
 
+                if not tool_name:
+                    # Empty tool name (broken streamed delta that survived
+                    # aggregation) — never invoke "" (registry would fail as
+                    # "Unknown tool" and sink the task via the env path). Tell
+                    # the LLM the call was invalid so it can retry properly.
+                    messages.append({"role": "assistant", "content": None, "tool_calls": [tc],
+                                     "reasoning_content": response.get("reasoning_content")})
+                    messages.append({"role": "tool", "tool_call_id": tc["id"],
+                                     "content": json.dumps(
+                                         {"ok": False, "data": {}, "error": "工具名为空(模型输出异常),请重新调用"},
+                                         ensure_ascii=False)})
+                    continue
+
                 result = await registry.invoke(tool_name, tool_args)
 
                 queue.put_nowait(_make_queue_event("tool_result", "code", {
@@ -835,7 +848,8 @@ async def executor_task(
                             )
                             env_blocked = True
 
-                messages.append({"role": "assistant", "content": None, "tool_calls": [tc]})
+                messages.append({"role": "assistant", "content": None, "tool_calls": [tc],
+                                 "reasoning_content": response.get("reasoning_content")})
                 # Worker unreachable or empty project — explicit failure
                 if not result.ok and not errors and result.error:
                     compile_errors = [_env_error(result.error)]
@@ -1075,21 +1089,33 @@ async def _llm_generate_with_tools_streaming(
         content = m.get("content")
         tc_list = m.get("tool_calls")
         if tc_list:
-            # Assistant message with tool_calls
+            # Assistant message with tool_calls — the STANDARD OpenAI payload
+            # field. (Previously serialized into content; DeepSeek strictly
+            # requires the real tool_calls field to see the calls.) The prior
+            # round's reasoning_content must be passed back verbatim in
+            # thinking mode (DeepSeek 400 without it).
             provider_messages.append(Message(
                 role=m.get("role", "assistant"),
-                content=json.dumps(tc_list, ensure_ascii=False) if content is None else (content or ""),
+                content=content or "",
+                tool_calls=tc_list,
+                reasoning_content=m.get("reasoning_content"),
             ))
         else:
             provider_messages.append(Message(
                 role=m.get("role", "user"),
                 content=content or "",
+                tool_call_id=m.get("tool_call_id"),
             ))
 
-    config = LLMConfig(enable_thinking=True, tools=tools)
+    # DeepSeek reasoning models consume thinking tokens from the SAME
+    # max_tokens budget — 4096 left too little for "think + write file
+    # content", forcing the model into tiny (query-only) actions. Generous
+    # budget so a write_code round survives its own reasoning.
+    config = LLMConfig(enable_thinking=True, max_tokens=8192, tools=tools)
 
     # Collect response
     full_content = ""
+    full_reasoning = ""
     tool_calls_list: list[dict] = []
     current_tool_call: dict | None = None
 
@@ -1099,15 +1125,27 @@ async def _llm_generate_with_tools_streaming(
         elif isinstance(event, ReasoningEvent):
             if on_thinking:
                 on_thinking(event.text)
+            # 累积思考内容 — DeepSeek 思考模式要求把上一轮的 reasoning_content
+            # 原样回传(否则 400 "reasoning_content must be passed back")
+            full_reasoning += event.text
         elif isinstance(event, ToolCallEvent):
-            # Accumulate tool call deltas
-            if current_tool_call and current_tool_call.get("id") == event.call_id:
-                current_tool_call["function"]["arguments"] += (event.arguments or "")
+            # Accumulate tool call deltas. OpenAI-compatible streams put the
+            # id/name on the FIRST chunk of an index; later chunks often carry
+            # ONLY arguments (no id). An id-less chunk CONTINUES the current
+            # call — opening a new entry on it produced empty-named tool
+            # invocations (`tool: ""` → unknown tool → task failure). A
+            # late-arriving name fills the current call.
+            if current_tool_call and (event.call_id == current_tool_call.get("id") or not event.call_id):
+                if event.arguments:
+                    current_tool_call["function"]["arguments"] += event.arguments
+                if event.name and not current_tool_call["function"].get("name"):
+                    current_tool_call["function"]["name"] = event.name
             else:
                 if current_tool_call:
                     tool_calls_list.append(current_tool_call)
                 current_tool_call = {
                     "id": event.call_id or "",
+                    "type": "function",  # OpenAI 标准字段 — DeepSeek 严格校验(400 missing field `type`)
                     "function": {
                         "name": event.name or "",
                         "arguments": event.arguments or "",
@@ -1118,9 +1156,11 @@ async def _llm_generate_with_tools_streaming(
                 tool_calls_list.append(current_tool_call)
 
     if tool_calls_list:
-        return {"content": None, "tool_calls": tool_calls_list}
+        return {"content": None, "tool_calls": tool_calls_list,
+                "reasoning_content": full_reasoning or None}
 
-    return {"content": full_content.strip(), "tool_calls": None}
+    return {"content": full_content.strip(), "tool_calls": None,
+            "reasoning_content": full_reasoning or None}
 
 
 # ---- Multi-Agent Review Node ----
