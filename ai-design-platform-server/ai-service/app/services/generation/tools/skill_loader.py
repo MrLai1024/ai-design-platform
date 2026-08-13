@@ -40,11 +40,16 @@ class SkillLoader:
         files = []
         for tpl in skill.get("produces", []):
             template_content = tpl.get("template", f"// Generated from skill: {name}\n")
+            template_path = tpl.get("path", f"{name}.vue")
             if params:
                 for k, v in (params or {}).items():
                     template_content = template_content.replace("{{" + k + "}}", str(v))
+                    # Paths carry the same placeholders (e.g. pages/{{entityKey}}/List.vue)
+                    # — substitution there was missing, writing literal
+                    # {{entityKey}} directories into the project.
+                    template_path = template_path.replace("{{" + k + "}}", str(v))
             files.append({
-                "path": tpl.get("path", f"{name}.vue"),
+                "path": template_path,
                 "content": template_content,
             })
 

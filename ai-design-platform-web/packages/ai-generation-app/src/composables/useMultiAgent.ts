@@ -89,7 +89,7 @@ export function useMultiAgent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: chatMessages,
-          model: 'glm-5.2',
+          model: 'deepseek-v4-pro',
         }),
       })
 
@@ -298,7 +298,7 @@ export function useMultiAgent() {
     // Graph hasn't started yet, so send pre-filled state
     const needsFreshStart = stage === 'analysis' || stage === 'design' || stage === 'code'
     const body: Record<string, any> = {
-      model: 'glm-5.2',
+      model: 'deepseek-v4-pro',
 
       mode: 'graph',
     }

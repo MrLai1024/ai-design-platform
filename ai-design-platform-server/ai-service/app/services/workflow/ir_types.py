@@ -54,7 +54,7 @@ def resolve_template(template: str, state: dict[str, Any]) -> str:
 class LLMNodeConfig:
     """Configuration for an LLM call node."""
 
-    model: str = "glm-5.2"
+    model: str = "deepseek-v4-pro"
     system_prompt: str = ""
     user_prompt: str = ""
     temperature: float = 0.7

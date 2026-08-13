@@ -36,7 +36,7 @@ const router = useRouter();
 const chatStore = useChatStore();
 const convStore = useConversationStore();
 
-const MODEL = 'glm-5.2';
+const MODEL = 'deepseek-v4-pro';
 
 const callbacks: StreamCallbacks = {
   onMeta(meta) {

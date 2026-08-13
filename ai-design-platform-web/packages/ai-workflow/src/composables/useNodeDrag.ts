@@ -4,7 +4,7 @@ import { addNode } from '../store/slices/workflowSlice';
 import type { NodeDef } from '../types/workflow';
 
 const NODE_TYPE_TEMPLATES: Record<string, { type: string; config: Record<string, unknown> }> = {
-  llm: { type: 'llm', config: { model: 'glm-5.2', system_prompt: '', user_prompt: '', temperature: 0.7, max_tokens: 4096, output_key: 'output' } },
+  llm: { type: 'llm', config: { model: 'deepseek-v4-pro', system_prompt: '', user_prompt: '', temperature: 0.7, max_tokens: 4096, output_key: 'output' } },
   router: { type: 'router', config: { branches: [{ label: 'pass', condition: 'state.ok == True' }, { label: 'fail', condition: 'default' }] } },
   human_confirm: { type: 'human_confirm', config: { message: '请审核并确认', fields: [{ key: 'approved', label: '已通过', type: 'boolean' }], timeout: 300 } },
   code: { type: 'code', config: { language: 'python', code: '# Access state via `state` dict\nresult = {"processed": state.get("input")}\n', timeout: 30, output_key: 'code_output' } },

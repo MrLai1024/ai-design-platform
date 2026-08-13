@@ -27,7 +27,7 @@ export function NodeConfigPanel() {
         onChange={v => dispatch(updateNode({ id: selectedNode.id, changes: { label: v } }))} disabled={isRunning} />
 
       {selectedNode.type === 'llm' && <>
-        <ConfigInput label="模型" value={selectedNode.config.model as string || 'glm-5.2'} onChange={v => handleConfigChange('model', v)} disabled={isRunning} />
+        <ConfigInput label="模型" value={selectedNode.config.model as string || 'deepseek-v4-pro'} onChange={v => handleConfigChange('model', v)} disabled={isRunning} />
         <ConfigInput label="输出变量" value={selectedNode.config.output_key as string || 'output'} onChange={v => handleConfigChange('output_key', v)} disabled={isRunning} />
         <ConfigTextarea label="System Prompt" value={selectedNode.config.system_prompt as string || ''} onChange={v => handleConfigChange('system_prompt', v)} disabled={isRunning} />
         <ConfigTextarea label="User Prompt" value={selectedNode.config.user_prompt as string || ''} onChange={v => handleConfigChange('user_prompt', v)} disabled={isRunning} hint="使用 {state.xxx} 引用上游输出" />

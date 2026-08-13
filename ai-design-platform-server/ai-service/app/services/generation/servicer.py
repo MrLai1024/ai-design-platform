@@ -51,7 +51,7 @@ class GenerationServicer(GenerationServiceServicer):
     ) -> AsyncIterator[GenerateResponse]:
         """Server-streaming RPC: stream tokens or LangGraph events to the caller."""
         generation_id = request.generation_id
-        model = request.model or "glm-5.2"
+        model = request.model or "deepseek-v4-pro"
         mode = request.metadata.get("mode", "chat")  # "chat" or "graph"
 
         if mode == "graph":
@@ -69,7 +69,7 @@ class GenerationServicer(GenerationServiceServicer):
     ) -> AsyncIterator[GenerateResponse]:
         """Stream LangGraph pipeline events. Auto-detects resume vs fresh start."""
         self._active_generations[generation_id] = "running"
-        model = request.model or "glm-5.2"
+        model = request.model or "deepseek-v4-pro"
         mode = request.metadata.get("mode", "graph")
 
         # Set up LLM provider for the graph nodes

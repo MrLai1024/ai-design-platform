@@ -53,12 +53,16 @@ _MISSING_ENTRY_PATHS_RE = re.compile(r"未找到入口文件（需要\s*([^）]+
 def is_env_error(err: dict) -> bool:
     """True when an error entry is an environment/infrastructure error (nothing
     to fix in the generated code) rather than a real compile defect."""
-    if err.get("kind") == ENV_ERROR_KIND:
-        return True
     if err.get("source") == "node-compiler" and not err.get("file"):
-        # Missing-entry errors are planning gaps, not infra failures.
+        # Missing-entry errors are planning gaps, not infra failures — they
+        # must trigger replan, never the env abort path. Checked BEFORE the
+        # kind short-circuit: the worker tags missing-entry errors with
+        # kind="env", which used to win here and dead-ended generation with
+        # final_compile_abort instead of replanning the entry files.
         if re.search(_MISSING_ENTRY_RE, err.get("message", "")):
             return False
+        return True
+    if err.get("kind") == ENV_ERROR_KIND:
         return True
     return False
 

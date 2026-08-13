@@ -507,8 +507,8 @@ def build_fix_task(
 ) -> dict:
     """A repair task that re-engages the executor on files failing the final
     full compile. The error list rides in ``contract.errors`` so the executor
-    sees the exact defects; it runs with full-compile verification (the type
-    errors that quick checks can't see).
+    sees the exact defects; compile mode (full/quick) is at the executor's
+    own discretion — the final-compile loop verifies convergence.
     """
     error_summary = "\n".join(
         f"- {e.get('file') or '?'}:{e.get('line', 0)} {e.get('message', '')}"[:300]

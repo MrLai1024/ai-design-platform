@@ -32,7 +32,7 @@ func (h *PRDHandler) StreamPRD(c *gin.Context) {
 	}
 
 	if req.Model == "" {
-		req.Model = "glm-5.2"
+		req.Model = "deepseek-v4-pro"
 	}
 
 	generationID := newUUID()

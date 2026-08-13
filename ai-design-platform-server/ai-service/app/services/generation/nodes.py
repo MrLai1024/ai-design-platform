@@ -31,7 +31,7 @@ def set_provider(provider: LLMProvider):
 async def _llm_generate(
     system_prompt: str,
     user_content: str,
-    model: str = "glm-5.2",
+    model: str = "deepseek-v4-pro",
     enable_thinking: bool = True,
     max_tokens: int = 4096,
     on_reasoning: Any | None = None,
@@ -71,7 +71,7 @@ async def _llm_generate_structured(
     system_prompt: str,
     user_content: str,
     output_schema: dict[str, Any],
-    model: str = "glm-5.2",
+    model: str = "deepseek-v4-pro",
 ) -> dict[str, Any]:
     """Call LLM and parse response as JSON matching output_schema."""
     schema_hint = (
@@ -211,6 +211,7 @@ async def generate_architecture_spec(
     design_doc: str,
     retries: int = 1,
     on_reasoning: Any | None = None,
+    on_token: Any | None = None,
 ) -> dict:
     """Generate the structured architecture Spec (JSON) from PRD + design doc.
 
@@ -221,6 +222,9 @@ async def generate_architecture_spec(
     on_reasoning(text): forwarded to the LLM call so the spec's thinking
     stream can be shown in the AgentLog (kills the "no feedback" dead air
     between stage_start and planner_start).
+    on_token(text): forwarded too — spec generation runs with thinking
+    disabled, so tokens are the only visible progress; both streams feed
+    the AgentLog.
     """
     from .spec_schema import (
         ARCHITECTURE_SPEC_PROMPT,
@@ -297,6 +301,7 @@ async def generate_architecture_spec(
                 enable_thinking=False,
                 max_tokens=8192,
                 on_reasoning=on_reasoning,
+                on_token=on_token,
             )
             last_raw = raw_text
             parsed = _parse_json(raw_text)
@@ -386,9 +391,12 @@ EXECUTOR_SYSTEM_PROMPT = """你是一个 Vue 3 前端工程师，负责完成一
 3. 需要了解已有文件接口时，调用 read_file 读取
 4. 调用 use_skill 或 mcp_query 获取模板和文档
 5. 调用 write_code 逐个生成文件（只生成 task 范围内的文件）——**每次工具调用都必须推进任务：查询类工具最多用 1-2 次，之后必须调用 write_code 生成文件，禁止只查询不生成**
-6. 全部文件生成后调用 compile_project 检查
-7. 有编译错误时修复后再 compile
-8. 编译通过后输出 __TASK_DONE__
+6. 全部文件写完后输出 __TASK_DONE__
+
+## 编译（可选工具，自行决定时机）
+- compile_project 用于验证代码：import 路径、接口契约、类型是否正确。需要验证时自行调用查看结果；调用后发现错误，自行决定是否修复后再结束
+- full=true 时包含 vue-tsc 类型检查（较慢），需要验证类型时用 full=true；平时用默认（快速检查）即可
+- 不要每轮都调用编译；系统会在所有任务结束后统一执行全量编译，任务完成后仍存在的问题会进入系统修复流程——**任务完成不要求编译通过**
 
 ## 规则
 - 只生成该 task 范围内的文件
@@ -421,6 +429,31 @@ async def code_passthrough_node(state: GenerationState) -> GenerationState:
 # cached per generation_id to survive across fresh-start confirms.
 _spec_background_tasks: dict[str, asyncio.Task] = {}
 _spec_results: dict[str, dict] = {}
+# Per-generation chunk queues: the background task streams its reasoning and
+# token chunks here; the planner drains them while awaiting so the AgentLog
+# shows the spec being generated instead of dead air.
+_spec_event_queues: dict[str, asyncio.Queue] = {}
+
+
+def start_background_spec(
+    generation_id: str,
+    analysis_result: str,
+    design_doc: str,
+) -> None:
+    """Kick off architecture-spec generation with a per-generation event
+    queue. The planner drains the queue while awaiting the task, so the
+    spec's generation stream reaches the AgentLog (thinking_chunk events)."""
+    q: asyncio.Queue = asyncio.Queue()
+    _spec_event_queues[generation_id] = q
+    _spec_background_tasks[generation_id] = asyncio.create_task(
+        generate_architecture_spec(
+            analysis_result=analysis_result,
+            design_doc=design_doc,
+            on_reasoning=q.put_nowait,
+            on_token=q.put_nowait,
+        )
+    )
+    logger.info("architecture_spec_background_started gen=%s", generation_id)
 
 
 async def await_architecture_spec(
@@ -435,8 +468,9 @@ async def await_architecture_spec(
     2. the in-flight background task started during the design phase,
     3. synchronous generation (no task was ever started).
     The result is cached under generation_id so later phases reuse it.
-    on_reasoning is forwarded only to a synchronous generation — an in-flight
-    background task already streams (or finished) without it.
+    on_reasoning is the AgentLog sink: the in-flight background task's queued
+    chunks (reasoning + tokens) are drained and forwarded to it while
+    awaiting; a synchronous generation streams directly into it.
     """
     if generation_id and generation_id in _spec_results:
         logger.info("architecture_spec_cached gen=%s", generation_id)
@@ -444,6 +478,24 @@ async def await_architecture_spec(
 
     task = _spec_background_tasks.get(generation_id) if generation_id else None
     if task is not None:
+        q = _spec_event_queues.get(generation_id) if generation_id else None
+        if q is not None:
+            # Forward the spec's generation stream to the AgentLog while the
+            # task runs — without this the planner_start message is followed
+            # by minutes of silence (spec generation runs with thinking off,
+            # so tokens are the only visible progress).
+            while not task.done():
+                try:
+                    text = await asyncio.wait_for(q.get(), timeout=0.1)
+                    if text and on_reasoning:
+                        on_reasoning(text)
+                except asyncio.TimeoutError:
+                    pass
+            while not q.empty():
+                text = q.get_nowait()
+                if text and on_reasoning:
+                    on_reasoning(text)
+            _spec_event_queues.pop(generation_id, None)
         try:
             spec = await task
             if generation_id:
@@ -453,12 +505,14 @@ async def await_architecture_spec(
             return spec
         except Exception as e:
             logger.warning("background_spec_task_failed", generation_id=generation_id, error=str(e))
+            _spec_background_tasks.pop(generation_id, None)
 
     logger.info("architecture_spec_sync gen=%s", generation_id)
     spec = await generate_architecture_spec(
         analysis_result=analysis_result,
         design_doc=design_doc,
         on_reasoning=on_reasoning,
+        on_token=on_reasoning,
     )
     if generation_id:
         _spec_results[generation_id] = spec
@@ -471,6 +525,7 @@ def cancel_background_spec(generation_id: str) -> None:
     if task is not None and not task.done():
         task.cancel()
     _spec_results.pop(generation_id, None)
+    _spec_event_queues.pop(generation_id, None)
 
 
 async def planner_node(
@@ -558,6 +613,24 @@ async def planner_node(
         on_reasoning=on_thinking,
     )
 
+    # Empty response (DeepSeek thinking can consume the whole budget, or the
+    # API returns a transient empty completion) — same failure class as the
+    # incremental replan. Retry once with a nudge; persistent emptiness falls
+    # through to the existing fallback below instead of silently degrading to
+    # a spec-fallback DAG on the first empty.
+    if not raw_response.strip():
+        logger.warning("planner_empty_retry gen=%s", state.get("generation_id"))
+        queue.put_nowait(_make_queue_event("thinking_chunk", "code", {
+            "text": "任务规划输出为空，重新生成完整任务列表...",
+        }))
+        raw_response = await _llm_generate(
+            system_prompt=PLANNER_SYSTEM_PROMPT,
+            user_content=user_prompt + "\n\n注意：你上次的输出为空。请重新输出完整的 JSON 任务列表。",
+            enable_thinking=True,
+            max_tokens=16384,
+            on_reasoning=on_thinking,
+        )
+
     try:
         dag = extract_task_dag(raw_response)
         if dag.pop("truncated", False):
@@ -624,22 +697,64 @@ async def planner_node(
     return state
 
 
+async def run_incremental_replan(
+    system_prompt: str,
+    replan_prompt: str,
+    max_tokens: int = 16384,
+    retries: int = 1,
+) -> dict:
+    """Incremental replan LLM call — retry on empty/parse failure.
+
+    DeepSeek thinking consumes the SAME max_tokens budget: the planner main
+    path needs 16384, and so does this one — 4096 (the ``_llm_generate``
+    default) lets reasoning eat the whole budget and the response comes back
+    EMPTY, which ``extract_task_dag`` cannot parse and dead-ends generation.
+    A single retry (with feedback) absorbs transient empty/invalid responses;
+    bounded, so a persistently failing model surfaces as an explicit error
+    (never a silent empty DAG).
+    """
+    last_raw = ""
+    for attempt in range(retries + 1):
+        raw = await _llm_generate(
+            system_prompt=system_prompt,
+            user_content=replan_prompt,
+            enable_thinking=True,
+            max_tokens=max_tokens,
+        )
+        last_raw = raw
+        if not (raw or "").strip():
+            if attempt < retries:
+                replan_prompt += "\n\n注意：你上次的输出为空。请重新输出完整的 JSON 任务列表。"
+                continue
+            break
+        try:
+            return extract_task_dag(raw)
+        except Exception:
+            if attempt < retries:
+                replan_prompt += (
+                    "\n\n注意：你上次的输出不是合法 JSON，请只输出一个 JSON 对象。"
+                    f"上次输出前 200 字：{(raw or '')[:200]}"
+                )
+                continue
+            raise
+    raise ValueError(f"增量重规划输出为空：{(last_raw or '')[:200]}")
+
+
 async def executor_task(
     state: GenerationState,
     task: dict,
     queue,
     project_root: str,
     registry,
-    compile_full: bool = False,
 ) -> dict:
     """
     Executor Agent — 为单个 task 运行 REASON→ACT→OBSERVE→REFLECT loop.
     Returns: {task_id, status, generated_files, compile_errors, summary}
 
-    compile_full=True (repair tasks from the final-compile loop): every
-    internal compile_project check runs full mode (esbuild + vue-tsc) so the
-    type errors that only surface in the final compile are visible to the
-    executor while it works — it can verify its fix, not just hope.
+    Compilation is at the LLM's own discretion: the executor never triggers
+    compile_project automatically — the model calls it as a tool when it
+    wants to verify, and the final full compile (graph Step 4) is the
+    system-level gate after all tasks complete.
     """
     task_id = task["id"]
     logger.info("executor_task_start", task_id=task_id, desc=task.get("description", ""))
@@ -710,7 +825,7 @@ async def executor_task(
             response = await _llm_generate_with_tools_streaming(
                 messages=messages,
                 tools=registry.get_schema(),
-                model="glm-5.2",
+                model="deepseek-v4-pro",
                 on_thinking=on_thinking,
             )
         except Exception as e:
@@ -736,12 +851,6 @@ async def executor_task(
                     "args": tool_args,
                     "task_id": task_id,
                 }))
-
-                # Repair tasks must verify against the same gate that failed —
-                # full mode (vue-tsc included). Force it so the executor sees
-                # the type errors while it works, not after it reports done.
-                if compile_full and tool_name == "compile_project":
-                    tool_args["full"] = True
 
                 if not tool_name:
                     # Empty tool name (broken streamed delta that survived
@@ -832,7 +941,10 @@ async def executor_task(
                     if errors and all(is_env_error(e) for e in errors):
                         for attempt in range(2):
                             await asyncio.sleep(1.0)
-                            retry = await registry.invoke("compile_project", {"full": compile_full})
+                            # Retry at the same level the LLM asked for — no
+                            # forced mode override (compile timing/mode is the
+                            # model's own decision).
+                            retry = await registry.invoke("compile_project", {"full": tool_args.get("full", False)})
                             if retry.ok:
                                 compile_errors = None
                                 queue.put_nowait(_make_queue_event("compile_status", "code", {
@@ -874,32 +986,9 @@ async def executor_task(
             if "__TASK_DONE__" in content:
                 break
 
-        # Auto-compile every 4 rounds — quick check (esbuild) for regular
-        # tasks; full mode (vue-tsc) for repair tasks so type defects are
-        # visible to the executor while it works.
-        if round_idx > 0 and round_idx % 4 == 0 and generated_files:
-            compile_result = await registry.invoke("compile_project", {"full": compile_full})
-            ok = compile_result.ok
-            errors = compile_result.data.get("errors", []) if not ok else []
-            if compile_result.data.get("partial"):
-                for p in compile_result.data.get("partial_paths", []):
-                    p_clean = p.lstrip("./")
-                    if p_clean and p_clean not in partial_paths:
-                        partial_paths.append(p_clean)
-            queue.put_nowait(_make_queue_event("compile_status", "code", {
-                "ok": ok, "errors": errors, "task_id": task_id,
-            }))
-            if ok and not errors:
-                break
-            # Environment errors: nothing to repair in code — fail fast instead
-            # of burning LLM rounds on "fixing" infra problems.
-            if errors and all(is_env_error(e) for e in errors):
-                logger.warning(
-                    "executor_env_error_task_failed",
-                    task_id=task_id, errors=[e.get("message") for e in errors][:3],
-                )
-                env_blocked = True
-                break
+        # No automatic compile trigger here — compile timing is at the LLM's
+        # own discretion (compile_project tool). The system-wide full compile
+        # runs in graph Step 4 after ALL tasks complete.
 
     # Build summary
     summary = f"Task {task_id} done: {len(generated_files)} files"
@@ -1075,7 +1164,7 @@ def _make_queue_event(event_type: str, stage: str, data: dict) -> dict:
 async def _llm_generate_with_tools_streaming(
     messages: list[dict],
     tools: list[dict],
-    model: str = "glm-5.2",
+    model: str = "deepseek-v4-pro",
     on_thinking=None,
 ) -> dict:
     """Call LLM with native function calling — streaming via callback."""

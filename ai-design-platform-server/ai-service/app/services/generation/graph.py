@@ -285,17 +285,13 @@ class GraphRunner:
             # Kick off architecture-spec generation in the background — the
             # user reviews the design doc meanwhile; the planner awaits it
             # inside its own task, so the confirm click and the code-stage
-            # entry are never blocked by spec generation.
+            # entry are never blocked by spec generation. The task streams
+            # its chunks into a per-generation queue that the planner drains
+            # into the AgentLog while awaiting.
             if state.get("analysis_result"):
-                from .nodes import generate_architecture_spec, _spec_background_tasks
+                from .nodes import start_background_spec
 
-                _spec_background_tasks[generation_id] = asyncio.create_task(
-                    generate_architecture_spec(
-                        analysis_result=state["analysis_result"],
-                        design_doc=design_full,
-                    )
-                )
-                logger.info("architecture_spec_background_started gen=%s", generation_id)
+                start_background_spec(generation_id, state["analysis_result"], design_full)
 
             yield self._make_event("design_gen_done", "design", {
                 "full_content": design_full,
@@ -475,10 +471,9 @@ class GraphRunner:
                         from .planner import (
                             PLANNER_SYSTEM_PROMPT,
                             build_incremental_planner_prompt,
-                            extract_task_dag,
                             merge_delta_tasks,
                         )
-                        from .nodes import _llm_generate
+                        from .nodes import run_incremental_replan
 
                         design_doc = state.get("design_doc") or state.get("design_result", "")
                         spec = state.get("architecture_spec")
@@ -494,19 +489,21 @@ class GraphRunner:
                             "missing_files": missing_files,
                             "failed_task_ids": replan.get("failed_task_ids", []) if replan else [],
                         })
-                        raw = await _llm_generate(
-                            system_prompt=PLANNER_SYSTEM_PROMPT,
-                            user_content=replan_prompt,
-                            enable_thinking=True,
-                        )
                         try:
-                            delta = extract_task_dag(raw)
+                            # Retry-on-empty/parse-failure + thinking-safe
+                            # budget (16384) — 4096 lets DeepSeek reasoning eat
+                            # the whole budget and return empty content, which
+                            # dead-ended generation with a parse error.
+                            delta = await run_incremental_replan(
+                                system_prompt=PLANNER_SYSTEM_PROMPT,
+                                replan_prompt=replan_prompt,
+                            )
                         except Exception as e:
                             # A parse failure is NOT the planner saying "no
                             # changes" — surface it instead of silently
                             # continuing with an empty delta (which would
                             # dead-end the loop later without a trace).
-                            logger.error("incremental_replan_parse_failed", error=str(e))
+                            logger.error("incremental_replan_failed", error=str(e))
                             yield self._make_event("error", "code", {
                                 "reason": f"增量重规划输出解析失败: {e}",
                             })
@@ -574,11 +571,10 @@ class GraphRunner:
                     PLANNER_SYSTEM_PROMPT,
                     build_fix_task,
                     build_incremental_planner_prompt,
-                    extract_task_dag,
                     merge_delta_tasks,
                     plan_final_compile_fix,
                 )
-                from .nodes import _llm_generate
+                from .nodes import run_incremental_replan
 
                 fix_plan = plan_final_compile_fix(errors, fix_round, max_fix_rounds)
                 if fix_plan["action"] == "abort":
@@ -602,18 +598,16 @@ class GraphRunner:
                         "decision": "final_compile_replan",
                         "missing_files": fix_plan["missing_files"],
                     })
-                    raw = await _llm_generate(
-                        system_prompt=PLANNER_SYSTEM_PROMPT,
-                        user_content=replan_prompt,
-                        enable_thinking=True,
-                    )
                     try:
-                        delta = extract_task_dag(raw)
+                        delta = await run_incremental_replan(
+                            system_prompt=PLANNER_SYSTEM_PROMPT,
+                            replan_prompt=replan_prompt,
+                        )
                     except Exception as e:
                         # Same rule as the main replan path: a parse failure is
                         # not "no changes" — surface it; the last compile
                         # errors stay recorded (all_compile_errors).
-                        logger.error("final_compile_replan_parse_failed", error=str(e))
+                        logger.error("final_compile_replan_failed", error=str(e))
                         yield self._make_event("error", "code", {
                             "reason": f"最终编译修复重规划输出解析失败: {e}",
                         })
@@ -655,8 +649,8 @@ class GraphRunner:
 
                 # Execute the newly added tasks — fix tasks have no deps; delta
                 # tasks may carry internal deps, so run the deps-satisfied ones
-                # until nothing is left. Fix tasks verify via full compile
-                # (vue-tsc) so the executor sees the type errors while it works.
+                # until nothing is left. Compile timing is at the executor's
+                # own discretion; the next final-compile round verifies fixes.
                 while True:
                     new_pending = [t for t in tasks if t.get("status") in ("pending", None)]
                     if not new_pending:
@@ -678,10 +672,7 @@ class GraphRunner:
                         state["generated_files"] = generated_files
                         exec_queue: _asyncio.Queue = _asyncio.Queue()
                         exec_gen_task = _asyncio.create_task(
-                            executor_task(
-                                state, task, exec_queue, project_root, registry,
-                                compile_full=(task.get("type") == "fix"),
-                            )
+                            executor_task(state, task, exec_queue, project_root, registry)
                         )
                         async for evt in _stream_executor_events(exec_gen_task, exec_queue):
                             yield evt

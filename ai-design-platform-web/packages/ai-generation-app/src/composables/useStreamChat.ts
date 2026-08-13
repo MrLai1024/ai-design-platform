@@ -72,7 +72,7 @@ export function useStreamChat() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: requestMessages,
-          model: 'glm-5.2',
+          model: 'deepseek-v4-pro',
           stream: true,
         }),
         signal: abortController.signal,
