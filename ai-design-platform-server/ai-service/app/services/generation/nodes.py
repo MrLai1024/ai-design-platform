@@ -28,6 +28,13 @@ def set_provider(provider: LLMProvider):
     _provider = provider
 
 
+# 单次 LLM 调用的总时长上限。流一旦卡死(服务端停发字节,且 SSE keep-alive
+# 会无限重置 provider 的读超时),必须强制失败而不是永久挂起——前端表现为
+# AgentLog 静默停止。读超时(provider 内,300s)只约束相邻字节间隔,总时长
+# 由此兜底;失败后由 executor 可见失败 + planner_reflect 重试/replan 恢复。
+LLM_CALL_DEADLINE_SECONDS = 600.0
+
+
 async def _llm_generate(
     system_prompt: str,
     user_content: str,
@@ -51,14 +58,23 @@ async def _llm_generate(
     ]
     config = LLMConfig(enable_thinking=enable_thinking, max_tokens=max_tokens)
     full_text = ""
-    async for event in _provider.stream_generate(model, messages, config):
-        if isinstance(event, TokenEvent):
-            full_text += event.text
-            if on_token:
-                on_token(event.text)
-        elif isinstance(event, ReasoningEvent):
-            if on_reasoning:
-                on_reasoning(event.text)
+    try:
+        async with asyncio.timeout(LLM_CALL_DEADLINE_SECONDS):
+            async for event in _provider.stream_generate(model, messages, config):
+                if isinstance(event, TokenEvent):
+                    full_text += event.text
+                    if on_token:
+                        on_token(event.text)
+                elif isinstance(event, ReasoningEvent):
+                    if on_reasoning:
+                        on_reasoning(event.text)
+    except TimeoutError:
+        logger.error(
+            "llm_call_deadline_exceeded",
+            model=model,
+            seconds=LLM_CALL_DEADLINE_SECONDS,
+        )
+        raise
     logger.debug(
         "_llm_generate_result",
         text_len=len(full_text),
@@ -806,6 +822,7 @@ async def executor_task(
     compile_errors: list[dict] | None = None
     env_blocked = False  # environment error — skip LLM repair, fail task fast
     partial_paths: list[str] = []  # unresolved imports (deps of later tasks)
+    llm_error: str | None = None  # LLM 调用失败原因(超时/HTTP/网络)
 
     from .tools.compile_tool import (
         ENV_ERROR_KIND,
@@ -829,7 +846,11 @@ async def executor_task(
                 on_thinking=on_thinking,
             )
         except Exception as e:
+            # LLM 调用失败(超时/HTTP/网络)——不允许静默 break:任务必须
+            # 以 failed + failure_kind="llm_error" 收场,由 planner_reflect
+            # 的重试/replan 层级接管恢复;前端通过 task_complete 可见。
             logger.error("executor_llm_error", task_id=task_id, error=str(e))
+            llm_error = str(e)
             break
 
         if response.get("tool_calls"):
@@ -986,6 +1007,19 @@ async def executor_task(
             if "__TASK_DONE__" in content:
                 break
 
+        else:
+            # 空轮次:既无工具调用也无内容——思考耗尽预算或流异常收尾。
+            # 相同上下文重发只会得到相同结果,不得静默空转烧轮次预算:
+            # 显式失败,交给 planner_reflect 的重试/replan 恢复。
+            logger.warning(
+                "executor_empty_round",
+                task_id=task_id,
+                round=round_idx,
+                reasoning_len=len(response.get("reasoning_content") or ""),
+            )
+            llm_error = "LLM 返回空轮次(既无工具调用也无内容,思考可能耗尽预算)"
+            break
+
         # No automatic compile trigger here — compile timing is at the LLM's
         # own discretion (compile_project tool). The system-wide full compile
         # runs in graph Step 4 after ALL tasks complete.
@@ -995,7 +1029,10 @@ async def executor_task(
     compile_err_count = len(compile_errors) if compile_errors else 0
     failure_kind = "done"
     missing_paths: list[str] = []
-    if compile_errors:
+    if llm_error:
+        failure_kind = "llm_error"
+        summary = f"Task {task_id} failed (LLM 调用失败): {llm_error[:200]}"
+    elif compile_errors:
         failure_kind = classify_compile_errors(compile_errors)
         if failure_kind == "missing_file":
             missing_paths = extract_missing_paths(compile_errors)
@@ -1006,13 +1043,15 @@ async def executor_task(
         "file_count": len(generated_files),
         "compile_errors": compile_err_count,
         "failure_kind": failure_kind,
+        "llm_error": llm_error,
     }))
 
     return {
         "task_id": task_id,
-        "status": "done" if not compile_errors else "failed",
+        "status": "done" if (not compile_errors and not llm_error) else "failed",
         "generated_files": generated_files,
         "compile_errors": compile_errors,
+        "llm_error": llm_error,
         "summary": summary,
         "failure_kind": failure_kind,
         "missing_paths": missing_paths,
@@ -1208,41 +1247,50 @@ async def _llm_generate_with_tools_streaming(
     tool_calls_list: list[dict] = []
     current_tool_call: dict | None = None
 
-    async for event in _provider.stream_generate(model, provider_messages, config):
-        if isinstance(event, TokenEvent):
-            full_content += event.text
-        elif isinstance(event, ReasoningEvent):
-            if on_thinking:
-                on_thinking(event.text)
-            # 累积思考内容 — DeepSeek 思考模式要求把上一轮的 reasoning_content
-            # 原样回传(否则 400 "reasoning_content must be passed back")
-            full_reasoning += event.text
-        elif isinstance(event, ToolCallEvent):
-            # Accumulate tool call deltas. OpenAI-compatible streams put the
-            # id/name on the FIRST chunk of an index; later chunks often carry
-            # ONLY arguments (no id). An id-less chunk CONTINUES the current
-            # call — opening a new entry on it produced empty-named tool
-            # invocations (`tool: ""` → unknown tool → task failure). A
-            # late-arriving name fills the current call.
-            if current_tool_call and (event.call_id == current_tool_call.get("id") or not event.call_id):
-                if event.arguments:
-                    current_tool_call["function"]["arguments"] += event.arguments
-                if event.name and not current_tool_call["function"].get("name"):
-                    current_tool_call["function"]["name"] = event.name
-            else:
-                if current_tool_call:
-                    tool_calls_list.append(current_tool_call)
-                current_tool_call = {
-                    "id": event.call_id or "",
-                    "type": "function",  # OpenAI 标准字段 — DeepSeek 严格校验(400 missing field `type`)
-                    "function": {
-                        "name": event.name or "",
-                        "arguments": event.arguments or "",
-                    },
-                }
-        elif isinstance(event, CompleteEvent):
-            if current_tool_call:
-                tool_calls_list.append(current_tool_call)
+    try:
+        async with asyncio.timeout(LLM_CALL_DEADLINE_SECONDS):
+            async for event in _provider.stream_generate(model, provider_messages, config):
+                if isinstance(event, TokenEvent):
+                    full_content += event.text
+                elif isinstance(event, ReasoningEvent):
+                    if on_thinking:
+                        on_thinking(event.text)
+                    # 累积思考内容 — DeepSeek 思考模式要求把上一轮的 reasoning_content
+                    # 原样回传(否则 400 "reasoning_content must be passed back")
+                    full_reasoning += event.text
+                elif isinstance(event, ToolCallEvent):
+                    # Accumulate tool call deltas. OpenAI-compatible streams put the
+                    # id/name on the FIRST chunk of an index; later chunks often carry
+                    # ONLY arguments (no id). An id-less chunk CONTINUES the current
+                    # call — opening a new entry on it produced empty-named tool
+                    # invocations (`tool: ""` → unknown tool → task failure). A
+                    # late-arriving name fills the current call.
+                    if current_tool_call and (event.call_id == current_tool_call.get("id") or not event.call_id):
+                        if event.arguments:
+                            current_tool_call["function"]["arguments"] += event.arguments
+                        if event.name and not current_tool_call["function"].get("name"):
+                            current_tool_call["function"]["name"] = event.name
+                    else:
+                        if current_tool_call:
+                            tool_calls_list.append(current_tool_call)
+                        current_tool_call = {
+                            "id": event.call_id or "",
+                            "type": "function",  # OpenAI 标准字段 — DeepSeek 严格校验(400 missing field `type`)
+                            "function": {
+                                "name": event.name or "",
+                                "arguments": event.arguments or "",
+                            },
+                        }
+                elif isinstance(event, CompleteEvent):
+                    if current_tool_call:
+                        tool_calls_list.append(current_tool_call)
+    except TimeoutError:
+        logger.error(
+            "llm_call_deadline_exceeded",
+            model=model,
+            seconds=LLM_CALL_DEADLINE_SECONDS,
+        )
+        raise
 
     if tool_calls_list:
         return {"content": None, "tool_calls": tool_calls_list,

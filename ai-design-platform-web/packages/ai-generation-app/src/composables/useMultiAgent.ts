@@ -303,7 +303,6 @@ export function useMultiAgent() {
       mode: 'graph',
     }
 
-    console.log('[confirmStage] stage=', stage, 'needsFreshStart=', needsFreshStart, 'stageOutputs.analysis=', !!store.stageOutputs.analysis, 'docStreamingContent=', !!store.docStreamingContent)
     if (needsFreshStart) {
       // Pre-fill completed stages
       const prefillMessages: Array<{role: string; content: string}> = []
@@ -328,7 +327,6 @@ export function useMultiAgent() {
       body.generation_id = store.currentGenerationId
       body.mode = 'resume'
     }
-    console.log('[confirmStage] body=', JSON.stringify({...body, messages: body.messages?.length || 0}))
 
     try {
       const controller = getAbortController()

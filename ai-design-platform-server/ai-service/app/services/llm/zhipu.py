@@ -32,8 +32,9 @@ API_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 # 连接池配置
 LIMITS = httpx.Limits(max_connections=50, max_keepalive_connections=10)
 
-# 默认超时：连接 30s，读取 600s（10 分钟）以容纳 GLM 思考模式
-DEFAULT_TIMEOUT = httpx.Timeout(timeout=600.0, connect=30.0)
+# 默认超时：连接 30s，读取 300s（5 分钟）。健康流持续吐字，3 分钟无字节即
+# 卡死——早失败早恢复；单次调用总时长由调用层的 asyncio.timeout 兜底。
+DEFAULT_TIMEOUT = httpx.Timeout(timeout=300.0, connect=30.0)
 
 
 class ZhipuProvider(LLMProvider):

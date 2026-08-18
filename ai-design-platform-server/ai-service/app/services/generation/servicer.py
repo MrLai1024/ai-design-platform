@@ -1,5 +1,6 @@
 """gRPC GenerationService implementation — powered by LangGraph."""
 
+import asyncio
 import json
 import logging
 from typing import AsyncIterator
@@ -31,7 +32,7 @@ from app.services.llm.provider import (
 )
 from app.services.llm.router import resolve_provider
 from .graph import GraphRunner
-from .nodes import set_provider
+from .nodes import LLM_CALL_DEADLINE_SECONDS, set_provider
 from .state import GenerationState, extract_feedback_history
 
 logger = logging.getLogger(__name__)
@@ -235,37 +236,40 @@ class GenerationServicer(GenerationServiceServicer):
         )
 
         try:
-            async for event in provider.stream_generate(model=model, messages=messages, config=config):
-                if context.cancelled() or self._active_generations.get(generation_id) == "cancelling":
-                    await provider.cancel()
-                    yield GenerateResponse(
-                        complete=GenerationComplete(finish_reason="cancelled", usage=None)
-                    )
-                    return
+            # 与 generation 管线的 LLM 调用同等待遇:总时长 deadline 兜底,
+            # 卡死的流不能无限挂起(读超时可能被 SSE keep-alive 重置)。
+            async with asyncio.timeout(LLM_CALL_DEADLINE_SECONDS):
+                async for event in provider.stream_generate(model=model, messages=messages, config=config):
+                    if context.cancelled() or self._active_generations.get(generation_id) == "cancelling":
+                        await provider.cancel()
+                        yield GenerateResponse(
+                            complete=GenerationComplete(finish_reason="cancelled", usage=None)
+                        )
+                        return
 
-                if isinstance(event, TokenEvent):
-                    yield GenerateResponse(token=Token(text=event.text, index=event.index))
-                elif isinstance(event, ReasoningEvent):
-                    yield GenerateResponse(
-                        token=Token(reasoning_content=event.text, index=event.index)
-                    )
-                elif isinstance(event, ToolCallEvent):
-                    yield GenerateResponse(
-                        tool_call=ProtoToolCall(
-                            id=event.call_id, name=event.name, arguments=event.arguments
+                    if isinstance(event, TokenEvent):
+                        yield GenerateResponse(token=Token(text=event.text, index=event.index))
+                    elif isinstance(event, ReasoningEvent):
+                        yield GenerateResponse(
+                            token=Token(reasoning_content=event.text, index=event.index)
                         )
-                    )
-                elif isinstance(event, CompleteEvent):
-                    yield GenerateResponse(
-                        complete=GenerationComplete(
-                            finish_reason=event.finish_reason,
-                            usage=ProtoUsage(
-                                prompt_tokens=event.usage.get("prompt_tokens", 0),
-                                completion_tokens=event.usage.get("completion_tokens", 0),
-                                total_tokens=event.usage.get("total_tokens", 0),
-                            ) if event.usage else None,
+                    elif isinstance(event, ToolCallEvent):
+                        yield GenerateResponse(
+                            tool_call=ProtoToolCall(
+                                id=event.call_id, name=event.name, arguments=event.arguments
+                            )
                         )
-                    )
+                    elif isinstance(event, CompleteEvent):
+                        yield GenerateResponse(
+                            complete=GenerationComplete(
+                                finish_reason=event.finish_reason,
+                                usage=ProtoUsage(
+                                    prompt_tokens=event.usage.get("prompt_tokens", 0),
+                                    completion_tokens=event.usage.get("completion_tokens", 0),
+                                    total_tokens=event.usage.get("total_tokens", 0),
+                                ) if event.usage else None,
+                            )
+                        )
         except Exception as e:
             logger.exception("Chat generation failed: generation_id=%s model=%s", generation_id, model)
             yield GenerateResponse(

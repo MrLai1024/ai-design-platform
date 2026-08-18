@@ -54,6 +54,7 @@ def _apply_task_result(task, result, tasks, dag, state, generated_files, project
     task["failure_kind"] = result.get("failure_kind", "done")
     task["missing_paths"] = result.get("missing_paths", [])
     task["partial_paths"] = result.get("partial_paths", [])
+    task["llm_error"] = result.get("llm_error")
     for path, content in result.get("generated_files", {}).items():
         generated_files[path] = content
         full_path = _os.path.join(project_root, path)
