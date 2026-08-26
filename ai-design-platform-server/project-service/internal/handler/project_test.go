@@ -34,8 +34,10 @@ func newProjectTestEnv(t *testing.T) (*gin.Engine, sqlmock.Sqlmock, *auth.Manage
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := NewProjectHandler(store.NewProjects(db))
+	// 个人项目列表挂在 /users/me/projects;projects 组仅保留创建与详情。
+	usersAuthed := r.Group("/api/v1/users/me", middleware.Auth(tokens))
+	usersAuthed.GET("/projects", h.List)
 	projects := r.Group("/api/v1/projects", middleware.Auth(tokens))
-	projects.GET("", h.List)
 	projects.POST("", h.Create)
 	projects.GET("/:id", h.Detail)
 	teams := r.Group("/api/v1/teams", middleware.Auth(tokens))
@@ -98,9 +100,10 @@ func TestCreatePersonalProjectSuccess(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("POST /projects status = %d, body = %s, want 201", w.Code, w.Body.String())
 	}
+	env := unmarshalEnvelope(t, w.Body.Bytes())
 	var got projectResp
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatalf("unmarshal body: %v", err)
+	if err := json.Unmarshal(env.Data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
 	}
 	if got.ID != handlerProjectID || got.Name != "个人项目" || got.Level != "demo" || got.CreatedBy != handlerUserID {
 		t.Errorf("POST /projects body = %+v, want project %s created by %s", got, handlerProjectID, handlerUserID)
@@ -134,6 +137,7 @@ func TestCreatePersonalProjectWithoutDescription(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("POST /projects status = %d, body = %s, want 201", w.Code, w.Body.String())
 	}
+	unmarshalEnvelope(t, w.Body.Bytes())
 	if strings.Contains(w.Body.String(), "description") {
 		t.Errorf("POST /projects body = %s, want description omitted", w.Body.String())
 	}
@@ -158,9 +162,10 @@ func TestCreateTeamProjectSuccess(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("POST /projects status = %d, body = %s, want 201", w.Code, w.Body.String())
 	}
+	env := unmarshalEnvelope(t, w.Body.Bytes())
 	var got projectResp
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatalf("unmarshal body: %v", err)
+	if err := json.Unmarshal(env.Data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
 	}
 	if got.TeamID == nil || *got.TeamID != handlerTeamID {
 		t.Errorf("POST /projects teamId = %v, want %q", got.TeamID, handlerTeamID)
@@ -187,11 +192,12 @@ func TestCreateProjectMissingName(t *testing.T) {
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("POST /projects %s status = %d, body = %s, want 400", body, w.Code, w.Body.String())
 			}
-			var resp struct {
-				Error string `json:"error"`
+			var env respEnvelope
+			if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+				t.Fatalf("unmarshal envelope: %v", err)
 			}
-			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.Error == "" {
-				t.Errorf("POST /projects %s error field = %q, want non-empty", body, resp.Error)
+			if env.Code != 40000 || env.Msg != "参数错误" {
+				t.Errorf("POST /projects %s envelope = {code:%d msg:%q}, want {code:40000 msg:%q}", body, env.Code, env.Msg, "参数错误")
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Errorf("unmet expectations: %v", err)
@@ -215,11 +221,12 @@ func TestCreateProjectInvalidLevel(t *testing.T) {
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("POST /projects %s status = %d, body = %s, want 400", body, w.Code, w.Body.String())
 			}
-			var resp struct {
-				Error string `json:"error"`
+			var env respEnvelope
+			if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+				t.Fatalf("unmarshal envelope: %v", err)
 			}
-			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.Error == "" {
-				t.Errorf("POST /projects %s error field = %q, want non-empty", body, resp.Error)
+			if env.Code != 40000 || env.Msg != "参数错误" {
+				t.Errorf("POST /projects %s envelope = {code:%d msg:%q}, want {code:40000 msg:%q}", body, env.Code, env.Msg, "参数错误")
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Errorf("unmet expectations: %v", err)
@@ -235,6 +242,13 @@ func TestCreateProjectInvalidBody(t *testing.T) {
 	w := doProjectRequest(t, r, tokens, http.MethodPost, "/api/v1/projects", `not-json`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("POST /projects status = %d, body = %s, want 400", w.Code, w.Body.String())
+	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 40000 {
+		t.Errorf("POST /projects envelope code = %d, want 40000", env.Code)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -254,11 +268,12 @@ func TestCreateTeamProjectNotMember(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("POST /projects status = %d, body = %s, want 403", w.Code, w.Body.String())
 	}
-	var resp struct {
-		Error string `json:"error"`
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.Error == "" {
-		t.Errorf("POST /projects error field = %q, want non-empty", resp.Error)
+	if env.Code != 40300 || env.Msg != "无权限" {
+		t.Errorf("POST /projects envelope = {code:%d msg:%q}, want {code:40300 msg:%q}", env.Code, env.Msg, "无权限")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -278,6 +293,13 @@ func TestCreateTeamProjectTeamNotFound(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("POST /projects status = %d, body = %s, want 404", w.Code, w.Body.String())
 	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 40400 || env.Msg != "团队不存在" {
+		t.Errorf("POST /projects envelope = {code:%d msg:%q}, want {code:40400 msg:%q}", env.Code, env.Msg, "团队不存在")
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
@@ -290,6 +312,13 @@ func TestCreateProjectInvalidTeamID(t *testing.T) {
 	w := doProjectRequest(t, r, tokens, http.MethodPost, "/api/v1/projects", `{"name":"项目","level":"demo","teamId":"not-a-uuid"}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("POST /projects status = %d, body = %s, want 400", w.Code, w.Body.String())
+	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 40000 {
+		t.Errorf("POST /projects envelope code = %d, want 40000", env.Code)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -308,6 +337,13 @@ func TestCreateProjectInsertError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("POST /projects status = %d, body = %s, want 500", w.Code, w.Body.String())
 	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 50000 || env.Msg != "内部错误" {
+		t.Errorf("POST /projects envelope = {code:%d msg:%q}, want {code:50000 msg:%q}", env.Code, env.Msg, "内部错误")
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
@@ -321,12 +357,13 @@ func TestListPersonalProjectsEmpty(t *testing.T) {
 		WithArgs(handlerUserID).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "description", "level", "team_id", "created_by", "created_at"}))
 
-	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/projects", "")
+	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/users/me/projects", "")
 	if w.Code != http.StatusOK {
-		t.Fatalf("GET /projects status = %d, body = %s, want 200", w.Code, w.Body.String())
+		t.Fatalf("GET /users/me/projects status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
-	if got := strings.TrimSpace(w.Body.String()); got != "[]" {
-		t.Errorf("GET /projects body = %s, want []", got)
+	env := unmarshalEnvelope(t, w.Body.Bytes())
+	if got := strings.TrimSpace(string(env.Data)); got != "[]" {
+		t.Errorf("GET /users/me/projects data = %s, want []", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -344,28 +381,29 @@ func TestListPersonalProjects(t *testing.T) {
 				AddRow("88888888-8888-8888-8888-888888888888", "生产项目", nil, "production", nil, handlerUserID, time.Now()),
 		)
 
-	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/projects", "")
+	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/users/me/projects", "")
 	if w.Code != http.StatusOK {
-		t.Fatalf("GET /projects status = %d, body = %s, want 200", w.Code, w.Body.String())
+		t.Fatalf("GET /users/me/projects status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
+	env := unmarshalEnvelope(t, w.Body.Bytes())
 	var projects []projectResp
-	if err := json.Unmarshal(w.Body.Bytes(), &projects); err != nil {
-		t.Fatalf("unmarshal body: %v", err)
+	if err := json.Unmarshal(env.Data, &projects); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
 	}
 	if len(projects) != 2 {
-		t.Fatalf("GET /projects len = %d, want 2", len(projects))
+		t.Fatalf("GET /users/me/projects len = %d, want 2", len(projects))
 	}
 	if projects[0].ID != handlerProjectID || projects[0].Name != "个人项目" || projects[0].Level != "demo" {
-		t.Errorf("GET /projects [0] = %+v, want project %s", projects[0], handlerProjectID)
+		t.Errorf("GET /users/me/projects [0] = %+v, want project %s", projects[0], handlerProjectID)
 	}
 	if projects[0].Description == nil || *projects[0].Description != "简介" {
-		t.Errorf("GET /projects [0] description = %v, want %q", projects[0].Description, "简介")
+		t.Errorf("GET /users/me/projects [0] description = %v, want %q", projects[0].Description, "简介")
 	}
 	if projects[0].TeamID != nil || projects[1].TeamID != nil {
-		t.Errorf("GET /projects teamId = (%v, %v), want nil (个人项目)", projects[0].TeamID, projects[1].TeamID)
+		t.Errorf("GET /users/me/projects teamId = (%v, %v), want nil (个人项目)", projects[0].TeamID, projects[1].TeamID)
 	}
 	if projects[1].Description != nil {
-		t.Errorf("GET /projects [1] description = %v, want nil", *projects[1].Description)
+		t.Errorf("GET /users/me/projects [1] description = %v, want nil", *projects[1].Description)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -387,9 +425,10 @@ func TestListTeamProjectsSuccess(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /teams/:id/projects status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
+	env := unmarshalEnvelope(t, w.Body.Bytes())
 	var projects []projectResp
-	if err := json.Unmarshal(w.Body.Bytes(), &projects); err != nil {
-		t.Fatalf("unmarshal body: %v", err)
+	if err := json.Unmarshal(env.Data, &projects); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
 	}
 	if len(projects) != 1 {
 		t.Fatalf("GET /teams/:id/projects len = %d, want 1", len(projects))
@@ -417,8 +456,9 @@ func TestListTeamProjectsEmpty(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /teams/:id/projects status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
-	if got := strings.TrimSpace(w.Body.String()); got != "[]" {
-		t.Errorf("GET /teams/:id/projects body = %s, want []", got)
+	env := unmarshalEnvelope(t, w.Body.Bytes())
+	if got := strings.TrimSpace(string(env.Data)); got != "[]" {
+		t.Errorf("GET /teams/:id/projects data = %s, want []", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -437,6 +477,13 @@ func TestListTeamProjectsNotMember(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("GET /teams/:id/projects status = %d, body = %s, want 403", w.Code, w.Body.String())
 	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 40300 || env.Msg != "无权限" {
+		t.Errorf("GET /teams/:id/projects envelope = {code:%d msg:%q}, want {code:40300 msg:%q}", env.Code, env.Msg, "无权限")
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
@@ -454,6 +501,13 @@ func TestListTeamProjectsTeamNotFound(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("GET /teams/:id/projects status = %d, body = %s, want 404", w.Code, w.Body.String())
 	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 40400 || env.Msg != "团队不存在" {
+		t.Errorf("GET /teams/:id/projects envelope = {code:%d msg:%q}, want {code:40400 msg:%q}", env.Code, env.Msg, "团队不存在")
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
@@ -467,11 +521,12 @@ func TestListTeamProjectsInvalidTeamID(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("GET /teams/:id/projects status = %d, body = %s, want 400", w.Code, w.Body.String())
 	}
-	var resp struct {
-		Error string `json:"error"`
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.Error == "" {
-		t.Errorf("GET /teams/:id/projects error field = %q, want non-empty", resp.Error)
+	if env.Code != 40000 || env.Msg != "参数错误" {
+		t.Errorf("GET /teams/:id/projects envelope = {code:%d msg:%q}, want {code:40000 msg:%q}", env.Code, env.Msg, "参数错误")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -490,9 +545,10 @@ func TestGetProjectDetailPersonal(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /projects/:id status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
+	env := unmarshalEnvelope(t, w.Body.Bytes())
 	var got projectResp
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatalf("unmarshal body: %v", err)
+	if err := json.Unmarshal(env.Data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
 	}
 	if got.ID != handlerProjectID || got.CreatedBy != handlerUserID || got.Level != "demo" {
 		t.Errorf("GET /projects/:id body = %+v, want project %s", got, handlerProjectID)
@@ -517,6 +573,13 @@ func TestGetProjectDetailOthersPersonalForbidden(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("GET /projects/:id status = %d, body = %s, want 403", w.Code, w.Body.String())
 	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 40300 || env.Msg != "无权限" {
+		t.Errorf("GET /projects/:id envelope = {code:%d msg:%q}, want {code:40300 msg:%q}", env.Code, env.Msg, "无权限")
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
@@ -537,9 +600,10 @@ func TestGetProjectDetailTeamMember(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /projects/:id status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
+	env := unmarshalEnvelope(t, w.Body.Bytes())
 	var got projectResp
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatalf("unmarshal body: %v", err)
+	if err := json.Unmarshal(env.Data, &got); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
 	}
 	if got.TeamID == nil || *got.TeamID != handlerTeamID {
 		t.Errorf("GET /projects/:id teamId = %v, want %q", got.TeamID, handlerTeamID)
@@ -564,6 +628,13 @@ func TestGetProjectDetailTeamNonMember(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("GET /projects/:id status = %d, body = %s, want 403", w.Code, w.Body.String())
 	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 40300 || env.Msg != "无权限" {
+		t.Errorf("GET /projects/:id envelope = {code:%d msg:%q}, want {code:40300 msg:%q}", env.Code, env.Msg, "无权限")
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
@@ -581,6 +652,13 @@ func TestGetProjectDetailNotFound(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("GET /projects/:id status = %d, body = %s, want 404", w.Code, w.Body.String())
 	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 40400 || env.Msg != "项目不存在" {
+		t.Errorf("GET /projects/:id envelope = {code:%d msg:%q}, want {code:40400 msg:%q}", env.Code, env.Msg, "项目不存在")
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
@@ -593,6 +671,13 @@ func TestGetProjectDetailInvalidID(t *testing.T) {
 	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/projects/not-a-uuid", "")
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("GET /projects/:id status = %d, body = %s, want 400", w.Code, w.Body.String())
+	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 40000 || env.Msg != "参数错误" {
+		t.Errorf("GET /projects/:id envelope = {code:%d msg:%q}, want {code:40000 msg:%q}", env.Code, env.Msg, "参数错误")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)

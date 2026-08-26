@@ -72,36 +72,36 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 	}
 	var req createProjectRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		Error(c, http.StatusBadRequest, CodeParamError, "参数错误")
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
 	req.Description = strings.TrimSpace(req.Description)
 	req.Level = strings.TrimSpace(req.Level)
 	if req.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		Error(c, http.StatusBadRequest, CodeParamError, "参数错误")
 		return
 	}
 	if req.Level != "demo" && req.Level != "production" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "level must be demo or production"})
+		Error(c, http.StatusBadRequest, CodeParamError, "参数错误")
 		return
 	}
 	// teamId 非 UUID 时提前 400,避免进入 PostgreSQL uuid 列触发 22P02 而返回 500。
 	if req.TeamID != nil && !uuidParamRe.MatchString(*req.TeamID) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid teamId"})
+		Error(c, http.StatusBadRequest, CodeParamError, "参数错误")
 		return
 	}
 	if req.TeamID != nil {
 		member, err := h.projects.IsMember(c.Request.Context(), *req.TeamID, userID)
 		switch {
 		case errors.Is(err, store.ErrTeamNotFound):
-			c.JSON(http.StatusNotFound, gin.H{"error": "team not found"})
+			Error(c, http.StatusNotFound, CodeNotFound, "团队不存在")
 			return
 		case err != nil:
 			internalError(c, "check team membership", err)
 			return
 		case !member:
-			c.JSON(http.StatusForbidden, gin.H{"error": "not a team member"})
+			Error(c, http.StatusForbidden, CodeForbidden, "无权限")
 			return
 		}
 	}
@@ -110,10 +110,10 @@ func (h *ProjectHandler) Create(c *gin.Context) {
 		internalError(c, "create project", err)
 		return
 	}
-	c.JSON(http.StatusCreated, toProjectJSON(project))
+	Success(c, http.StatusCreated, toProjectJSON(project))
 }
 
-// List 返回当前用户创建的个人项目列表(GET /api/v1/projects,team_id IS NULL)。
+// List 返回当前用户创建的个人项目列表(GET /api/v1/users/me/projects,team_id IS NULL AND created_by=当前用户)。
 // 排序由 store 层保证(创建时间倒序)。
 func (h *ProjectHandler) List(c *gin.Context) {
 	userID, ok := currentUserID(c)
@@ -125,7 +125,7 @@ func (h *ProjectHandler) List(c *gin.Context) {
 		internalError(c, "list personal projects", err)
 		return
 	}
-	c.JSON(http.StatusOK, toProjectsJSON(projects))
+	Success(c, http.StatusOK, toProjectsJSON(projects))
 }
 
 // TeamProjects 返回团队项目列表(GET /api/v1/teams/:id/projects)。
@@ -142,13 +142,13 @@ func (h *ProjectHandler) TeamProjects(c *gin.Context) {
 	member, err := h.projects.IsMember(c.Request.Context(), teamID, userID)
 	switch {
 	case errors.Is(err, store.ErrTeamNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"error": "team not found"})
+		Error(c, http.StatusNotFound, CodeNotFound, "团队不存在")
 		return
 	case err != nil:
 		internalError(c, "check team membership", err)
 		return
 	case !member:
-		c.JSON(http.StatusForbidden, gin.H{"error": "not a team member"})
+		Error(c, http.StatusForbidden, CodeForbidden, "无权限")
 		return
 	}
 	projects, err := h.projects.ListByTeam(c.Request.Context(), teamID)
@@ -156,7 +156,7 @@ func (h *ProjectHandler) TeamProjects(c *gin.Context) {
 		internalError(c, "list team projects", err)
 		return
 	}
-	c.JSON(http.StatusOK, toProjectsJSON(projects))
+	Success(c, http.StatusOK, toProjectsJSON(projects))
 }
 
 // Detail 返回项目详情(GET /api/v1/projects/:id)。
@@ -173,7 +173,7 @@ func (h *ProjectHandler) Detail(c *gin.Context) {
 	}
 	project, err := h.projects.Get(c.Request.Context(), projectID)
 	if errors.Is(err, store.ErrProjectNotFound) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+		Error(c, http.StatusNotFound, CodeNotFound, "项目不存在")
 		return
 	}
 	if err != nil {
@@ -183,7 +183,7 @@ func (h *ProjectHandler) Detail(c *gin.Context) {
 	if project.TeamID == nil {
 		// 个人项目仅创建者可见。
 		if project.CreatedBy != userID {
-			c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+			Error(c, http.StatusForbidden, CodeForbidden, "无权限")
 			return
 		}
 	} else {
@@ -191,15 +191,15 @@ func (h *ProjectHandler) Detail(c *gin.Context) {
 		switch {
 		case errors.Is(err, store.ErrTeamNotFound):
 			// 团队项目引用的团队必然存在(外键约束),这里仅防御性兜底。
-			c.JSON(http.StatusNotFound, gin.H{"error": "project not found"})
+			Error(c, http.StatusNotFound, CodeNotFound, "项目不存在")
 			return
 		case err != nil:
 			internalError(c, "check team membership", err)
 			return
 		case !member:
-			c.JSON(http.StatusForbidden, gin.H{"error": "not a team member"})
+			Error(c, http.StatusForbidden, CodeForbidden, "无权限")
 			return
 		}
 	}
-	c.JSON(http.StatusOK, toProjectJSON(project))
+	Success(c, http.StatusOK, toProjectJSON(project))
 }

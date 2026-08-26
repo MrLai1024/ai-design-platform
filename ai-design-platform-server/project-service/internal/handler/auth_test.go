@@ -24,6 +24,29 @@ const handlerUserID = "22222222-2222-2222-2222-222222222222"
 // testPassword 是 handler 测试用的固定密码。
 const testPassword = "Passw0rdAbc12345"
 
+// respEnvelope 是统一响应信封,Data 保持原始 JSON 以便二次解析业务数据。
+type respEnvelope struct {
+	Code int             `json:"code"`
+	Msg  string          `json:"msg"`
+	Data json.RawMessage `json:"data"`
+}
+
+// unmarshalEnvelope 解析统一信封并断言成功字段(code=0、msg=success)。
+func unmarshalEnvelope(t *testing.T, body []byte) respEnvelope {
+	t.Helper()
+	var env respEnvelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 0 {
+		t.Errorf("envelope code = %d, want 0 (success), body = %s", env.Code, body)
+	}
+	if env.Msg != "success" {
+		t.Errorf("envelope msg = %q, want %q", env.Msg, "success")
+	}
+	return env
+}
+
 // newAuthTestEnv 创建带 sqlmock 的 AuthHandler 与配套 token Manager。
 // 使用正则匹配器,避免测试与 store 包内 SQL 常量字符串强耦合。
 func newAuthTestEnv(t *testing.T) (*AuthHandler, sqlmock.Sqlmock, *auth.Manager) {
@@ -57,7 +80,7 @@ func doAutoRegister(t *testing.T, h *AuthHandler) *httptest.ResponseRecorder {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/auth/auto-register", nil)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/users", nil)
 	h.AutoRegister(c)
 	return w
 }
@@ -76,17 +99,18 @@ func TestAutoRegisterSuccess(t *testing.T) {
 		WillReturnRows(userRow(handlerUserID, "user_abc123456", testPassword))
 
 	w := doAutoRegister(t, h)
-	if w.Code != http.StatusOK {
-		t.Fatalf("AutoRegister() status = %d, body = %s, want 200", w.Code, w.Body.String())
+	if w.Code != http.StatusCreated {
+		t.Fatalf("AutoRegister() status = %d, body = %s, want 201", w.Code, w.Body.String())
 	}
 
+	env := unmarshalEnvelope(t, w.Body.Bytes())
 	var body struct {
 		Account  string `json:"account"`
 		Password string `json:"password"`
 		Token    string `json:"token"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal body: %v", err)
+	if err := json.Unmarshal(env.Data, &body); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
 	}
 	if body.Account != "user_abc123456" {
 		t.Errorf("account = %q, want %q", body.Account, "user_abc123456")
@@ -121,14 +145,15 @@ func TestAutoRegisterRetriesOnConflict(t *testing.T) {
 		WillReturnRows(userRow(handlerUserID, "user_b", testPassword))
 
 	w := doAutoRegister(t, h)
-	if w.Code != http.StatusOK {
-		t.Fatalf("AutoRegister() status = %d, body = %s, want 200", w.Code, w.Body.String())
+	if w.Code != http.StatusCreated {
+		t.Fatalf("AutoRegister() status = %d, body = %s, want 201", w.Code, w.Body.String())
 	}
+	env := unmarshalEnvelope(t, w.Body.Bytes())
 	var body struct {
 		Account string `json:"account"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal body: %v", err)
+	if err := json.Unmarshal(env.Data, &body); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
 	}
 	if body.Account != "user_b" {
 		t.Errorf("account = %q, want %q (conflict 后应换账号重试)", body.Account, "user_b")
@@ -155,14 +180,12 @@ func TestAutoRegisterConflictExhausted(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("AutoRegister() status = %d, want 500", w.Code)
 	}
-	var body struct {
-		Error string `json:"error"`
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal body: %v", err)
-	}
-	if body.Error == "" {
-		t.Errorf("error field = %q, want non-empty", body.Error)
+	if env.Code != 50000 || env.Msg != "内部错误" {
+		t.Errorf("envelope = {code:%d msg:%q}, want {code:50000 msg:%q}", env.Code, env.Msg, "内部错误")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
@@ -181,6 +204,13 @@ func TestAutoRegisterCreateError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("AutoRegister() status = %d, want 500", w.Code)
 	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 50000 || env.Msg != "内部错误" {
+		t.Errorf("envelope = {code:%d msg:%q}, want {code:50000 msg:%q}", env.Code, env.Msg, "内部错误")
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
@@ -194,24 +224,31 @@ func TestAutoRegisterAccountGenError(t *testing.T) {
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("AutoRegister() status = %d, want 500", w.Code)
 	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 50000 || env.Msg != "内部错误" {
+		t.Errorf("envelope = {code:%d msg:%q}, want {code:50000 msg:%q}", env.Code, env.Msg, "内部错误")
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
 }
 
-// newMeRouter 构建挂载认证中间件的 /auth/me 路由,验证中间件与 handler 的协作。
+// newMeRouter 构建挂载认证中间件的 /users/me 路由,验证中间件与 handler 的协作。
 func newMeRouter(t *testing.T, h *AuthHandler, tokens *auth.Manager) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.GET("/api/v1/auth/me", middleware.Auth(tokens), h.Me)
+	r.GET("/api/v1/users/me", middleware.Auth(tokens), h.Me)
 	return r
 }
 
 func doMe(t *testing.T, r *gin.Engine, bearer string) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
@@ -234,12 +271,13 @@ func TestMeSuccess(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("Me() status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
+	env := unmarshalEnvelope(t, w.Body.Bytes())
 	var body struct {
 		Account  string `json:"account"`
 		Password string `json:"password"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("unmarshal body: %v", err)
+	if err := json.Unmarshal(env.Data, &body); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
 	}
 	if body.Account != "user_me" || body.Password != testPassword {
 		t.Errorf("Me() = (%q, %q), want (%q, %q)", body.Account, body.Password, "user_me", testPassword)
@@ -264,6 +302,13 @@ func TestMeUserNotFound(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("Me() status = %d, body = %s, want 404", w.Code, w.Body.String())
 	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 40001 || env.Msg != "用户不存在" {
+		t.Errorf("envelope = {code:%d msg:%q}, want {code:40001 msg:%q}", env.Code, env.Msg, "用户不存在")
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
 	}
@@ -275,6 +320,13 @@ func TestMeRequiresAuth(t *testing.T) {
 	w := doMe(t, newMeRouter(t, h, tokens), "")
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("Me() without token status = %d, want 401", w.Code)
+	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 40100 || env.Msg != "未认证" {
+		t.Errorf("envelope = {code:%d msg:%q}, want {code:40100 msg:%q}", env.Code, env.Msg, "未认证")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)

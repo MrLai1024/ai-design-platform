@@ -82,8 +82,16 @@ describe('App base layout', () => {
     const newSample = { account: 'user_new999', password: 'p@ss-new', token: 'jwt-new' };
     http.defaults.adapter = (config: { url?: string }) =>
       config.url === '/v1/teams'
-        ? Promise.reject({ response: { status: 401 } })
-        : Promise.resolve({ data: newSample, status: 200, statusText: 'OK', headers: {}, config });
+        ? Promise.reject({
+            response: { status: 401, data: { code: 40100, msg: '未认证', data: null } },
+          })
+        : Promise.resolve({
+            data: { code: 0, msg: 'success', data: newSample },
+            status: 200,
+            statusText: 'OK',
+            headers: {},
+            config,
+          });
 
     // The response interceptor clears credentials and dispatches AUTH_UNAUTHORIZED;
     // the base app must then re-register and show the new account.

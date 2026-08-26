@@ -48,7 +48,7 @@ func TestProjectServiceProxyPassthrough(t *testing.T) {
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/teams/search?keyword=foo&page=2", strings.NewReader(`{"name":"x"}`))
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/users/me/projects?page=2", strings.NewReader(`{"name":"x"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,11 +75,11 @@ func TestProjectServiceProxyPassthrough(t *testing.T) {
 	if lastReq.Method != http.MethodPost {
 		t.Errorf("upstream method = %s, want POST", lastReq.Method)
 	}
-	if lastReq.URL.Path != "/api/v1/teams/search" {
-		t.Errorf("upstream path = %s, want /api/v1/teams/search", lastReq.URL.Path)
+	if lastReq.URL.Path != "/api/v1/users/me/projects" {
+		t.Errorf("upstream path = %s, want /api/v1/users/me/projects", lastReq.URL.Path)
 	}
-	if lastReq.URL.RawQuery != "keyword=foo&page=2" {
-		t.Errorf("upstream query = %q, want keyword=foo&page=2", lastReq.URL.RawQuery)
+	if lastReq.URL.RawQuery != "page=2" {
+		t.Errorf("upstream query = %q, want page=2", lastReq.URL.RawQuery)
 	}
 	if got := lastReq.Header.Get("Authorization"); got != "Bearer test-token-123" {
 		t.Errorf("upstream Authorization = %q, want Bearer test-token-123", got)
@@ -95,11 +95,13 @@ func TestProjectServiceProxyRouteCoverage(t *testing.T) {
 	defer srv.Close()
 
 	proxied := []string{
-		"/api/v1/auth",
-		"/api/v1/auth/auto-register",
+		"/api/v1/users",
+		"/api/v1/users/me",
+		"/api/v1/users/me/teams",
+		"/api/v1/users/me/projects",
 		"/api/v1/teams",
-		"/api/v1/teams/search?keyword=abc",
-		"/api/v1/teams/abc-123/join",
+		"/api/v1/teams?keyword=abc",
+		"/api/v1/teams/abc-123/members",
 		"/api/v1/teams/abc-123/projects",
 		"/api/v1/projects",
 		"/api/v1/projects/abc-123",
@@ -116,6 +118,8 @@ func TestProjectServiceProxyRouteCoverage(t *testing.T) {
 	}
 
 	notProxied := []string{
+		"/api/v1/auth",
+		"/api/v1/auth/auto-register",
 		"/api/v1/chats",
 		"/api/v1/project",
 		"/api/v1/team",

@@ -16,7 +16,7 @@ import (
 // projectServiceProxyPrefixes 是需要转发到 project-service 的路由前缀。
 // 鉴权由 project-service 自行完成,gateway 对这些路由只做纯反向代理。
 var projectServiceProxyPrefixes = []string{
-	"/api/v1/auth",
+	"/api/v1/users",
 	"/api/v1/teams",
 	"/api/v1/projects",
 }
@@ -90,7 +90,7 @@ func (p *ProjectServiceProxy) Register(r *gin.Engine) {
 }
 
 // ServeHTTP 将请求原样转发到 project-service:
-// 保留请求路径与 query(如 /api/v1/teams/search?keyword=x)、转发 Authorization 头、
+// 保留请求路径与 query(如 /api/v1/teams?keyword=x)、转发 Authorization 头、
 // 透传响应体与状态码。这些接口均为普通 JSON 接口,无需 SSE 特殊处理。
 func (p *ProjectServiceProxy) ServeHTTP(c *gin.Context) {
 	p.proxy.ServeHTTP(c.Writer, c.Request)

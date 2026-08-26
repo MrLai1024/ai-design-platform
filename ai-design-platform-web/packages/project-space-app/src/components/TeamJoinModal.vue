@@ -151,6 +151,16 @@ function isConflict(error: unknown): boolean {
   return status === 409;
 }
 
+/**
+ * 服务端错误提示:响应拦截器把信封的 msg 写入 error.message 并附上 apiCode 业务码。
+ * 有 apiCode 标记才视为服务端 msg,避免把 axios 的网络错误文案("Network Error")展示给用户。
+ */
+function serverMessage(error: unknown): string {
+  if (typeof error !== 'object' || error === null) return '';
+  const e = error as { apiCode?: unknown; message?: unknown };
+  return typeof e.apiCode === 'number' && typeof e.message === 'string' ? e.message : '';
+}
+
 async function join(team: Team): Promise<void> {
   joiningId.value = team.id;
   joinError.value = '';
@@ -160,7 +170,10 @@ async function join(team: Team): Promise<void> {
     results.value = results.value.filter((item) => item.id !== team.id);
     emit('joined', team);
   } catch (error) {
-    joinError.value = isConflict(error) ? '你已加入该团队,无需重复加入' : '加入失败,请稍后重试';
+    // 服务端 msg 优先(409 时后端返回"已加入该团队");无服务端提示时回退本地文案
+    joinError.value =
+      serverMessage(error) ||
+      (isConflict(error) ? '你已加入该团队,无需重复加入' : '加入失败,请稍后重试');
   } finally {
     joiningId.value = null;
   }

@@ -16,7 +16,7 @@ var uuidParamRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 func parseUUIDParam(c *gin.Context, name string) (string, bool) {
 	v := c.Param(name)
 	if !uuidParamRe.MatchString(v) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + name})
+		Error(c, http.StatusBadRequest, CodeParamError, "参数错误")
 		return "", false
 	}
 	return v, true

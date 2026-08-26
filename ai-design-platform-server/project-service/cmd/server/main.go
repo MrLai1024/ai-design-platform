@@ -96,7 +96,7 @@ func main() {
 }
 
 // newRouter 装配全部路由。
-// health 与 auto-register 公开;其余用户域接口统一挂认证中间件。
+// health 与 POST /users(自动注册)公开;其余用户域接口统一挂认证中间件。
 func newRouter(cfg *config.Config, db *sql.DB) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -110,25 +110,26 @@ func newRouter(cfg *config.Config, db *sql.DB) *gin.Engine {
 
 	api := r.Group("/api/v1")
 
-	// auth 路由组:auto-register 公开;/me 需认证。
 	authH := handler.NewAuthHandler(users, tokens)
-	authGroup := api.Group("/auth")
-	authGroup.POST("/auto-register", authH.AutoRegister)
-	authGroup.GET("/me", middleware.Auth(tokens), authH.Me)
-
-	// teams 路由组:/:id/projects 为团队项目列表,由 ProjectHandler 提供。
 	teamH := handler.NewTeamHandler(store.NewTeams(db))
-	teams := api.Group("/teams", middleware.Auth(tokens))
-	teams.GET("", teamH.List)
-	teams.POST("", teamH.Create)
-	teams.GET("/search", teamH.Search)
-	teams.POST("/:id/join", teamH.Join)
-
 	projectH := handler.NewProjectHandler(store.NewProjects(db))
+
+	// users 路由组:POST /users 自动注册公开;/users 其余子路由需认证。
+	usersGroup := api.Group("/users")
+	usersGroup.POST("", authH.AutoRegister)
+	usersAuthed := usersGroup.Group("", middleware.Auth(tokens))
+	usersAuthed.GET("/me", authH.Me)
+	usersAuthed.GET("/me/teams", teamH.List)
+	usersAuthed.GET("/me/projects", projectH.List)
+
+	// teams 路由组:GET "" 为可加入团队列表(搜索,keyword 可选);/:id/projects 由 ProjectHandler 提供。
+	teams := api.Group("/teams", middleware.Auth(tokens))
+	teams.GET("", teamH.Search)
+	teams.POST("", teamH.Create)
+	teams.POST("/:id/members", teamH.Join)
 	teams.GET("/:id/projects", projectH.TeamProjects)
 
 	projects := api.Group("/projects", middleware.Auth(tokens))
-	projects.GET("", projectH.List)
 	projects.POST("", projectH.Create)
 	projects.GET("/:id", projectH.Detail)
 

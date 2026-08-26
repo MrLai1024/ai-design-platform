@@ -170,6 +170,42 @@ describe('TeamJoinModal', () => {
     expect(bodyQueryAll('[data-testid="join-result-item"]')).toHaveLength(1);
   });
 
+  it('prefers the server msg (interceptor apiCode-marked) on a 409 join failure', async () => {
+    vi.mocked(searchTeams).mockResolvedValue([sampleTeam]);
+    vi.mocked(joinTeam).mockRejectedValue({
+      response: { status: 409 },
+      message: '已是团队成员',
+      apiCode: 40900,
+    });
+    mountModal();
+
+    await search('星辰');
+    await findBodyButton('加入').trigger('click');
+    await flushPromises();
+
+    // server msg wins over the local fallback ('你已加入该团队,无需重复加入')
+    expect(document.body.textContent).toContain('已是团队成员');
+    expect(document.body.textContent).not.toContain('无需重复加入');
+    expect(bodyQueryAll('[data-testid="join-result-item"]')).toHaveLength(1);
+  });
+
+  it('prefers the server msg on a non-409 join failure', async () => {
+    vi.mocked(searchTeams).mockResolvedValue([sampleTeam]);
+    vi.mocked(joinTeam).mockRejectedValue({
+      response: { status: 404 },
+      message: '团队不存在',
+      apiCode: 40400,
+    });
+    mountModal();
+
+    await search('星辰');
+    await findBodyButton('加入').trigger('click');
+    await flushPromises();
+
+    expect(document.body.textContent).toContain('团队不存在');
+    expect(document.body.textContent).not.toContain('加入失败');
+  });
+
   it('shows a generic error on a non-409 join failure', async () => {
     vi.mocked(searchTeams).mockResolvedValue([sampleTeam]);
     vi.mocked(joinTeam).mockRejectedValue(new Error('boom'));

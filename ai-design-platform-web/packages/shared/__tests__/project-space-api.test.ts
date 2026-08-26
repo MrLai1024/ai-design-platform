@@ -18,35 +18,43 @@ function captureNext(): CapturedRequest[] {
 }
 
 describe('user api', () => {
-  it('autoRegister posts to /v1/auth/auto-register', async () => {
+  it('autoRegister posts to /v1/users', async () => {
     const calls = captureNext();
     await autoRegister();
     expect(calls[0].method).toBe('post');
-    expect(calls[0].url).toBe('/v1/auth/auto-register');
+    expect(calls[0].url).toBe('/v1/users');
   });
 
-  it('getMe gets /v1/auth/me', async () => {
+  it('getMe gets /v1/users/me', async () => {
     const calls = captureNext();
     await getMe();
     expect(calls[0].method).toBe('get');
-    expect(calls[0].url).toBe('/v1/auth/me');
+    expect(calls[0].url).toBe('/v1/users/me');
   });
 });
 
 describe('team api', () => {
-  it('listTeams gets /v1/teams', async () => {
+  it('listTeams gets /v1/users/me/teams', async () => {
     const calls = captureNext();
     await listTeams();
     expect(calls[0].method).toBe('get');
-    expect(calls[0].url).toBe('/v1/teams');
+    expect(calls[0].url).toBe('/v1/users/me/teams');
   });
 
-  it('searchTeams gets /v1/teams/search with keyword param', async () => {
+  it('searchTeams gets /v1/teams with keyword param', async () => {
     const calls = captureNext();
     await searchTeams('设计');
     expect(calls[0].method).toBe('get');
-    expect(calls[0].url).toBe('/v1/teams/search');
+    expect(calls[0].url).toBe('/v1/teams');
     expect(calls[0].params).toEqual({ keyword: '设计' });
+  });
+
+  it('searchTeams omits params when keyword is empty', async () => {
+    const calls = captureNext();
+    await searchTeams('');
+    expect(calls[0].method).toBe('get');
+    expect(calls[0].url).toBe('/v1/teams');
+    expect(calls[0].params).toBeUndefined();
   });
 
   it('createTeam posts /v1/teams with name/description body', async () => {
@@ -57,11 +65,11 @@ describe('team api', () => {
     expect(JSON.parse(calls[0].data as string)).toEqual({ name: '前端组', description: '前端团队' });
   });
 
-  it('joinTeam posts /v1/teams/:id/join', async () => {
+  it('joinTeam posts /v1/teams/:id/members', async () => {
     const calls = captureNext();
     await joinTeam('team-9');
     expect(calls[0].method).toBe('post');
-    expect(calls[0].url).toBe('/v1/teams/team-9/join');
+    expect(calls[0].url).toBe('/v1/teams/team-9/members');
   });
 });
 
@@ -87,11 +95,11 @@ describe('project api', () => {
     expect('teamId' in body).toBe(false);
   });
 
-  it('listProjects gets /v1/projects', async () => {
+  it('listProjects gets /v1/users/me/projects', async () => {
     const calls = captureNext();
     await listProjects();
     expect(calls[0].method).toBe('get');
-    expect(calls[0].url).toBe('/v1/projects');
+    expect(calls[0].url).toBe('/v1/users/me/projects');
   });
 
   it('listTeamProjects gets /v1/teams/:teamId/projects', async () => {

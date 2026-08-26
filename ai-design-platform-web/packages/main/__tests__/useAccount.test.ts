@@ -157,8 +157,13 @@ describe('useAccount', () => {
 
   it('registers through the real autoRegister API and persists the unwrapped body', async () => {
     // No injected register: exercise the default path (shared autoRegister →
-    // real http instance → response interceptor) with a mocked adapter.
-    const { calls, adapter } = installCaptureAdapter(sample);
+    // real http instance → response interceptor) with a mocked adapter
+    // resolving the {code, msg, data} envelope.
+    const { calls, adapter } = installCaptureAdapter({
+      code: 0,
+      msg: 'success',
+      data: sample,
+    });
     http.defaults.adapter = adapter;
     const { state, init } = useAccount();
 
@@ -166,10 +171,11 @@ describe('useAccount', () => {
 
     expect(state.status).toBe('ready');
     expect(state.account).toBe('user_abc123');
-    expect(calls[0].url).toBe('/v1/auth/auto-register');
-    // If the response ever arrives wrapped (AxiosResponse / ApiResponse envelope),
-    // the persisted value fails the credentials shape check and this round-trip
-    // assertion catches the mismatch instead of silently re-registering later.
+    expect(calls[0].url).toBe('/v1/users');
+    // The interceptor must unwrap the envelope: if it ever leaked the envelope
+    // (or an AxiosResponse) through, the persisted value fails the credentials
+    // shape check and this round-trip assertion catches the mismatch instead
+    // of silently re-registering later.
     expect(storedCredentials()).toEqual(sample);
     http.defaults.adapter = undefined;
   });

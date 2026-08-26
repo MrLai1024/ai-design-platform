@@ -56,12 +56,12 @@ func currentUserID(c *gin.Context) (string, bool) {
 	// 中间件已保证 user_id 存在,这里只是防御性兜底。
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		Error(c, http.StatusUnauthorized, CodeUnauthorized, "未认证")
 	}
 	return userID, ok
 }
 
-// List 返回当前用户已加入的团队列表(GET /api/v1/teams)。
+// List 返回当前用户已加入的团队列表(GET /api/v1/users/me/teams)。
 // 排序由 store 层保证(加入时间倒序)。
 func (h *TeamHandler) List(c *gin.Context) {
 	userID, ok := currentUserID(c)
@@ -73,7 +73,7 @@ func (h *TeamHandler) List(c *gin.Context) {
 		internalError(c, "list teams", err)
 		return
 	}
-	c.JSON(http.StatusOK, toTeamsJSON(teams))
+	Success(c, http.StatusOK, toTeamsJSON(teams))
 }
 
 // createTeamRequest 是创建团队的请求体。
@@ -91,13 +91,13 @@ func (h *TeamHandler) Create(c *gin.Context) {
 	}
 	var req createTeamRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		Error(c, http.StatusBadRequest, CodeParamError, "参数错误")
 		return
 	}
 	req.Name = strings.TrimSpace(req.Name)
 	req.Description = strings.TrimSpace(req.Description)
 	if req.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		Error(c, http.StatusBadRequest, CodeParamError, "参数错误")
 		return
 	}
 	team, err := h.teams.CreateTeam(c.Request.Context(), req.Name, req.Description, userID)
@@ -105,11 +105,11 @@ func (h *TeamHandler) Create(c *gin.Context) {
 		internalError(c, "create team", err)
 		return
 	}
-	c.JSON(http.StatusCreated, toTeamJSON(team))
+	Success(c, http.StatusCreated, toTeamJSON(team))
 }
 
-// Search 按名称模糊匹配团队,排除当前用户已加入的团队(GET /api/v1/teams/search?keyword=)。
-// keyword 必填(去除首尾空白后非空)。
+// Search 返回可加入团队列表:按名称模糊匹配、排除当前用户已加入的团队(GET /api/v1/teams?keyword=)。
+// keyword 可选(去除首尾空白后非空才过滤;缺失/空白时返回全部未加入团队)。
 // 无分页、通配符(%/_)不转义是有意取舍:团队总量小,搜索仅用于"加入团队"入口。
 func (h *TeamHandler) Search(c *gin.Context) {
 	userID, ok := currentUserID(c)
@@ -117,19 +117,15 @@ func (h *TeamHandler) Search(c *gin.Context) {
 		return
 	}
 	keyword := strings.TrimSpace(c.Query("keyword"))
-	if keyword == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "keyword is required"})
-		return
-	}
 	teams, err := h.teams.SearchByName(c.Request.Context(), keyword, userID)
 	if err != nil {
 		internalError(c, "search teams", err)
 		return
 	}
-	c.JSON(http.StatusOK, toTeamsJSON(teams))
+	Success(c, http.StatusOK, toTeamsJSON(teams))
 }
 
-// Join 加入团队(POST /api/v1/teams/:id/join)。
+// Join 加入团队(POST /api/v1/teams/:id/members)。
 // 重复加入返回 409,团队不存在返回 404,非 UUID 的 :id 返回 400。
 func (h *TeamHandler) Join(c *gin.Context) {
 	userID, ok := currentUserID(c)
@@ -143,12 +139,12 @@ func (h *TeamHandler) Join(c *gin.Context) {
 	err := h.teams.JoinTeam(c.Request.Context(), teamID, userID)
 	switch {
 	case errors.Is(err, store.ErrMemberConflict):
-		c.JSON(http.StatusConflict, gin.H{"error": "already joined"})
+		Error(c, http.StatusConflict, CodeConflict, "已加入该团队")
 	case errors.Is(err, store.ErrTeamNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"error": "team not found"})
+		Error(c, http.StatusNotFound, CodeNotFound, "团队不存在")
 	case err != nil:
 		internalError(c, "join team", err)
 	default:
-		c.JSON(http.StatusOK, gin.H{"success": true})
+		Success(c, http.StatusOK, nil)
 	}
 }

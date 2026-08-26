@@ -32,7 +32,7 @@ func NewAuthHandler(users *store.Users, tokens *auth.Manager) *AuthHandler {
 	}
 }
 
-// AutoRegister 生成唯一账号与随机密码落 users 表,签发 token 返回。
+// AutoRegister 生成唯一账号与随机密码落 users 表,签发 token 返回(POST /api/v1/users)。
 // 账号唯一约束冲突时换账号重试,最多 maxRegisterAttempts 次。
 func (h *AuthHandler) AutoRegister(c *gin.Context) {
 	for attempt := 1; attempt <= maxRegisterAttempts; attempt++ {
@@ -55,7 +55,7 @@ func (h *AuthHandler) AutoRegister(c *gin.Context) {
 				internalError(c, "sign token", err)
 				return
 			}
-			c.JSON(http.StatusOK, gin.H{
+			Success(c, http.StatusCreated, gin.H{
 				"account":  user.Account,
 				"password": user.Password,
 				"token":    token,
@@ -73,7 +73,7 @@ func (h *AuthHandler) AutoRegister(c *gin.Context) {
 	internalError(c, "create user", errors.New("account conflict after max retries"))
 }
 
-// Me 返回当前登录用户的账号与密码。
+// Me 返回当前登录用户的账号与密码(GET /api/v1/users/me)。
 func (h *AuthHandler) Me(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
@@ -82,14 +82,14 @@ func (h *AuthHandler) Me(c *gin.Context) {
 
 	user, err := h.users.GetUserByID(c.Request.Context(), userID)
 	if errors.Is(err, store.ErrUserNotFound) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		Error(c, http.StatusNotFound, CodeUserNotFound, "用户不存在")
 		return
 	}
 	if err != nil {
 		internalError(c, "get user", err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
+	Success(c, http.StatusOK, gin.H{
 		"account":  user.Account,
 		"password": user.Password,
 	})

@@ -45,14 +45,23 @@ func assertUnauthorized(t *testing.T, w *httptest.ResponseRecorder, header, msg 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("%s: status = %d, body = %s, want 401", msg, w.Code, w.Body.String())
 	}
+	// 401 响应为统一信封:code=40100(未认证)、msg 中文、data 为 null。
 	var body struct {
-		Error string `json:"error"`
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data any    `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("%s: unmarshal body: %v", msg, err)
 	}
-	if body.Error == "" {
-		t.Errorf("%s: error field empty, want non-empty", msg)
+	if body.Code != 40100 {
+		t.Errorf("%s: code = %d, want 40100", msg, body.Code)
+	}
+	if body.Msg != "未认证" {
+		t.Errorf("%s: msg = %q, want %q", msg, body.Msg, "未认证")
+	}
+	if body.Data != nil {
+		t.Errorf("%s: data = %v, want null", msg, body.Data)
 	}
 }
 

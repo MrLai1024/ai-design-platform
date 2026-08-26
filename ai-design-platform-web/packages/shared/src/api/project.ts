@@ -12,10 +12,10 @@ export function createProject(data: CreateProjectRequest): Promise<Project> {
 
 /**
  * 个人项目列表(team_id IS NULL)
- * GET /api/v1/projects → Project[]
+ * GET /api/v1/users/me/projects → Project[]
  */
 export function listProjects(): Promise<Project[]> {
-  return get<Project[]>('/v1/projects');
+  return get<Project[]>('/v1/users/me/projects');
 }
 
 /**
