@@ -1,0 +1,126 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+}
+
+.project-space-app {
+  height: 100%;
+}
+
+.project-space-app .app-layout {
+  min-height: 100%;
+  /* 灰色画布:让侧栏/头部/内容三个白区之间显出边界 */
+  background: #f5f5f5;
+}
+
+/* 侧栏:白底 + 右侧描边 + 轻阴影,与头部/内容区分层 */
+.app-sider.ant-layout-sider {
+  background: #fff;
+  border-right: 1px solid #e8e8e8;
+  box-shadow: 1px 0 4px rgba(0, 0, 0, 0.04);
+}
+
+/* antd 的 .ant-layout-header 默认样式(暗蓝底/64px 高)经 cssinjs 注入且源顺序靠后,
+   仅用 .app-header(0,1,0)会同特异性落败;组合选择器抬高特异性以稳定覆盖 */
+.app-header.ant-layout-header {
+  height: 48px;
+  line-height: 48px;
+  padding: 0 24px;
+  background: #fff;
+  border-bottom: 1px solid #e8e8e8;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+/* 内容区:白卡片(圆角+描边+阴影),浮在灰色画布上,与头部/侧栏界限分明 */
+.app-content.ant-layout-content {
+  margin: 16px;
+  padding: 16px 24px;
+  background: #fff;
+  border: 1px solid #f0f0f0;
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+.page-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.page-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+.toolbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.page-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.empty-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.clickable-item {
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.clickable-item:hover {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+.item-name {
+  margin-right: 8px;
+}
+
+.item-desc {
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.modal-submit-error {
+  margin-top: 16px;
+}
+
+.join-results {
+  margin-top: 16px;
+  min-height: 80px;
+}
+
+.join-error {
+  padding: 8px 0;
+  color: #ff4d4f;
+}
+
+.join-result-info {
+  flex: 1;
+}
+
+.join-result-name {
+  font-weight: 500;
+}
+
+.join-result-desc {
+  color: rgba(0, 0, 0, 0.45);
+}

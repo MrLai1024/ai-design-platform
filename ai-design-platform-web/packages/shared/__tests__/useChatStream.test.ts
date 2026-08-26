@@ -3,7 +3,7 @@ import { parseSSEEvent } from '../src/composables/useChatStream';
 
 describe('useChatStream - SSE parsing', () => {
   it('parses a token event', () => {
-    const raw = 'event: token\ndata: {"text":"你好","index":0}';
+    const raw = 'event: token\ndata: {"_t":"token","text":"你好","index":0}';
     const event = parseSSEEvent(raw);
     expect(event).not.toBeNull();
     expect(event!.type).toBe('token');
@@ -12,7 +12,7 @@ describe('useChatStream - SSE parsing', () => {
   });
 
   it('parses meta event', () => {
-    const raw = 'event: meta\ndata: {"generation_id":"gen-1","conversation_id":"conv-1"}';
+    const raw = 'event: meta\ndata: {"_t":"meta","generation_id":"gen-1","conversation_id":"conv-1"}';
     const event = parseSSEEvent(raw);
     expect(event).not.toBeNull();
     expect(event!.type).toBe('meta');
@@ -27,7 +27,7 @@ describe('useChatStream - SSE parsing', () => {
   });
 
   it('parses complete event (JSON string data)', () => {
-    const raw = 'event: complete\ndata: {"finish_reason":"stop"}';
+    const raw = 'event: complete\ndata: {"_t":"complete","finish_reason":"stop"}';
     const event = parseSSEEvent(raw);
     expect(event).not.toBeNull();
     expect(event!.type).toBe('complete');
@@ -35,7 +35,7 @@ describe('useChatStream - SSE parsing', () => {
   });
 
   it('parses error event', () => {
-    const raw = 'event: error\ndata: {"code":"TIMEOUT","message":"模型超时"}';
+    const raw = 'event: error\ndata: {"_t":"error","code":"TIMEOUT","message":"模型超时"}';
     const event = parseSSEEvent(raw);
     expect(event).not.toBeNull();
     expect(event!.type).toBe('error');
@@ -51,7 +51,7 @@ describe('useChatStream - SSE parsing', () => {
     expect(parseSSEEvent(raw)).toBeNull();
   });
 
-  it('returns null for missing event type', () => {
+  it('returns null when the JSON data lacks the _t type field', () => {
     const raw = 'data: {"text":"hello"}';
     expect(parseSSEEvent(raw)).toBeNull();
   });

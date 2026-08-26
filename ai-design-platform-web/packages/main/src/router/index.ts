@@ -28,6 +28,12 @@ export const routes: RouteRecordRaw[] = [
     props: { containerId: 'sub-app-workflow' },
   },
   {
+    path: '/project-space/:pathMatch(.*)*',
+    name: 'ProjectSpace',
+    component: SubAppContainer,
+    props: { containerId: 'sub-app-project-space' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'NotFound',
     component: NotFound,

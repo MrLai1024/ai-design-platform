@@ -21,6 +21,10 @@ const ENTRY_MAP: Record<string, { dev: string; prod: string }> = {
     dev: '//localhost:8003',
     prod: '//cdn.example.com/ai-workflow',
   },
+  [APP_NAMES.PROJECT_SPACE]: {
+    dev: '//localhost:8004',
+    prod: '//cdn.example.com/project-space-app',
+  },
 };
 
 /** Determine if running in dev mode based on globalThis */
@@ -66,6 +70,14 @@ export function getAppConfigs(): AppConfig[] {
       entry: isDev ? ENTRY_MAP[APP_NAMES.AI_WORKFLOW].dev : ENTRY_MAP[APP_NAMES.AI_WORKFLOW].prod,
       container: '#sub-app-workflow',
       activeRule: APP_ROUTES[APP_NAMES.AI_WORKFLOW],
+    },
+    {
+      name: APP_NAMES.PROJECT_SPACE,
+      entry: isDev
+        ? ENTRY_MAP[APP_NAMES.PROJECT_SPACE].dev
+        : ENTRY_MAP[APP_NAMES.PROJECT_SPACE].prod,
+      container: '#sub-app-project-space',
+      activeRule: APP_ROUTES[APP_NAMES.PROJECT_SPACE],
     },
   ];
 }

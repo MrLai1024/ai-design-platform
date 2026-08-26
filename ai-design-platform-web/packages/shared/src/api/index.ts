@@ -7,3 +7,6 @@ export {
   streamChat,
   cancelGeneration,
 } from './chat';
+export { autoRegister, getMe } from './user';
+export { listTeams, searchTeams, createTeam, joinTeam } from './team';
+export { createProject, listProjects, listTeamProjects, getProject } from './project';

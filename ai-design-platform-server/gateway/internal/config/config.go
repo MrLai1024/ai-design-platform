@@ -8,23 +8,25 @@ import (
 
 // Config 保存所有网关配置。
 type Config struct {
-	ServerPort       string
-	AIServiceAddr    string
-	DatabaseURL      string
-	RedisAddr        string
-	NodeCompilerAddr string
-	LogLevel         string
+	ServerPort         string
+	AIServiceAddr      string
+	DatabaseURL        string
+	RedisAddr          string
+	NodeCompilerAddr   string
+	ProjectServiceAddr string
+	LogLevel           string
 }
 
 // Load 从环境变量读取配置，并提供默认值。
 func Load() (*Config, error) {
 	cfg := &Config{
-		ServerPort:       getEnv("SERVER_PORT", "8080"),
-		AIServiceAddr:    getEnv("AI_SERVICE_ADDR", "localhost:50051"),
-		DatabaseURL:      getEnv("DATABASE_URL", "postgres://aiplatform:aiplatform@localhost:5432/aiplatform?sslmode=disable"),
-		RedisAddr:        getEnv("REDIS_ADDR", "localhost:6379"),
-		NodeCompilerAddr: getEnv("NODE_COMPILER_ADDR", "localhost:5199"),
-		LogLevel:         getEnv("LOG_LEVEL", "info"),
+		ServerPort:         getEnv("SERVER_PORT", "8080"),
+		AIServiceAddr:      getEnv("AI_SERVICE_ADDR", "localhost:50051"),
+		DatabaseURL:        getEnv("DATABASE_URL", "postgres://aiplatform:aiplatform@localhost:5432/aiplatform?sslmode=disable"),
+		RedisAddr:          getEnv("REDIS_ADDR", "localhost:6379"),
+		NodeCompilerAddr:   getEnv("NODE_COMPILER_ADDR", "localhost:5199"),
+		ProjectServiceAddr: getEnv("PROJECT_SERVICE_ADDR", "http://localhost:8081"),
+		LogLevel:           getEnv("LOG_LEVEL", "info"),
 	}
 
 	if strings.TrimSpace(cfg.AIServiceAddr) == "" {

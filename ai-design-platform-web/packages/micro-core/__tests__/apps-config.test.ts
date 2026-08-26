@@ -2,14 +2,26 @@ import { describe, it, expect } from 'vitest';
 import { getAppConfigs, type AppConfig } from '../src/apps-config';
 
 describe('getAppConfigs', () => {
-  it('should return configs for all three sub-apps', () => {
+  it('should return configs for all four sub-apps', () => {
     const configs = getAppConfigs();
-    expect(configs).toHaveLength(3);
+    expect(configs).toHaveLength(4);
 
     const names = configs.map((c) => c.name);
     expect(names).toContain('ai-chat-app');
     expect(names).toContain('ai-generation-app');
     expect(names).toContain('ai-workflow');
+    expect(names).toContain('project-space-app');
+  });
+
+  it('registers project-space-app with its container, activeRule and entry', () => {
+    const configs = getAppConfigs();
+    const cfg = configs.find((c) => c.name === 'project-space-app');
+    expect(cfg).toBeDefined();
+
+    expect(cfg!.container).toBe('#sub-app-project-space');
+    expect(cfg!.activeRule).toBe('/project-space');
+    // Dev serves from :8004, prod from the CDN — both must reference project-space-app
+    expect(cfg!.entry).toMatch(/localhost:8004|cdn\.example\.com\/project-space-app/);
   });
 
   it('should have required fields on each config', () => {
@@ -25,6 +37,6 @@ describe('getAppConfigs', () => {
   it('should use unique containers per app', () => {
     const configs = getAppConfigs();
     const containers = configs.map((c) => c.container);
-    expect(new Set(containers).size).toBe(3);
+    expect(new Set(containers).size).toBe(4);
   });
 });
