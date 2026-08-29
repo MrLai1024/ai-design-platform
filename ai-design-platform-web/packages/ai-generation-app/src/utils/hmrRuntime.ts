@@ -46,8 +46,8 @@ export function generateHmrRuntimeScript(): string {
         if (m && m.compiled && typeof m.compiled.rerender === 'function') {
           try {
             m.compiled.rerender();
-          } catch(e) {
-            console.warn('[HMR] rerender failed for', dep, e);
+          } catch {
+            // 静默忽略
           }
         }
       }

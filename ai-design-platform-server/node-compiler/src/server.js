@@ -52,7 +52,6 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(result))
     } catch (e) {
-      console.error('[node-compiler] compile failed:', e)
       res.writeHead(500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({
         ok: false,

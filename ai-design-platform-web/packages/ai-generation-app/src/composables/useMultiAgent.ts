@@ -275,7 +275,7 @@ export function useMultiAgent() {
         store.setStageStatus(event.to, 'active')
         break
       case 'loop_warning':
-        console.warn(`Loop warning: ${event.reason}`)
+        // no-op: 静默忽略 loop 警告
         break
       case 'loop_break':
         store.setNeedsManualReview(true)

@@ -160,8 +160,6 @@ export const useGenerationStore = defineStore('generation', () => {
     const last = messages.value[messages.value.length - 1]
     if (last && last.role === 'assistant') {
       last.content += content
-    } else if (import.meta.env.DEV) {
-      console.warn('[generation] appendToLastMessage: last message is not from assistant')
     }
   }
 
@@ -204,16 +202,12 @@ export const useGenerationStore = defineStore('generation', () => {
     if (entry) {
       entry.content = content
       entry.isDirty = true
-    } else if (import.meta.env.DEV) {
-      console.warn(`[generation] updateFileContent: file "${filename}" not found`)
     }
   }
 
   function setActiveFile(filename: string): void {
     if (files.value.has(filename)) {
       activeFile.value = filename
-    } else if (import.meta.env.DEV) {
-      console.warn(`[generation] setActiveFile: file "${filename}" not found`)
     }
   }
 
@@ -225,9 +219,6 @@ export const useGenerationStore = defineStore('generation', () => {
   }
 
   function addNewFile(filename: string): void {
-    if (files.value.has(filename)) {
-      console.warn(`[generation] addNewFile: file "${filename}" already exists, overwriting`)
-    }
     const entry: FileEntry = {
       filename,
       content: '',
@@ -243,8 +234,6 @@ export const useGenerationStore = defineStore('generation', () => {
     const entry = files.value.get(filename)
     if (entry) {
       entry.isDirty = false
-    } else if (import.meta.env.DEV) {
-      console.warn(`[generation] markFileClean: file "${filename}" not found`)
     }
   }
 
@@ -268,8 +257,6 @@ export const useGenerationStore = defineStore('generation', () => {
   function setStageOutput(stageKey: string, content: string): void {
     if (stageKey in stageOutputs.value) {
       ;(stageOutputs.value as Record<string, string | null>)[stageKey] = content
-    } else if (import.meta.env.DEV) {
-      console.warn(`[generation] setStageOutput: unknown stage key "${stageKey}"`)
     }
   }
 

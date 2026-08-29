@@ -6,8 +6,8 @@
 
 <script setup lang="ts">
 import { onGlobalStateChange } from '@ai-design/micro-core';
-onGlobalStateChange((state, prev) => {
-  console.log('[ai-generation-app] global state changed:', state, prev);
+onGlobalStateChange((_state, _prev) => {
+  // no-op: 静默忽略全局状态变更
 });
 </script>
 
