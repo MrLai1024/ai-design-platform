@@ -15,7 +15,7 @@ beforeEach(() => {
   router = createRouter({ history: createMemoryHistory(), routes });
 });
 
-async function mountApp(path = '/ai-chat') {
+async function mountApp(path = '/ai-generation') {
   router.push(path);
   await router.isReady();
   const wrapper = mount(App, {
@@ -35,7 +35,7 @@ describe('App base layout', () => {
   });
 
   it('renders the personal info entry as the last item of the header (after all nav items)', async () => {
-    const wrapper = await mountApp('/ai-chat');
+    const wrapper = await mountApp('/ai-generation');
     const header = wrapper.find('header');
     expect(header.exists()).toBe(true);
 
@@ -46,37 +46,26 @@ describe('App base layout', () => {
     expect(children[0].tagName.toLowerCase()).toBe('nav');
     expect(children[1].dataset.testid).toBe('account-entry-wrap');
 
-    // All five menu links live inside the nav, in order
+    // All three menu links live inside the nav, in order
     const links = flexContainer.findAll('nav a');
-    expect(links.map((l) => l.text().trim())).toEqual([
-      '首页',
-      'AI 对话',
-      'AI 生成',
-      'AI 工作流',
-      '项目空间',
-    ]);
+    expect(links.map((l) => l.text().trim())).toEqual(['首页', 'AI 生成', '项目空间']);
   });
 
   it('shows the account name in the entry after init and no error banner', async () => {
-    const wrapper = await mountApp('/ai-chat');
+    const wrapper = await mountApp('/ai-generation');
     expect(wrapper.find('[data-testid="account-name"]').text()).toBe('user_abc123');
     expect(wrapper.find('[data-testid="register-error-banner"]').exists()).toBe(false);
   });
 
   it('pre-renders all sub-app containers including the project space one', async () => {
-    const wrapper = await mountApp('/ai-chat');
-    for (const id of [
-      '#sub-app-chat',
-      '#sub-app-generation',
-      '#sub-app-workflow',
-      '#sub-app-project-space',
-    ]) {
+    const wrapper = await mountApp('/ai-generation');
+    for (const id of ['#sub-app-generation', '#sub-app-project-space']) {
       expect(wrapper.find(id).exists()).toBe(true);
     }
   });
 
   it('re-registers automatically after a 401 wipes the credentials (AUTH_UNAUTHORIZED recovery)', async () => {
-    const wrapper = await mountApp('/ai-chat');
+    const wrapper = await mountApp('/ai-generation');
     expect(wrapper.find('[data-testid="account-name"]').text()).toBe('user_abc123');
 
     const newSample = { account: 'user_new999', password: 'p@ss-new', token: 'jwt-new' };

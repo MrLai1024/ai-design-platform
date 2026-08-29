@@ -19,15 +19,15 @@ body {
 
 .project-space-app .app-layout {
   min-height: 100%;
-  /* 灰色画布:让侧栏/头部/内容三个白区之间显出边界 */
-  background: #f5f5f5;
+  /* 灰色画布(用户定色 rgb(134,134,134));!important 防 qiankun 前缀竞态被 antd 默认 #f5f5f5 覆盖 */
+  background: rgb(134, 134, 134) !important;
 }
 
-/* 侧栏:白底 + 右侧描边 + 轻阴影,与头部/内容区分层 */
+/* 侧栏:白底 + 右侧描边 + 投影,在深灰画布上浮起 */
 .app-sider.ant-layout-sider {
   background: #fff;
-  border-right: 1px solid #e8e8e8;
-  box-shadow: 1px 0 4px rgba(0, 0, 0, 0.04);
+  border-right: 1px solid #e0e0e0;
+  box-shadow: 1px 0 8px rgba(0, 0, 0, 0.15);
 }
 
 /* antd 的 .ant-layout-header 默认样式(暗蓝底/64px 高)经 cssinjs 注入且源顺序靠后,
@@ -37,8 +37,8 @@ body {
   line-height: 48px;
   padding: 0 24px;
   background: #fff;
-  border-bottom: 1px solid #e8e8e8;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+  border-bottom: 1px solid #e0e0e0;
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.15);
 }
 
 /* 内容区:白卡片(圆角+描边+阴影),浮在灰色画布上,与头部/侧栏界限分明 */
@@ -46,9 +46,9 @@ body {
   margin: 16px;
   padding: 16px 24px;
   background: #fff;
-  border: 1px solid #f0f0f0;
+  border: 1px solid #e6e6e6;
   border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
 }
 
 .page-toolbar {

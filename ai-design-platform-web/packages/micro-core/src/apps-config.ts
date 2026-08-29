@@ -9,17 +9,9 @@ export interface AppConfig {
 }
 
 const ENTRY_MAP: Record<string, { dev: string; prod: string }> = {
-  [APP_NAMES.AI_CHAT]: {
-    dev: '//localhost:8001',
-    prod: '//cdn.example.com/ai-chat-app',
-  },
   [APP_NAMES.AI_GENERATION]: {
     dev: '//localhost:8002',
     prod: '//cdn.example.com/ai-generation-app',
-  },
-  [APP_NAMES.AI_WORKFLOW]: {
-    dev: '//localhost:8003',
-    prod: '//cdn.example.com/ai-workflow',
   },
   [APP_NAMES.PROJECT_SPACE]: {
     dev: '//localhost:8004',
@@ -52,24 +44,12 @@ export function getAppConfigs(): AppConfig[] {
 
   return [
     {
-      name: APP_NAMES.AI_CHAT,
-      entry: isDev ? ENTRY_MAP[APP_NAMES.AI_CHAT].dev : ENTRY_MAP[APP_NAMES.AI_CHAT].prod,
-      container: '#sub-app-chat',
-      activeRule: APP_ROUTES[APP_NAMES.AI_CHAT],
-    },
-    {
       name: APP_NAMES.AI_GENERATION,
       entry: isDev
         ? ENTRY_MAP[APP_NAMES.AI_GENERATION].dev
         : ENTRY_MAP[APP_NAMES.AI_GENERATION].prod,
       container: '#sub-app-generation',
       activeRule: APP_ROUTES[APP_NAMES.AI_GENERATION],
-    },
-    {
-      name: APP_NAMES.AI_WORKFLOW,
-      entry: isDev ? ENTRY_MAP[APP_NAMES.AI_WORKFLOW].dev : ENTRY_MAP[APP_NAMES.AI_WORKFLOW].prod,
-      container: '#sub-app-workflow',
-      activeRule: APP_ROUTES[APP_NAMES.AI_WORKFLOW],
     },
     {
       name: APP_NAMES.PROJECT_SPACE,

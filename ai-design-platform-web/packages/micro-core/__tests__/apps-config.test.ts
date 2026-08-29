@@ -2,14 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { getAppConfigs, type AppConfig } from '../src/apps-config';
 
 describe('getAppConfigs', () => {
-  it('should return configs for all four sub-apps', () => {
+  it('should return configs for both sub-apps', () => {
     const configs = getAppConfigs();
-    expect(configs).toHaveLength(4);
+    expect(configs).toHaveLength(2);
 
     const names = configs.map((c) => c.name);
-    expect(names).toContain('ai-chat-app');
     expect(names).toContain('ai-generation-app');
-    expect(names).toContain('ai-workflow');
     expect(names).toContain('project-space-app');
   });
 
@@ -37,6 +35,6 @@ describe('getAppConfigs', () => {
   it('should use unique containers per app', () => {
     const configs = getAppConfigs();
     const containers = configs.map((c) => c.container);
-    expect(new Set(containers).size).toBe(4);
+    expect(new Set(containers).size).toBe(2);
   });
 });
