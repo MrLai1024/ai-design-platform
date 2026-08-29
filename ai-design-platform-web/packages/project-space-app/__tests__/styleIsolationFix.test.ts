@@ -70,18 +70,34 @@ describe('installScopedCSSUpdateFix', () => {
     expect(style.innerHTML).toBe('P .ant-btn { padding: 4px 15px; }');
   });
 
-  it('ignores mutations on unrelated elements', async () => {
+  it('re-prefixes plain style elements too (vue scoped styles, not just cssinjs)', async () => {
     const head = document.createElement('div');
     document.body.appendChild(head);
-    const other = document.createElement('style');
-    head.appendChild(other);
-    other.innerHTML = '.x { color: red; }';
+    const scoped = document.createElement('style');
+    head.appendChild(scoped);
+    scoped.innerHTML = '.app-header.ant-layout-header { background: #fff; }';
 
     disconnect = installScopedCSSUpdateFix(head, 'P');
 
-    other.innerHTML = '.x { color: blue; }';
+    // simulate vue-loader HMR rewriting the scoped style without the prefix
+    scoped.innerHTML = '.app-header.ant-layout-header { background: #fff; }';
     await new Promise((r) => setTimeout(r, 20));
 
-    expect(other.innerHTML).toBe('.x { color: blue; }');
+    expect(scoped.innerHTML).toBe('P .app-header.ant-layout-header { background: #fff; }');
+  });
+
+  it('ignores mutations on non-style elements', async () => {
+    const head = document.createElement('div');
+    document.body.appendChild(head);
+    const div = document.createElement('div');
+    head.appendChild(div);
+    div.innerHTML = 'plain text';
+
+    disconnect = installScopedCSSUpdateFix(head, 'P');
+
+    div.innerHTML = 'changed text';
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(div.innerHTML).toBe('changed text');
   });
 });

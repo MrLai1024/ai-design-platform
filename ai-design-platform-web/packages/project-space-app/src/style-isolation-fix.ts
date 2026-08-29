@@ -20,7 +20,13 @@
  * style isolation is enabled for this app.
  */
 
-const CSSINJS_STYLE_SELECTOR = 'style[data-css-hash]';
+/**
+ * Any <style> inside the app wrapper is injected by the sub-app (webpack
+ * css/vue scoped styles or antd cssinjs) and needs the qiankun prefix. We
+ * watch all of them, not just antd's `style[data-css-hash]`, so scoped
+ * component styles (vue-loader) also recover their prefix after HMR updates.
+ */
+const SUB_APP_STYLE_SELECTOR = 'style';
 
 interface TopLevelRule {
   header: string;
@@ -133,8 +139,8 @@ export function installScopedCSSUpdateFix(root: HTMLElement, prefix: string): ()
       if (target.nodeType === Node.TEXT_NODE && target.parentElement) {
         target = target.parentElement;
       }
-      const el = target instanceof HTMLStyleElement ? target : (target as Element).closest?.(CSSINJS_STYLE_SELECTOR);
-      if (el instanceof HTMLStyleElement && el.matches(CSSINJS_STYLE_SELECTOR)) {
+      const el = target instanceof HTMLStyleElement ? target : (target as Element).closest?.(SUB_APP_STYLE_SELECTOR);
+      if (el instanceof HTMLStyleElement && el.matches(SUB_APP_STYLE_SELECTOR)) {
         seen.add(el);
       }
     }

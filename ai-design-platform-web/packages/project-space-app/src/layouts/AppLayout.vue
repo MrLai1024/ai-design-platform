@@ -29,7 +29,10 @@
               v-if="item.path"
               @click.prevent="onCrumbClick(item)"
             >{{ item.label }}</a>
-            <span v-else>{{ item.label }}</span>
+            <span
+              v-else
+              class="crumb-current"
+            >{{ item.label }}</span>
           </a-breadcrumb-item>
         </a-breadcrumb>
       </a-layout-header>
@@ -39,6 +42,48 @@
     </a-layout>
   </a-layout>
 </template>
+
+<style scoped>
+.app-layout {
+  min-height: 100%;
+  /* 灰色画布(用户定色 rgb(134,134,134));!important 防 qiankun 前缀竞态被 antd 默认 #f5f5f5 覆盖 */
+  background: rgb(134, 134, 134) !important;
+}
+
+/* 侧栏:白底 + 右侧描边 + 投影,在深灰画布上浮起 */
+.app-sider.ant-layout-sider {
+  background: #fff;
+  border-right: 1px solid #e0e0e0;
+  box-shadow: 1px 0 8px rgba(0, 0, 0, 0.15);
+}
+
+/* antd 的 .ant-layout-header 默认样式(暗蓝底/64px 高)经 cssinjs 注入且源顺序靠后,
+   仅用 .app-header(0,1,0)会同特异性落败;组合选择器抬高特异性以稳定覆盖 */
+.app-header.ant-layout-header {
+  height: 48px;
+  line-height: 48px;
+  padding: 0 24px;
+  background: #fff;
+  border-bottom: 1px solid #e0e0e0;
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* 内容区:白卡片(圆角+描边+阴影),浮在灰色画布上,与头部/侧栏界限分明 */
+.app-content.ant-layout-content {
+  margin: 16px;
+  padding: 4px 0;
+  background: #fff;
+  border: 1px solid #e6e6e6;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+}
+
+/* 面包屑当前项高亮(主题蓝 + 加粗);组合选择器抬高特异性以稳定覆盖 antd last-child 样式 */
+.app-header :deep(.ant-breadcrumb) .crumb-current {
+  color: #1677ff;
+  font-weight: 600;
+}
+</style>
 
 <script setup lang="ts">
 import { computed, reactive, watch } from 'vue';
