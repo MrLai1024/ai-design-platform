@@ -11,6 +11,43 @@ export function useMultiAgent() {
 
   const isTransitioning = ref(false)
   const streamError = ref<string | null>(null)
+  let currentAbortController: AbortController | null = null
+
+  function getAbortController(): AbortController {
+    if (currentAbortController) {
+      try { currentAbortController.abort() } catch { /* ignore */ }
+    }
+    currentAbortController = new AbortController()
+    return currentAbortController
+  }
+
+  async function sendFeedback(feedback: string): Promise<void> {
+    if (!store.currentGenerationId) return
+    try {
+      await fetch('/api/v1/generation/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          generation_id: store.currentGenerationId,
+          stage: store.stage,
+          feedback,
+        }),
+      })
+      // After feedback is received, restart the graph stream to pick up changes
+      await confirmStage(store.stage)
+    } catch (e: any) {
+      streamError.value = e.message || 'Feedback failed'
+    }
+  }
+
+  function cancelGeneration(): void {
+    if (currentAbortController) {
+      try { currentAbortController.abort() } catch { /* ignore */ }
+      currentAbortController = null
+    }
+    store.setStreaming(false)
+    isTransitioning.value = false
+  }
 
   async function startGeneration(content: string, systemPrompt?: string) {
     store.resetAll()
@@ -52,7 +89,7 @@ export function useMultiAgent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: chatMessages,
-          model: 'glm-5.2',
+          model: 'deepseek-v4-pro',
         }),
       })
 
@@ -238,7 +275,7 @@ export function useMultiAgent() {
         store.setStageStatus(event.to, 'active')
         break
       case 'loop_warning':
-        console.warn(`Loop warning: ${event.reason}`)
+        // no-op: 静默忽略 loop 警告
         break
       case 'loop_break':
         store.setNeedsManualReview(true)
@@ -261,12 +298,11 @@ export function useMultiAgent() {
     // Graph hasn't started yet, so send pre-filled state
     const needsFreshStart = stage === 'analysis' || stage === 'design' || stage === 'code'
     const body: Record<string, any> = {
-      model: 'glm-5.2',
+      model: 'deepseek-v4-pro',
 
       mode: 'graph',
     }
 
-    console.log('[confirmStage] stage=', stage, 'needsFreshStart=', needsFreshStart, 'stageOutputs.analysis=', !!store.stageOutputs.analysis, 'docStreamingContent=', !!store.docStreamingContent)
     if (needsFreshStart) {
       // Pre-fill completed stages
       const prefillMessages: Array<{role: string; content: string}> = []
@@ -279,19 +315,26 @@ export function useMultiAgent() {
       }
       body.messages = prefillMessages
       body.skip_analysis = true
+      // Carry the generation_id across fresh-start confirms — otherwise the
+      // gateway generates a NEW id per request and backend state (incl. the
+      // background architecture-spec task) is unreachable on the next phase.
+      if (store.currentGenerationId) {
+        body.generation_id = store.currentGenerationId
+      }
     } else {
       // Resume graph for code+
       body.messages = []
       body.generation_id = store.currentGenerationId
       body.mode = 'resume'
     }
-    console.log('[confirmStage] body=', JSON.stringify({...body, messages: body.messages?.length || 0}))
 
     try {
+      const controller = getAbortController()
       const response = await fetch('/api/v1/generation/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: controller.signal,
       })
       if (!response.ok) throw new Error(`Confirm failed: ${response.status}`)
 
@@ -357,6 +400,8 @@ export function useMultiAgent() {
     startGraphGeneration,
     confirmStage,
     submitE2EResults,
+    sendFeedback,
+    cancelGeneration,
     cancel,
   }
 }

@@ -78,6 +78,18 @@ export function createMemfsPlugin(opts: MemfsPluginOptions): Plugin {
           : { errors: [{ text: `Could not resolve "${args.path}"`, notes: [] }] }
       })
 
+      // ── 入口解析（catch-all，最后注册）──
+      // entryPoints 是 "src/main.ts"（无 ./ 前缀），esbuild 的默认解析器在
+      // wasm 下无法读目录（"not implemented on js"）→ 入口必须由 memfs 接管。
+      // importer === '' 只出现在入口；其它导入已被上面的 filter 处理。
+      build.onResolve({ filter: /.*/ }, (args) => {
+        if (args.importer !== '') return null
+        const resolved = tryResolve(normalizePath(args.path))
+        return resolved
+          ? { path: resolved, namespace: 'memfs' }
+          : { errors: [{ text: `Could not resolve "${args.path}"`, notes: [] }] }
+      })
+
       // ── 非 .vue 文件加载（.vue 由 vuePlugin 先注册接管）──
       build.onLoad({ filter: /\.css$/, namespace: 'memfs' }, (args) => {
         const content = files.get(args.path)

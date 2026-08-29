@@ -6,7 +6,8 @@ import structlog
 
 from . import NodeHandler
 from ..ir_types import NodeDef, resolve_template
-from ...generation.nodes import _llm_generate
+from ...generation.nodes import _llm_generate, set_provider
+from ...llm.router import resolve_provider
 
 logger = structlog.get_logger()
 
@@ -26,7 +27,7 @@ class LLMHandler(NodeHandler):
         _get = config.get if isinstance(config, dict) else lambda k, d=None: getattr(config, k, d)
         system_prompt = resolve_template(_get("system_prompt", ""), state)
         user_prompt = resolve_template(_get("user_prompt", ""), state)
-        model = _get("model", "glm-5.2")
+        model = _get("model", "deepseek-v4-pro")
         output_key = _get("output_key", "llm_output")
 
         logger.info(
@@ -36,6 +37,11 @@ class LLMHandler(NodeHandler):
             system_prompt_len=len(system_prompt),
             user_prompt_len=len(user_prompt),
         )
+
+        # The generation servicer sets the provider singleton only for the
+        # graph pipeline — workflow has no other setter, so each LLM node
+        # resolves its own provider by model before calling.
+        set_provider(resolve_provider(model))
 
         full_text = await _llm_generate(
             system_prompt=system_prompt,

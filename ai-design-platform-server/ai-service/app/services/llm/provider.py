@@ -20,8 +20,40 @@ class LLMConfig:
 @dataclass
 class Message:
     """一条聊天消息。"""
-    role: str       # "system" | "user" | "assistant"（角色）
+    role: str       # "system" | "user" | "assistant" | "tool"（角色）
     content: str
+    tool_call_id: str | None = None  # tool 消息必需（OpenAI 兼容 API 严格校验）
+    tool_calls: list[dict] | None = None  # assistant 消息的标准 tool_calls 字段
+    reasoning_content: str | None = None  # DeepSeek 思考模式：上一轮思考必须原样回传
+
+
+def to_openai_messages(messages: list[Message | dict]) -> list[dict[str, str]]:
+    """将领域消息转换为 OpenAI 格式。支持 Message 对象和 dict。
+
+    tool_call_id 必须保留 —— DeepSeek 等 OpenAI 兼容 API 对 tool 消息严格
+    校验该字段(400: missing field `tool_call_id`),智谱宽松容忍所以此前
+    一直未传递。
+    """
+    result = []
+    for m in messages:
+        if isinstance(m, dict):
+            msg = {"role": m.get("role", ""), "content": m.get("content", "")}
+            if m.get("tool_call_id"):
+                msg["tool_call_id"] = m["tool_call_id"]
+            if m.get("tool_calls"):
+                msg["tool_calls"] = m["tool_calls"]
+            if m.get("reasoning_content"):
+                msg["reasoning_content"] = m["reasoning_content"]
+        else:
+            msg = {"role": m.role, "content": m.content}
+            if m.tool_call_id:
+                msg["tool_call_id"] = m.tool_call_id
+            if m.tool_calls:
+                msg["tool_calls"] = m.tool_calls
+            if m.reasoning_content:
+                msg["reasoning_content"] = m.reasoning_content
+        result.append(msg)
+    return result
 
 
 @dataclass

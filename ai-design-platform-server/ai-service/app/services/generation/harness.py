@@ -221,6 +221,21 @@ class EvalHarness:
         return CheckResult(True)
 
     @staticmethod
+    def validate_spec_result(spec: dict | None) -> CheckResult:
+        """Validate the structured architecture spec (L1, deterministic).
+
+        Delegates to spec_schema.validate_spec; an empty problem list passes.
+        """
+        if not spec:
+            return CheckResult(False, ["架构 Spec 为空"])
+        from .spec_schema import validate_spec
+
+        problems = validate_spec(spec)
+        if problems:
+            return CheckResult(False, problems)
+        return CheckResult(True)
+
+    @staticmethod
     def validate(state: GenerationState, stage: str) -> CheckResult:
         """Run all checks for a given stage."""
         if stage == "code":

@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+}
+
+.project-space-app {
+  height: 100%;
+}
+
+.page-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.page-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+.toolbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.page-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.empty-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.clickable-item {
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.clickable-item:hover {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+.item-name {
+  margin-right: 8px;
+}
+
+.item-desc {
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.modal-submit-error {
+  margin-top: 16px;
+}
+
+.join-results {
+  margin-top: 16px;
+  min-height: 80px;
+}
+
+.join-error {
+  padding: 8px 0;
+  color: #ff4d4f;
+}
+
+.join-result-info {
+  flex: 1;
+}
+
+.join-result-name {
+  font-weight: 500;
+}
+
+.join-result-desc {
+  color: rgba(0, 0, 0, 0.45);
+}

@@ -39,13 +39,11 @@ if (!(window as unknown as Record<string, unknown>).__POWERED_BY_QIANKUN__) {
 }
 
 export async function bootstrap(): Promise<void> {
-  console.log('[ai-generation-app] bootstrap');
+  // no-op: 静默
 }
 export async function mount(props: Record<string, unknown>): Promise<void> {
-  console.log('[ai-generation-app] mount', props);
   render(props);
 }
 export async function unmount(_props: Record<string, unknown>): Promise<void> {
-  console.log('[ai-generation-app] unmount');
   destroy();
 }

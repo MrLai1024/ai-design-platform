@@ -160,8 +160,6 @@ export const useGenerationStore = defineStore('generation', () => {
     const last = messages.value[messages.value.length - 1]
     if (last && last.role === 'assistant') {
       last.content += content
-    } else if (import.meta.env.DEV) {
-      console.warn('[generation] appendToLastMessage: last message is not from assistant')
     }
   }
 
@@ -188,6 +186,10 @@ export const useGenerationStore = defineStore('generation', () => {
     isStreaming.value = false
   }
 
+  function setStreaming(v: boolean): void {
+    isStreaming.value = v
+  }
+
   function setFile(filename: string, entry: FileEntry): void {
     files.value.set(filename, entry)
     if (!activeFile.value) {
@@ -200,16 +202,12 @@ export const useGenerationStore = defineStore('generation', () => {
     if (entry) {
       entry.content = content
       entry.isDirty = true
-    } else if (import.meta.env.DEV) {
-      console.warn(`[generation] updateFileContent: file "${filename}" not found`)
     }
   }
 
   function setActiveFile(filename: string): void {
     if (files.value.has(filename)) {
       activeFile.value = filename
-    } else if (import.meta.env.DEV) {
-      console.warn(`[generation] setActiveFile: file "${filename}" not found`)
     }
   }
 
@@ -221,9 +219,6 @@ export const useGenerationStore = defineStore('generation', () => {
   }
 
   function addNewFile(filename: string): void {
-    if (files.value.has(filename)) {
-      console.warn(`[generation] addNewFile: file "${filename}" already exists, overwriting`)
-    }
     const entry: FileEntry = {
       filename,
       content: '',
@@ -239,8 +234,6 @@ export const useGenerationStore = defineStore('generation', () => {
     const entry = files.value.get(filename)
     if (entry) {
       entry.isDirty = false
-    } else if (import.meta.env.DEV) {
-      console.warn(`[generation] markFileClean: file "${filename}" not found`)
     }
   }
 
@@ -264,8 +257,6 @@ export const useGenerationStore = defineStore('generation', () => {
   function setStageOutput(stageKey: string, content: string): void {
     if (stageKey in stageOutputs.value) {
       ;(stageOutputs.value as Record<string, string | null>)[stageKey] = content
-    } else if (import.meta.env.DEV) {
-      console.warn(`[generation] setStageOutput: unknown stage key "${stageKey}"`)
     }
   }
 
@@ -436,17 +427,25 @@ export const useGenerationStore = defineStore('generation', () => {
 
   // ── Planner/Executor Actions ──
   function setPlannerTasks(tasks: PlannerTaskDef[]): void {
-    plannerTasks.value = tasks
-    taskGroups.value = new Map()
-    for (const t of tasks) {
+    // MERGE, don't reset: incremental replans and the final-compile repair
+    // loop emit planner_dag with ONLY the delta tasks. A full reset wiped
+    // earlier tasks AND their log history from the AgentLog — a run looked
+    // like "only the delta files were generated".
+    const merged = new Map<string, PlannerTaskDef>()
+    for (const t of plannerTasks.value) merged.set(t.id, t)
+    for (const t of tasks) merged.set(t.id, { ...t, ...(t.status === undefined ? { status: 'pending' } : {}) })
+    plannerTasks.value = [...merged.values()]
+
+    for (const t of merged.values()) {
+      const prev = taskGroups.value.get(t.id)
       taskGroups.value.set(t.id, {
         taskId: t.id,
         description: t.description,
         files: t.files,
         status: t.status,
-        entries: [],
-        fileCount: 0,
-        compileErrors: 0,
+        entries: prev?.entries || [],
+        fileCount: prev?.fileCount || 0,
+        compileErrors: prev?.compileErrors || 0,
       })
     }
   }
@@ -576,7 +575,7 @@ export const useGenerationStore = defineStore('generation', () => {
     lastAssistantMessage, dirtyFiles, fileList, activeFileEntry,
     currentStepNodes, isStageDone,
     // actions
-    addMessage, appendToLastMessage, appendReasoning, finishReasoning, finalizeLastMessage,
+    addMessage, appendToLastMessage, appendReasoning, finishReasoning, finalizeLastMessage, setStreaming,
     setFile, updateFileContent, setActiveFile, removeFile, addNewFile,
     markFileClean, setCompiledOutput, setCompileError,
     setStage, setStageStatus, setStageOutput, setCodeViewTab, setRightPanelView,

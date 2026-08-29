@@ -38,13 +38,56 @@ class ToolRegistry:
         self._register_builtins()
 
     def _register_builtins(self) -> None:
-        from .file_tools import create_file, write_code, delete_file
+        from .file_tools import create_file, write_code, delete_file, list_files, read_file, search_project
         from .compile_tool import compile_project, get_compile_errors
         from .skill_loader import SkillLoader
         from .mcp_bridge import MCPBridge
 
         self._skill_loader = SkillLoader()
         self._mcp_bridge = MCPBridge()
+
+        self.register(ToolDef(
+            name="list_files",
+            description="列出项目目录中的所有文件（相对路径 + 大小）。写代码前先查看项目现状。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "prefix": {"type": "string", "description": "可选：只列出该前缀下的文件，如 src/components"},
+                },
+            },
+            handler=lambda **kw: list_files(self.project_root, **kw),
+            category="file",
+        ))
+
+        self.register(ToolDef(
+            name="read_file",
+            description="读取项目中的一个文件（内容上限 20000 字符）。生成依赖文件或修改已有文件前先读取，确保接口一致。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "文件路径，如 src/components/Header.vue"},
+                    "max_chars": {"type": "integer", "description": "可选：内容上限，默认 20000"},
+                },
+                "required": ["path"],
+            },
+            handler=lambda **kw: read_file(self.project_root, **kw),
+            category="file",
+        ))
+
+        self.register(ToolDef(
+            name="search_project",
+            description="在项目中按关键词检索（路径命中或内容包含），返回文件与上下文片段。用于确认某接口/组件名是否已存在。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "检索关键词，如 'UserList' 或 'defineProps'"},
+                    "max_results": {"type": "integer", "description": "可选：返回条数上限，默认 10"},
+                },
+                "required": ["query"],
+            },
+            handler=lambda **kw: search_project(self.project_root, **kw),
+            category="file",
+        ))
 
         self.register(ToolDef(
             name="create_file",
@@ -92,15 +135,24 @@ class ToolRegistry:
 
         self.register(ToolDef(
             name="compile_project",
-            description="编译整个前端工程，返回编译错误列表。错误来自前端 esbuild 真实打包结果。",
-            parameters={"type": "object", "properties": {}},
+            description="编译整个前端工程（node-compiler 真实编译：esbuild 语法/import 校验，full=true 时含 vue-tsc 类型检查），返回编译错误列表。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "full": {
+                        "type": "boolean",
+                        "description": "是否做完整检查（含 vue-tsc 类型检查）。中途快速校验用 false，最终检查用 true。默认 false。",
+                        "default": False,
+                    },
+                },
+            },
             handler=lambda **kw: compile_project(self.project_root, frontend_errors=self._frontend_compile_errors, **kw),
             category="compile",
         ))
 
         self.register(ToolDef(
             name="get_compile_errors",
-            description="获取最近一次编译的错误详情。",
+            description="获取最近一次编译的错误详情（重新调用 node-compiler 返回真实结果）。",
             parameters={"type": "object", "properties": {}},
             handler=lambda **kw: get_compile_errors(self.project_root, frontend_errors=self._frontend_compile_errors, **kw),
             category="compile",

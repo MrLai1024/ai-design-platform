@@ -1,5 +1,6 @@
 """gRPC GenerationService implementation — powered by LangGraph."""
 
+import asyncio
 import json
 import logging
 from typing import AsyncIterator
@@ -31,8 +32,8 @@ from app.services.llm.provider import (
 )
 from app.services.llm.router import resolve_provider
 from .graph import GraphRunner
-from .nodes import set_provider
-from .state import GenerationState
+from .nodes import LLM_CALL_DEADLINE_SECONDS, set_provider
+from .state import GenerationState, extract_feedback_history
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class GenerationServicer(GenerationServiceServicer):
     ) -> AsyncIterator[GenerateResponse]:
         """Server-streaming RPC: stream tokens or LangGraph events to the caller."""
         generation_id = request.generation_id
-        model = request.model or "glm-5.2"
+        model = request.model or "deepseek-v4-pro"
         mode = request.metadata.get("mode", "chat")  # "chat" or "graph"
 
         if mode == "graph":
@@ -69,7 +70,7 @@ class GenerationServicer(GenerationServiceServicer):
     ) -> AsyncIterator[GenerateResponse]:
         """Stream LangGraph pipeline events. Auto-detects resume vs fresh start."""
         self._active_generations[generation_id] = "running"
-        model = request.model or "glm-5.2"
+        model = request.model or "deepseek-v4-pro"
         mode = request.metadata.get("mode", "graph")
 
         # Set up LLM provider for the graph nodes
@@ -100,6 +101,7 @@ class GenerationServicer(GenerationServiceServicer):
 
         # Check if we should skip analysis (PRD already generated via /api/v1/prd/stream)
         skip_analysis = request.metadata.get("skip_analysis") == "true"
+        code_feedback = request.metadata.get("code_feedback", "")
 
         # Fresh start — build initial state
         user_messages = []
@@ -125,11 +127,19 @@ class GenerationServicer(GenerationServiceServicer):
             if len(user_messages) >= 3 and user_messages[2].get("role") == "assistant":
                 pre_filled_code = user_messages[2].get("content")
 
+        # Extract the previous run's live facts BEFORE the new runner below
+        # overwrites _active_runners — feedback replanning needs the project's
+        # real state (last compile errors, failed tasks), not an empty slate.
+        # The runner is in-memory: when it's gone (restart) keep an empty
+        # history — never fabricate facts.
+        feedback_history = extract_feedback_history(existing_runner)
+
         logger.info(
-            "stream_graph_state_init gen=%s skip_analysis=%s mode=%s has_analysis=%s analysis_len=%d has_design=%s design_len=%d has_code=%s",
+            "stream_graph_state_init gen=%s skip_analysis=%s mode=%s has_analysis=%s analysis_len=%d has_design=%s design_len=%d has_code=%s feedback_history=%s",
             generation_id, skip_analysis, mode, bool(pre_filled_analysis),
             len(pre_filled_analysis or ""), bool(pre_filled_design),
             len(pre_filled_design or ""), bool(pre_filled_code),
+            {k: len(v) for k, v in feedback_history.items()},
         )
 
         state: GenerationState = {
@@ -139,6 +149,7 @@ class GenerationServicer(GenerationServiceServicer):
             "requirements_state_json": None,
             "analysis_result": pre_filled_analysis,
             "design_result": pre_filled_design,
+            "architecture_spec": None,
             "code_result": pre_filled_code,
             "review_result": None,
             "e2e_results": None,
@@ -163,6 +174,8 @@ class GenerationServicer(GenerationServiceServicer):
             "review_issues": None,
             "e2e_test_cases_md": None,
             "e2e_user_confirmed": False,
+            "code_feedback": code_feedback,
+            "feedback_history": feedback_history,
         }
 
         runner = GraphRunner()
@@ -223,37 +236,40 @@ class GenerationServicer(GenerationServiceServicer):
         )
 
         try:
-            async for event in provider.stream_generate(model=model, messages=messages, config=config):
-                if context.cancelled() or self._active_generations.get(generation_id) == "cancelling":
-                    await provider.cancel()
-                    yield GenerateResponse(
-                        complete=GenerationComplete(finish_reason="cancelled", usage=None)
-                    )
-                    return
+            # 与 generation 管线的 LLM 调用同等待遇:总时长 deadline 兜底,
+            # 卡死的流不能无限挂起(读超时可能被 SSE keep-alive 重置)。
+            async with asyncio.timeout(LLM_CALL_DEADLINE_SECONDS):
+                async for event in provider.stream_generate(model=model, messages=messages, config=config):
+                    if context.cancelled() or self._active_generations.get(generation_id) == "cancelling":
+                        await provider.cancel()
+                        yield GenerateResponse(
+                            complete=GenerationComplete(finish_reason="cancelled", usage=None)
+                        )
+                        return
 
-                if isinstance(event, TokenEvent):
-                    yield GenerateResponse(token=Token(text=event.text, index=event.index))
-                elif isinstance(event, ReasoningEvent):
-                    yield GenerateResponse(
-                        token=Token(reasoning_content=event.text, index=event.index)
-                    )
-                elif isinstance(event, ToolCallEvent):
-                    yield GenerateResponse(
-                        tool_call=ProtoToolCall(
-                            id=event.call_id, name=event.name, arguments=event.arguments
+                    if isinstance(event, TokenEvent):
+                        yield GenerateResponse(token=Token(text=event.text, index=event.index))
+                    elif isinstance(event, ReasoningEvent):
+                        yield GenerateResponse(
+                            token=Token(reasoning_content=event.text, index=event.index)
                         )
-                    )
-                elif isinstance(event, CompleteEvent):
-                    yield GenerateResponse(
-                        complete=GenerationComplete(
-                            finish_reason=event.finish_reason,
-                            usage=ProtoUsage(
-                                prompt_tokens=event.usage.get("prompt_tokens", 0),
-                                completion_tokens=event.usage.get("completion_tokens", 0),
-                                total_tokens=event.usage.get("total_tokens", 0),
-                            ) if event.usage else None,
+                    elif isinstance(event, ToolCallEvent):
+                        yield GenerateResponse(
+                            tool_call=ProtoToolCall(
+                                id=event.call_id, name=event.name, arguments=event.arguments
+                            )
                         )
-                    )
+                    elif isinstance(event, CompleteEvent):
+                        yield GenerateResponse(
+                            complete=GenerationComplete(
+                                finish_reason=event.finish_reason,
+                                usage=ProtoUsage(
+                                    prompt_tokens=event.usage.get("prompt_tokens", 0),
+                                    completion_tokens=event.usage.get("completion_tokens", 0),
+                                    total_tokens=event.usage.get("total_tokens", 0),
+                                ) if event.usage else None,
+                            )
+                        )
         except Exception as e:
             logger.exception("Chat generation failed: generation_id=%s model=%s", generation_id, model)
             yield GenerateResponse(
@@ -271,6 +287,9 @@ class GenerationServicer(GenerationServiceServicer):
         gid = request.generation_id
         if gid in self._active_generations:
             self._active_generations[gid] = "cancelling"
+            from .nodes import cancel_background_spec
+
+            cancel_background_spec(gid)
             return CancelResponse(success=True)
         return CancelResponse(success=False)
 

@@ -27,6 +27,37 @@ services:
       timeout: 5s
       retries: 5
 
+  node-compiler:
+    build:
+      context: ./node-compiler
+      dockerfile: Dockerfile
+    ports:
+      - "5199:5199"
+    environment:
+      - PORT=5199
+    restart: unless-stopped
+
+  project-service:
+    build:
+      context: ./project-service
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      - PROJECT_SERVICE_PORT=8081
+      - DATABASE_URL=postgres://aiplatform:aiplatform@postgres:5432/aiplatform?sslmode=disable
+      - JWT_SECRET=${JWT_SECRET:-dev-secret}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8081/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   ai-service:
     build:
       context: ./ai-service
@@ -37,9 +68,12 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - LOG_LEVEL=DEBUG
+      - NODE_COMPILER_ADDR=http://node-compiler:5199
     depends_on:
       redis:
         condition: service_healthy
+      node-compiler:
+        condition: service_started
     volumes:
       - ./gen/python:/gen/python:ro
     restart: unless-stopped
@@ -55,12 +89,18 @@ services:
       - AI_SERVICE_ADDR=ai-service:50051
       - DATABASE_URL=postgres://aiplatform:aiplatform@postgres:5432/aiplatform?sslmode=disable
       - REDIS_ADDR=redis:6379
+      - NODE_COMPILER_ADDR=node-compiler:5199
+      - PROJECT_SERVICE_ADDR=http://project-service:8081
       - LOG_LEVEL=debug
     depends_on:
       postgres:
         condition: service_healthy
       ai-service:
         condition: service_started
+      node-compiler:
+        condition: service_started
+      project-service:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

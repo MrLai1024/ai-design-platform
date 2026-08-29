@@ -48,12 +48,25 @@ func main() {
 	graphHandler := handler.NewGraphSSEHandler(aiClient)
 	e2eHandler := handler.NewE2EHandler(graphHandler, aiClient)
 	prdHandler := handler.NewPRDHandler(aiClient)
+	compileHandler := handler.NewCompileHandler(cfg.NodeCompilerAddr)
 
 	// Gin 路由器
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(middleware.Logging())
+
+	// project-service 反向代理路由。
+	// 必须在 middleware.Auth() 之前注册:gin 的路由只经过注册时已挂载的全局中间件,
+	// 因此转发请求不经过 gateway 的 auth 桩中间件,由 project-service 自行鉴权(5.2)。
+	projectProxy, err := handler.NewProjectServiceProxy(cfg.ProjectServiceAddr)
+	if err != nil {
+		slog.Error("Failed to create project service proxy", "error", err)
+		os.Exit(1)
+	}
+	projectProxy.Register(r)
+
+	// 现有 AI 链路路由保持现状:全部经过 Auth 桩中间件。
 	r.Use(middleware.Auth())
 
 	// 路由
@@ -80,6 +93,8 @@ func main() {
 		api.POST("/e2e/result", e2eHandler.SubmitE2EResult)
 		api.POST("/generation/confirm", e2eHandler.ConfirmStage)
 		api.POST("/generation/compile_feedback", e2eHandler.SubmitCompileFeedback)
+		api.POST("/generation/compile", compileHandler.SubmitCompile)
+		api.POST("/generation/feedback", graphHandler.SubmitFeedback)
 	}
 
 	// HTTP 服务器

@@ -1,5 +1,6 @@
 packages:
   - 'packages/*'
 allowBuilds:
+  core-js: false
   esbuild: true
   vue-demi: true

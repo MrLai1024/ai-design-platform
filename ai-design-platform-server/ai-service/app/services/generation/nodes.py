@@ -28,11 +28,19 @@ def set_provider(provider: LLMProvider):
     _provider = provider
 
 
+# 单次 LLM 调用的总时长上限。流一旦卡死(服务端停发字节,且 SSE keep-alive
+# 会无限重置 provider 的读超时),必须强制失败而不是永久挂起——前端表现为
+# AgentLog 静默停止。读超时(provider 内,300s)只约束相邻字节间隔,总时长
+# 由此兜底;失败后由 executor 可见失败 + planner_reflect 重试/replan 恢复。
+LLM_CALL_DEADLINE_SECONDS = 600.0
+
+
 async def _llm_generate(
     system_prompt: str,
     user_content: str,
-    model: str = "glm-5.2",
+    model: str = "deepseek-v4-pro",
     enable_thinking: bool = True,
+    max_tokens: int = 4096,
     on_reasoning: Any | None = None,
     on_token: Any | None = None,
 ) -> str:
@@ -48,16 +56,25 @@ async def _llm_generate(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
     ]
-    config = LLMConfig(enable_thinking=enable_thinking)
+    config = LLMConfig(enable_thinking=enable_thinking, max_tokens=max_tokens)
     full_text = ""
-    async for event in _provider.stream_generate(model, messages, config):
-        if isinstance(event, TokenEvent):
-            full_text += event.text
-            if on_token:
-                on_token(event.text)
-        elif isinstance(event, ReasoningEvent):
-            if on_reasoning:
-                on_reasoning(event.text)
+    try:
+        async with asyncio.timeout(LLM_CALL_DEADLINE_SECONDS):
+            async for event in _provider.stream_generate(model, messages, config):
+                if isinstance(event, TokenEvent):
+                    full_text += event.text
+                    if on_token:
+                        on_token(event.text)
+                elif isinstance(event, ReasoningEvent):
+                    if on_reasoning:
+                        on_reasoning(event.text)
+    except TimeoutError:
+        logger.error(
+            "llm_call_deadline_exceeded",
+            model=model,
+            seconds=LLM_CALL_DEADLINE_SECONDS,
+        )
+        raise
     logger.debug(
         "_llm_generate_result",
         text_len=len(full_text),
@@ -70,7 +87,7 @@ async def _llm_generate_structured(
     system_prompt: str,
     user_content: str,
     output_schema: dict[str, Any],
-    model: str = "glm-5.2",
+    model: str = "deepseek-v4-pro",
 ) -> dict[str, Any]:
     """Call LLM and parse response as JSON matching output_schema."""
     schema_hint = (
@@ -205,6 +222,133 @@ DESIGN_SYSTEM_PROMPT = """你是一个资深前端架构师。根据需求分析
 - 需要注意的边界情况"""
 
 
+async def generate_architecture_spec(
+    analysis_result: str,
+    design_doc: str,
+    retries: int = 1,
+    on_reasoning: Any | None = None,
+    on_token: Any | None = None,
+) -> dict:
+    """Generate the structured architecture Spec (JSON) from PRD + design doc.
+
+    Flow: LLM outputs schema-shaped JSON → ``validate_spec`` → on failure retry
+    once with validation feedback → final fallback merges into ``empty_spec``
+    (structurally complete, never crashes). Returns the spec dict.
+
+    on_reasoning(text): forwarded to the LLM call so the spec's thinking
+    stream can be shown in the AgentLog (kills the "no feedback" dead air
+    between stage_start and planner_start).
+    on_token(text): forwarded too — spec generation runs with thinking
+    disabled, so tokens are the only visible progress; both streams feed
+    the AgentLog.
+    """
+    from .spec_schema import (
+        ARCHITECTURE_SPEC_PROMPT,
+        merge_into_spec,
+        validate_spec,
+    )
+
+    user_content = (
+        f"## 需求分析文档（PRD）\n{analysis_result[:6000]}\n\n"
+        f"## 设计方案文档\n{design_doc[:8000]}"
+    )
+
+    def _parse_json(raw: str) -> dict | None:
+        """Parse LLM output as JSON — fences, leading text, truncation tolerant.
+
+        Strategies in order: strip ```json fences → raw json.loads → extract
+        the first balanced {...} block (handles preamble/truncated-tail text).
+        """
+        raw = (raw or "").strip()
+        if not raw:
+            return None
+        raw_lower = raw.lower()
+        if "```json" in raw_lower:
+            raw = raw.split("```json", 1)[1].split("```")[0].strip()
+        elif "```" in raw_lower:
+            raw = raw.split("```", 1)[1].split("```")[0].strip()
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            pass
+        # Fallback: first balanced {...} block — tolerant of leading prose and
+        # trailing text after the JSON.
+        start = raw.find("{")
+        if start >= 0:
+            depth = 0
+            in_str = False
+            esc = False
+            for i in range(start, len(raw)):
+                ch = raw[i]
+                if in_str:
+                    if esc:
+                        esc = False
+                    elif ch == "\\":
+                        esc = True
+                    elif ch == '"':
+                        in_str = False
+                    continue
+                if ch == '"':
+                    in_str = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        try:
+                            parsed = json.loads(raw[start : i + 1])
+                            return parsed if isinstance(parsed, dict) else None
+                        except json.JSONDecodeError:
+                            return None
+        return None
+
+    last_raw = ""
+    for attempt in range(retries + 1):
+        try:
+            raw_text = await _llm_generate(
+                system_prompt=ARCHITECTURE_SPEC_PROMPT,
+                user_content=user_content,
+                # Structured output: no thinking (GLM thinking often consumes
+                # the token budget or emits JSON into reasoning_content), and a
+                # larger budget so a full Spec isn't truncated mid-JSON.
+                # on_reasoning still surfaces whatever reasoning the model
+                # streams, so the AgentLog shows live progress.
+                enable_thinking=False,
+                max_tokens=8192,
+                on_reasoning=on_reasoning,
+                on_token=on_token,
+            )
+            last_raw = raw_text
+            parsed = _parse_json(raw_text)
+            if parsed is None:
+                if attempt >= retries:
+                    break
+                user_content += "\n\n上次输出不是合法 JSON，请只输出一个 JSON 对象。"
+                continue
+            problems = validate_spec(parsed)
+            if not problems:
+                return parsed
+            logger.warning(
+                "architecture_spec_invalid",
+                attempt=attempt + 1,
+                problems=problems,
+            )
+            if attempt < retries:
+                user_content += (
+                    f"\n\n校验未通过，请修正后重新输出完整 Spec：\n" + "\n".join(problems)
+                )
+        except Exception as e:
+            logger.error("architecture_spec_generate_error", attempt=attempt + 1, error=str(e))
+            if attempt >= retries:
+                break
+
+    # Final fallback: type-coercing merge, never crashes
+    fallback = merge_into_spec(_parse_json(last_raw) if last_raw else None)
+    logger.warning("architecture_spec_fallback", has_raw=bool(last_raw))
+    return fallback
+
+
 async def design_node(state: GenerationState) -> GenerationState:
     """方案设计节点：产出架构设计文档。"""
     logger.info("design_node_start")
@@ -232,30 +376,20 @@ async def design_node(state: GenerationState) -> GenerationState:
     if not check.passed:
         logger.warning("design_validation_failed", errors=check.errors)
 
+    # Structured architecture spec — the machine-readable design contract.
+    # Only when the PRD is available and no spec exists yet (the main flow
+    # generates it in graph Phase 2.5; this covers the LangGraph rollback path
+    # where design regenerates — don't regenerate an existing spec).
+    if state.get("analysis_result") and not state.get("architecture_spec"):
+        spec = await generate_architecture_spec(
+            analysis_result=state["analysis_result"],
+            design_doc=result,
+        )
+        state["architecture_spec"] = spec
+        state["spec_validation"] = EvalHarness.validate_spec_result(spec)
+
     return state
 
-
-# ---- Code Node (Tool-use Loop) ----
-
-CODE_ORCHESTRATOR_PROMPT = """你是一个资深 Vue 3 全栈工程师，使用工具链逐步构建前端工程。
-
-## 工作流程
-1. 分析设计方案，调用 list_skills 和 mcp_query 了解可用工具和模板
-2. 调用 use_skill 应用代码模板生成文件骨架（优先使用模板而非从零写）
-3. 调用 write_code 逐个填充代码
-4. 每 3-4 个文件完成后调用 compile_project 检查
-5. 有编译错误时修复后再 compile
-6. 全部编译通过后输出 __CODE_GEN_DONE__
-
-## 规则
-- 每次只做一件事，保持响应简短
-- 组件名使用 PascalCase，文件名使用 kebab-case
-- 使用 Vue 3 Composition API
-- 代码输出 Composition API (`<script setup lang="ts">`)
-- 确保每个 .vue 文件有完整的 `<template>`、`<script setup>`、`<style scoped>`
-- 工具调用的 arguments 必须是合法 JSON 字符串
-- 如果不需要调用工具，直接输出简短文本回复
-- 工具调用格式: {"tool_calls": [{"id": "call_N", "function": {"name": "...", "arguments": "{\\"key\\": \\"value\\"}"}}]}"""
 
 EXECUTOR_SYSTEM_PROMPT = """你是一个 Vue 3 前端工程师，负责完成一个具体的代码生成任务。
 
@@ -264,18 +398,25 @@ EXECUTOR_SYSTEM_PROMPT = """你是一个 Vue 3 前端工程师，负责完成一
 - 任务描述
 - 需要生成的文件列表
 - 接口契约（exports/props/events 要求）
+- 架构 Spec 相关片段（组件树/页面/数据模型/API 契约）与设计文档摘要
 - 依赖文件的接口摘要
 
 ## 工作流程
-1. 理解任务目标和接口契约
-2. 调用 use_skill 或 mcp_query 获取模板和文档
-3. 调用 write_code 逐个生成文件
-4. 全部文件生成后调用 compile_project 检查
-5. 有编译错误时修复后再 compile
-6. 编译通过后输出 __TASK_DONE__
+1. 理解任务目标、接口契约与架构 Spec 片段
+2. 调用 list_files 查看项目现状（**只调用一次**；项目为空是正常的初始状态，直接开始生成，不要反复查询、不要空转）
+3. 需要了解已有文件接口时，调用 read_file 读取
+4. 调用 use_skill 或 mcp_query 获取模板和文档
+5. 调用 write_code 逐个生成文件（只生成 task 范围内的文件）——**每次工具调用都必须推进任务：查询类工具最多用 1-2 次，之后必须调用 write_code 生成文件，禁止只查询不生成**
+6. 全部文件写完后输出 __TASK_DONE__
+
+## 编译（可选工具，自行决定时机）
+- compile_project 用于验证代码：import 路径、接口契约、类型是否正确。需要验证时自行调用查看结果；调用后发现错误，自行决定是否修复后再结束
+- full=true 时包含 vue-tsc 类型检查（较慢），需要验证类型时用 full=true；平时用默认（快速检查）即可
+- 不要每轮都调用编译；系统会在所有任务结束后统一执行全量编译，任务完成后仍存在的问题会进入系统修复流程——**任务完成不要求编译通过**
 
 ## 规则
 - 只生成该 task 范围内的文件
+- 生成代码必须与架构 Spec 片段一致：页面/组件/数据模型/API 契约不得遗漏或偏离
 - 遵守接口契约，确保导出的 props/events/slots 与契约一致
 - 每次只做一件事
 - 组件名使用 PascalCase，文件名使用 kebab-case
@@ -285,290 +426,122 @@ EXECUTOR_SYSTEM_PROMPT = """你是一个 Vue 3 前端工程师，负责完成一
 """
 
 
-async def code_node(state: GenerationState) -> GenerationState:
-    """代码生成节点 — 工具增强的迭代式工程生成."""
-    logger.info("code_node_start")
+async def code_passthrough_node(state: GenerationState) -> GenerationState:
+    """LangGraph 'code' node — code generation is handled by graph Phase 3
+    (Planner + Executor streaming). This passthrough preserves the already
+    generated files so the graph can proceed to review without regenerating.
+    """
+    logger.info("code_passthrough_node")
+    return {
+        **state,
+        "stage_phase": "complete",
+    }
 
-    import tempfile
-    import os as _os
 
-    project_root = _os.path.join(
-        tempfile.gettempdir(),
-        "ai-gen",
-        state.get("requirement", "project")[:20].replace(" ", "_"),
+# Background architecture-spec generation, keyed by generation_id. Started
+# right after the design stream completes (graph Phase 2); the planner awaits
+# it inside its own task — the frontend already shows "功能开发 / 规划中" by
+# then, so the confirm click is never blocked by spec generation. Results are
+# cached per generation_id to survive across fresh-start confirms.
+_spec_background_tasks: dict[str, asyncio.Task] = {}
+_spec_results: dict[str, dict] = {}
+# Per-generation chunk queues: the background task streams its reasoning and
+# token chunks here; the planner drains them while awaiting so the AgentLog
+# shows the spec being generated instead of dead air.
+_spec_event_queues: dict[str, asyncio.Queue] = {}
+
+
+def start_background_spec(
+    generation_id: str,
+    analysis_result: str,
+    design_doc: str,
+) -> None:
+    """Kick off architecture-spec generation with a per-generation event
+    queue. The planner drains the queue while awaiting the task, so the
+    spec's generation stream reaches the AgentLog (thinking_chunk events)."""
+    q: asyncio.Queue = asyncio.Queue()
+    _spec_event_queues[generation_id] = q
+    _spec_background_tasks[generation_id] = asyncio.create_task(
+        generate_architecture_spec(
+            analysis_result=analysis_result,
+            design_doc=design_doc,
+            on_reasoning=q.put_nowait,
+            on_token=q.put_nowait,
+        )
     )
+    logger.info("architecture_spec_background_started gen=%s", generation_id)
 
-    from .tools.registry import ToolRegistry
-    registry = ToolRegistry(project_root)
 
-    design_doc = state.get("design_doc") or state.get("design_result", "")
-    failure = state.get("failure_details")
+async def await_architecture_spec(
+    generation_id: str | None,
+    analysis_result: str,
+    design_doc: str,
+    on_reasoning: Any | None = None,
+) -> dict:
+    """Get the architecture spec, cheapest source first.
 
-    tools_schema = registry.get_schema()
-    system_prompt = CODE_ORCHESTRATOR_PROMPT
+    1. cached result from a previous phase (e.g. code-confirm re-entry),
+    2. the in-flight background task started during the design phase,
+    3. synchronous generation (no task was ever started).
+    The result is cached under generation_id so later phases reuse it.
+    on_reasoning is the AgentLog sink: the in-flight background task's queued
+    chunks (reasoning + tokens) are drained and forwarded to it while
+    awaiting; a synchronous generation streams directly into it.
+    """
+    if generation_id and generation_id in _spec_results:
+        logger.info("architecture_spec_cached gen=%s", generation_id)
+        return _spec_results[generation_id]
 
-    if failure:
-        user_msg = (
-            f"设计方案：\n{design_doc}\n\n"
-            f"之前的代码存在问题：\n{failure['instruction']}\n\n"
-            f"请修复代码，确保通过编译和校验。"
-        )
-    else:
-        user_msg = (
-            f"设计方案：\n{design_doc}\n\n"
-            f"开始生成工程代码。先调用 list_skills 了解可用模板，然后规划文件结构并逐步生成。"
-        )
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_msg},
-    ]
-
-    max_tool_rounds = 20
-    generated_files: dict[str, str] = {}
-    last_compile_errors: list[dict] | None = None
-
-    for round_idx in range(max_tool_rounds):
-        logger.info("code_tool_round", round=round_idx + 1)
-
-        try:
-            response = await _llm_generate_with_tools(
-                messages=messages,
-                tools=tools_schema,
-                model="glm-5.2",
-            )
-        except Exception as e:
-            logger.error("llm_tool_call_error", error=str(e))
-            break
-
-        if response.get("tool_calls"):
-            for tc in response["tool_calls"]:
-                tool_name = tc["function"]["name"]
+    task = _spec_background_tasks.get(generation_id) if generation_id else None
+    if task is not None:
+        q = _spec_event_queues.get(generation_id) if generation_id else None
+        if q is not None:
+            # Forward the spec's generation stream to the AgentLog while the
+            # task runs — without this the planner_start message is followed
+            # by minutes of silence (spec generation runs with thinking off,
+            # so tokens are the only visible progress).
+            while not task.done():
                 try:
-                    tool_args = json.loads(tc["function"]["arguments"])
-                except json.JSONDecodeError:
-                    tool_args = {}
-
-                result = await registry.invoke(tool_name, tool_args)
-
-                if tool_name == "write_code" and result.ok:
-                    generated_files[tool_args.get("path", "")] = tool_args.get("content", "")
-                elif tool_name == "use_skill" and result.ok:
-                    for f in result.data.get("files", []):
-                        generated_files[f["path"]] = f["content"]
-                        # Also write to disk
-                        _os.makedirs(
-                            _os.path.dirname(_os.path.join(project_root, f["path"])),
-                            exist_ok=True,
-                        )
-                        with open(_os.path.join(project_root, f["path"]), "w", encoding="utf-8") as wf:
-                            wf.write(f["content"])
-
-                if tool_name == "compile_project" and not result.ok:
-                    last_compile_errors = result.data.get("errors", [])
-
-                messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [tc],
-                })
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": json.dumps({
-                        "ok": result.ok,
-                        "data": result.data,
-                        "error": result.error,
-                    }, ensure_ascii=False),
-                })
-
-        elif response.get("content"):
-            messages.append({"role": "assistant", "content": response["content"]})
-            if "__CODE_GEN_DONE__" in (response.get("content") or ""):
-                logger.info("code_gen_done_signal")
-                break
-
-        if round_idx > 0 and round_idx % 3 == 0 and generated_files:
-            compile_result = await registry.invoke("compile_project", {})
-            last_compile_errors = (
-                compile_result.data.get("errors", [])
-                if not compile_result.ok
-                else []
-            )
-            if compile_result.ok and not last_compile_errors:
-                logger.info("compile_passed_early", round=round_idx + 1)
-                break
-
-    state["code_result"] = json.dumps(generated_files, ensure_ascii=False)
-    state["generated_files"] = generated_files
-    state["compile_errors"] = last_compile_errors
-    state["stage_phase"] = "complete"
-
-    return state
-
-
-async def code_node_streaming(
-    state: GenerationState,
-    queue,
-) -> GenerationState:
-    """代码生成节点 — streaming 版本，每步工具调用通过 queue 实时发射事件."""
-
-    import tempfile, os as _os, json as _json, re
-
-    _raw_name = state.get("requirement", "project")[:30]
-    _safe_name = re.sub(r'[^\w]', '_', _raw_name)[:30].strip('_') or "ai-gen-project"
-    project_root = _os.path.join(tempfile.gettempdir(), "ai-gen", _safe_name)
-
-    from .tools.registry import ToolRegistry
-
-    try:
-        registry = ToolRegistry(project_root)
-    except Exception as e:
-        logger.error("tool_registry_init_failed", error=str(e))
-        queue.put_nowait(_make_queue_event("code_gen_done", "code", {
-            "total_files": 0, "compile_errors": 1,
-        }))
-        state["generated_files"] = {}
-        state["compile_errors"] = [{"file": "", "line": 0, "message": str(e)}]
-        state["code_result"] = "{}"
-        state["stage_phase"] = "complete"
-        return state
-
-    tools_schema = registry.get_schema()
-
-    design_doc = state.get("design_doc") or state.get("design_result", "")
-    failure = state.get("failure_details")
-    system_prompt = CODE_ORCHESTRATOR_PROMPT
-
-    if failure:
-        user_msg = (
-            f"设计方案：\n{design_doc}\n\n"
-            f"之前的代码存在问题：\n{failure['instruction']}\n\n"
-            f"请修复代码，确保通过编译和校验。"
-        )
-    else:
-        user_msg = (
-            f"设计方案：\n{design_doc}\n\n"
-            f"开始生成工程代码。先调用 list_skills 了解可用模板，然后规划文件结构并逐步生成。"
-        )
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_msg},
-    ]
-
-    max_tool_rounds = 20
-    generated_files: dict[str, str] = {}
-    last_compile_errors: list[dict] | None = None
-
-    planned_files = _estimate_files(design_doc)
-    queue.put_nowait(_make_queue_event("code_gen_start", "code", {
-        "files": planned_files,
-    }))
-
-    for round_idx in range(max_tool_rounds):
-        logger.info("code_tool_round", round=round_idx + 1)
-
-        def on_thinking(text: str):
-            queue.put_nowait(_make_queue_event("thinking_chunk", "code", {"text": text}))
-
+                    text = await asyncio.wait_for(q.get(), timeout=0.1)
+                    if text and on_reasoning:
+                        on_reasoning(text)
+                except asyncio.TimeoutError:
+                    pass
+            while not q.empty():
+                text = q.get_nowait()
+                if text and on_reasoning:
+                    on_reasoning(text)
+            _spec_event_queues.pop(generation_id, None)
         try:
-            response = await _llm_generate_with_tools_streaming(
-                messages=messages,
-                tools=tools_schema,
-                model="glm-5.2",
-                on_thinking=on_thinking,
-            )
+            spec = await task
+            if generation_id:
+                _spec_results[generation_id] = spec
+                _spec_background_tasks.pop(generation_id, None)
+            logger.info("architecture_spec_background_done gen=%s", generation_id)
+            return spec
         except Exception as e:
-            logger.error("llm_tool_call_error", error=str(e))
-            break
+            logger.warning("background_spec_task_failed", generation_id=generation_id, error=str(e))
+            _spec_background_tasks.pop(generation_id, None)
 
-        if response.get("tool_calls"):
-            for tc in response["tool_calls"]:
-                tool_name = tc["function"]["name"]
-                try:
-                    tool_args = _json.loads(tc["function"]["arguments"])
-                except _json.JSONDecodeError:
-                    tool_args = {}
+    logger.info("architecture_spec_sync gen=%s", generation_id)
+    spec = await generate_architecture_spec(
+        analysis_result=analysis_result,
+        design_doc=design_doc,
+        on_reasoning=on_reasoning,
+        on_token=on_reasoning,
+    )
+    if generation_id:
+        _spec_results[generation_id] = spec
+    return spec
 
-                queue.put_nowait(_make_queue_event("tool_call", "code", {
-                    "tool": tool_name,
-                    "args": tool_args,
-                    "status": "running",
-                }))
 
-                result = await registry.invoke(tool_name, tool_args)
-
-                queue.put_nowait(_make_queue_event("tool_result", "code", {
-                    "tool": tool_name,
-                    "ok": result.ok,
-                    "detail": result.data,
-                }))
-
-                if tool_name in ("create_file", "write_code") and result.ok:
-                    path = tool_args.get("path", "")
-                    content = tool_args.get("content", "")
-                    if tool_name == "write_code" and content:
-                        generated_files[path] = content
-                        queue.put_nowait(_make_queue_event("file_start", "code", {"path": path}))
-                        chunk_size = 200
-                        for i in range(0, len(content), chunk_size):
-                            queue.put_nowait(_make_queue_event("file_chunk", "code", {
-                                "path": path,
-                                "content": content[i:i + chunk_size],
-                            }))
-                        queue.put_nowait(_make_queue_event("file_complete", "code", {"path": path}))
-
-                elif tool_name == "use_skill" and result.ok:
-                    for f in result.data.get("files", []):
-                        path = f["path"]
-                        content = f["content"]
-                        # Write to disk
-                        _os.makedirs(_os.path.dirname(_os.path.join(project_root, path)), exist_ok=True)
-                        with open(_os.path.join(project_root, path), "w", encoding="utf-8") as wf:
-                            wf.write(content)
-                        # Track file (don't emit frontend events — write_code handles that)
-                        if path not in generated_files:
-                            generated_files[path] = content
-
-                elif tool_name == "compile_project":
-                    errors = result.data.get("errors", []) if not result.ok else []
-                    last_compile_errors = errors if not result.ok else None
-                    queue.put_nowait(_make_queue_event("compile_status", "code", {
-                        "ok": result.ok,
-                        "errors": errors,
-                    }))
-
-                messages.append({"role": "assistant", "content": None, "tool_calls": [tc]})
-                messages.append({"role": "tool", "tool_call_id": tc["id"],
-                    "content": _json.dumps({"ok": result.ok, "data": result.data, "error": result.error},
-                    ensure_ascii=False)})
-
-        elif response.get("content"):
-            messages.append({"role": "assistant", "content": response["content"]})
-            if "__CODE_GEN_DONE__" in (response.get("content") or ""):
-                break
-
-        if round_idx > 0 and round_idx % 3 == 0 and generated_files:
-            compile_result = await registry.invoke("compile_project", {})
-            ok = compile_result.ok
-            errors = compile_result.data.get("errors", []) if not ok else []
-            queue.put_nowait(_make_queue_event("compile_status", "code", {
-                "ok": ok, "errors": errors,
-            }))
-            if ok and not errors:
-                break
-
-    queue.put_nowait(_make_queue_event("code_gen_done", "code", {
-        "total_files": len(generated_files),
-        "compile_errors": len(last_compile_errors) if last_compile_errors else 0,
-    }))
-
-    state["generated_files"] = generated_files
-    state["compile_errors"] = last_compile_errors
-    state["code_result"] = _json.dumps(generated_files, ensure_ascii=False)
-    state["stage_phase"] = "complete"
-    return state
+def cancel_background_spec(generation_id: str) -> None:
+    """Cancel a pending background spec task (generation cancelled/abandoned)."""
+    task = _spec_background_tasks.pop(generation_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+    _spec_results.pop(generation_id, None)
+    _spec_event_queues.pop(generation_id, None)
 
 
 async def planner_node(
@@ -581,62 +554,144 @@ async def planner_node(
     design_doc = state.get("design_doc") or state.get("design_result", "")
     failure = state.get("failure_details")
     reflect_count = state.get("planner_reflect_count", 0)
+    code_feedback = state.get("code_feedback", "")
+    architecture_spec = state.get("architecture_spec")
 
-    user_prompt = build_planner_user_prompt(design_doc, failure)
+    # Tell the user planning started BEFORE any awaiting — otherwise the stage
+    # entry (stage_start) is followed by long dead air while the Spec awaits.
+    queue.put_nowait(_make_queue_event("planner_start", "code", {
+        "phase": "planning",
+        "message": "正在准备架构规格与任务规划...",
+    }))
 
-    # REASON + ACT: 一次性输出 DAG
+    # Spec consumption happens INSIDE the planner task — by the time this runs,
+    # the frontend already shows the code stage ("规划中"), so the user never
+    # waits on the confirm click. Uses the cached / background / sync chain.
+    # Spec thinking is streamed to the AgentLog so the wait is visible.
+    def on_spec_thinking(text: str):
+        queue.put_nowait(_make_queue_event("thinking_chunk", "code", {"text": text}))
+
+    if not architecture_spec and state.get("analysis_result"):
+        architecture_spec = await await_architecture_spec(
+            state.get("generation_id"),
+            analysis_result=state["analysis_result"],
+            design_doc=design_doc,
+            on_reasoning=on_spec_thinking,
+        )
+
+    # Resilience: a business-invalid Spec (e.g. empty placeholder fallback)
+    # must NOT dead-end the pipeline — fall back to the prose design-doc path
+    # so code generation still happens.
+    if architecture_spec:
+        from .spec_schema import validate_spec
+
+        spec_problems = validate_spec(architecture_spec)
+        if spec_problems:
+            logger.warning(
+                "planner_spec_invalid_fallback_to_prose",
+                problems=spec_problems[:5],
+            )
+            architecture_spec = None
+
+    user_prompt = build_planner_user_prompt(architecture_spec, design_doc, failure)
+
+    # Self-review mode: user feedback replans against the project's ACTUAL
+    # state — recovered files, last compile errors, failed tasks (injected by
+    # the servicer on fresh-start). Any input goes through this same path; the
+    # agent decides what needs doing. No keyword matching.
+    if code_feedback:
+        from .planner import build_feedback_planner_prompt
+        from .state import resolve_project_root
+
+        user_prompt = build_feedback_planner_prompt(
+            design_doc=design_doc,
+            generated_files=state.get("generated_files") or {},
+            feedback_history=state.get("feedback_history"),
+            code_feedback=code_feedback,
+            project_root=resolve_project_root(
+                state.get("generation_id"), state.get("requirement", ""),
+            ),
+        )
+
+    # REASON + ACT: 一次性输出 DAG (planner_start already emitted at the top)
     def on_thinking(text: str):
         queue.put_nowait(_make_queue_event("thinking_chunk", "code", {"text": text}))
 
-    queue.put_nowait(_make_queue_event("planner_start", "code", {
-        "phase": "planning",
-        "message": "正在分析设计方案，拆解任务...",
-    }))
-
+    # The DAG JSON is LARGER than the Spec JSON (each task carries
+    # files/contract/deps) AND thinking consumes budget — 16k gives both room
+    # (8192 still truncated a 11-task DAG with thinking enabled). The
+    # tolerant parser + truncated flag below handle any remaining truncation.
     raw_response = await _llm_generate(
         system_prompt=PLANNER_SYSTEM_PROMPT,
         user_content=user_prompt,
         enable_thinking=True,
+        max_tokens=16384,
         on_reasoning=on_thinking,
     )
 
+    # Empty response (DeepSeek thinking can consume the whole budget, or the
+    # API returns a transient empty completion) — same failure class as the
+    # incremental replan. Retry once with a nudge; persistent emptiness falls
+    # through to the existing fallback below instead of silently degrading to
+    # a spec-fallback DAG on the first empty.
+    if not raw_response.strip():
+        logger.warning("planner_empty_retry gen=%s", state.get("generation_id"))
+        queue.put_nowait(_make_queue_event("thinking_chunk", "code", {
+            "text": "任务规划输出为空，重新生成完整任务列表...",
+        }))
+        raw_response = await _llm_generate(
+            system_prompt=PLANNER_SYSTEM_PROMPT,
+            user_content=user_prompt + "\n\n注意：你上次的输出为空。请重新输出完整的 JSON 任务列表。",
+            enable_thinking=True,
+            max_tokens=16384,
+            on_reasoning=on_thinking,
+        )
+
     try:
         dag = extract_task_dag(raw_response)
+        if dag.pop("truncated", False):
+            # Output hit the token ceiling — a repaired tail is silently
+            # INCOMPLETE (only the leading tasks survived). Never accept a
+            # partial DAG quietly: retry once with an explicit completeness
+            # hint (a second generation usually fits — the model has seen
+            # the shape). Still truncated → keep the best result; the
+            # final-compile repair loop replans whatever surfaces missing.
+            logger.warning("planner_dag_truncated_retry gen=%s", state.get("generation_id"))
+            queue.put_nowait(_make_queue_event("thinking_chunk", "code", {
+                "text": "任务规划输出不完整（被截断），重新生成完整任务列表...",
+            }))
+            retry_prompt = (
+                f"{user_prompt}\n\n"
+                f"注意：你上次的输出被截断了（只输出了部分任务）。请重新输出【完整】的 JSON："
+                f"包含全部任务，不要省略任何任务。"
+            )
+            raw_retry = await _llm_generate(
+                system_prompt=PLANNER_SYSTEM_PROMPT,
+                user_content=retry_prompt,
+                enable_thinking=True,
+                max_tokens=16384,
+                on_reasoning=on_thinking,
+            )
+            try:
+                retry_dag = extract_task_dag(raw_retry)
+                if not retry_dag.pop("truncated", False):
+                    dag = retry_dag
+                else:
+                    dag = retry_dag  # still truncated — keep the fuller attempt
+            except Exception:
+                pass  # retry unusable — keep the truncated first result
     except Exception as e:
         logger.error("planner_extract_failed", error=str(e))
-        # Fallback: minimal DAG with code generation task
-        dag = {
-            "reasoning": "Fallback due to parse error",
-            "tasks": [
-                {
-                    "id": "task-bootstrap-0",
-                    "type": "bootstrap",
-                    "description": "qiankun lifecycle entry",
-                    "deps": [],
-                    "files": ["src/main.ts", "src/public-path.ts"],
-                    "contract": {"exports": ["bootstrap", "mount", "unmount"]},
-                    "status": "pending",
-                },
-                {
-                    "id": "task-bootstrap-1",
-                    "type": "bootstrap",
-                    "description": "webpack + package config",
-                    "deps": [],
-                    "files": ["webpack/webpack.common.js", "package.json", "tsconfig.json"],
-                    "contract": {"exports": []},
-                    "status": "pending",
-                },
-                {
-                    "id": "task-code-0",
-                    "type": "business",
-                    "description": "Main app component and all business code",
-                    "deps": ["task-bootstrap-0"],
-                    "files": _estimate_files(design_doc),
-                    "contract": {"exports": ["App"]},
-                    "status": "pending",
-                },
-            ],
-        }
+        # Spec-driven fallback — one business task per top-level directory
+        # group from directory_tree. NEVER a hardcoded scaffold: the old
+        # hardcoded qiankun/webpack template generated a project that
+        # contradicted the Spec (Vite). Empty when no Spec — graph.py
+        # surfaces the explicit "no tasks" error instead of a wrong project.
+        from .planner import build_spec_fallback_dag
+
+        dag = build_spec_fallback_dag(architecture_spec, design_doc)
+        if not dag["tasks"]:
+            logger.error("planner_fallback_empty spec_missing=%s", architecture_spec is None)
 
     task_dag = {
         "tasks": dag["tasks"],
@@ -658,6 +713,49 @@ async def planner_node(
     return state
 
 
+async def run_incremental_replan(
+    system_prompt: str,
+    replan_prompt: str,
+    max_tokens: int = 16384,
+    retries: int = 1,
+) -> dict:
+    """Incremental replan LLM call — retry on empty/parse failure.
+
+    DeepSeek thinking consumes the SAME max_tokens budget: the planner main
+    path needs 16384, and so does this one — 4096 (the ``_llm_generate``
+    default) lets reasoning eat the whole budget and the response comes back
+    EMPTY, which ``extract_task_dag`` cannot parse and dead-ends generation.
+    A single retry (with feedback) absorbs transient empty/invalid responses;
+    bounded, so a persistently failing model surfaces as an explicit error
+    (never a silent empty DAG).
+    """
+    last_raw = ""
+    for attempt in range(retries + 1):
+        raw = await _llm_generate(
+            system_prompt=system_prompt,
+            user_content=replan_prompt,
+            enable_thinking=True,
+            max_tokens=max_tokens,
+        )
+        last_raw = raw
+        if not (raw or "").strip():
+            if attempt < retries:
+                replan_prompt += "\n\n注意：你上次的输出为空。请重新输出完整的 JSON 任务列表。"
+                continue
+            break
+        try:
+            return extract_task_dag(raw)
+        except Exception:
+            if attempt < retries:
+                replan_prompt += (
+                    "\n\n注意：你上次的输出不是合法 JSON，请只输出一个 JSON 对象。"
+                    f"上次输出前 200 字：{(raw or '')[:200]}"
+                )
+                continue
+            raise
+    raise ValueError(f"增量重规划输出为空：{(last_raw or '')[:200]}")
+
+
 async def executor_task(
     state: GenerationState,
     task: dict,
@@ -668,6 +766,11 @@ async def executor_task(
     """
     Executor Agent — 为单个 task 运行 REASON→ACT→OBSERVE→REFLECT loop.
     Returns: {task_id, status, generated_files, compile_errors, summary}
+
+    Compilation is at the LLM's own discretion: the executor never triggers
+    compile_project automatically — the model calls it as a tool when it
+    wants to verify, and the final full compile (graph Step 4) is the
+    system-level gate after all tasks complete.
     """
     task_id = task["id"]
     logger.info("executor_task_start", task_id=task_id, desc=task.get("description", ""))
@@ -693,13 +796,20 @@ async def executor_task(
     files_to_generate = task.get("files", [])
     contract = task.get("contract", {})
 
+    # Design context: architecture spec fragments + design doc summary, so the
+    # generated code stays aligned with the design (not just the task contract).
+    spec_context = _build_executor_spec_context(state.get("architecture_spec"), task)
+    design_doc = state.get("design_doc") or state.get("design_result", "")
+
     system_prompt = EXECUTOR_SYSTEM_PROMPT
     user_msg = (
         f"## 任务\n{task.get('description', '')}\n\n"
         f"## 需要生成的文件\n{json.dumps(files_to_generate, ensure_ascii=False)}\n\n"
         f"## 接口契约要求\n{json.dumps(contract, ensure_ascii=False)}"
         f"{deps_info}\n\n"
-        f"开始生成。先调用 list_skills 了解可用模板。"
+        f"{spec_context}"
+        f"## 设计文档摘要\n{design_doc[:2000]}\n\n"
+        f"开始生成。先调用 list_files 查看项目现状，然后调用 list_skills 了解可用模板。"
     )
 
     messages = [
@@ -710,8 +820,21 @@ async def executor_task(
     max_rounds = 12
     generated_files: dict[str, str] = {}
     compile_errors: list[dict] | None = None
+    env_blocked = False  # environment error — skip LLM repair, fail task fast
+    partial_paths: list[str] = []  # unresolved imports (deps of later tasks)
+    llm_error: str | None = None  # LLM 调用失败原因(超时/HTTP/网络)
+
+    from .tools.compile_tool import (
+        ENV_ERROR_KIND,
+        _env_error,
+        classify_compile_errors,
+        extract_missing_paths,
+        is_env_error,
+    )
 
     for round_idx in range(max_rounds):
+        if env_blocked:
+            break
         def on_thinking(text: str):
             queue.put_nowait(_make_queue_event("thinking_chunk", "code", {"text": text}))
 
@@ -719,11 +842,15 @@ async def executor_task(
             response = await _llm_generate_with_tools_streaming(
                 messages=messages,
                 tools=registry.get_schema(),
-                model="glm-5.2",
+                model="deepseek-v4-pro",
                 on_thinking=on_thinking,
             )
         except Exception as e:
+            # LLM 调用失败(超时/HTTP/网络)——不允许静默 break:任务必须
+            # 以 failed + failure_kind="llm_error" 收场,由 planner_reflect
+            # 的重试/replan 层级接管恢复;前端通过 task_complete 可见。
             logger.error("executor_llm_error", task_id=task_id, error=str(e))
+            llm_error = str(e)
             break
 
         if response.get("tool_calls"):
@@ -734,11 +861,30 @@ async def executor_task(
                 except json.JSONDecodeError:
                     tool_args = {}
 
+                # Bound per tool call: the env-error check below reads `errors`
+                # even for non-compile tools — a failing FIRST tool call (e.g.
+                # LLM hallucinated a tool name → registry ok=False + error)
+                # must not crash with UnboundLocalError before any assignment.
+                errors: list[dict] = []
+
                 queue.put_nowait(_make_queue_event("tool_call", "code", {
                     "tool": tool_name,
                     "args": tool_args,
                     "task_id": task_id,
                 }))
+
+                if not tool_name:
+                    # Empty tool name (broken streamed delta that survived
+                    # aggregation) — never invoke "" (registry would fail as
+                    # "Unknown tool" and sink the task via the env path). Tell
+                    # the LLM the call was invalid so it can retry properly.
+                    messages.append({"role": "assistant", "content": None, "tool_calls": [tc],
+                                     "reasoning_content": response.get("reasoning_content")})
+                    messages.append({"role": "tool", "tool_call_id": tc["id"],
+                                     "content": json.dumps(
+                                         {"ok": False, "data": {}, "error": "工具名为空(模型输出异常),请重新调用"},
+                                         ensure_ascii=False)})
+                    continue
 
                 result = await registry.invoke(tool_name, tool_args)
 
@@ -773,20 +919,76 @@ async def executor_task(
                         _os.makedirs(_os.path.dirname(_os.path.join(project_root, fpath)), exist_ok=True)
                         with open(_os.path.join(project_root, fpath), "w", encoding="utf-8") as wf:
                             wf.write(fcontent)
+                        # Emit file events so the frontend preview receives
+                        # skill-generated files too (was a blind spot before —
+                        # preview bundling missed them → partial/empty builds).
                         if fpath not in generated_files:
                             generated_files[fpath] = fcontent
+                        queue.put_nowait(_make_queue_event("file_start", "code", {"path": fpath}))
+                        chunk_size = 200
+                        for i in range(0, len(fcontent), chunk_size):
+                            queue.put_nowait(_make_queue_event("file_chunk", "code", {
+                                "path": fpath,
+                                "content": fcontent[i:i + chunk_size],
+                                "chunk_index": i // chunk_size,
+                                "is_last_chunk_for_file": (i + chunk_size >= len(fcontent)),
+                            }))
+                        queue.put_nowait(_make_queue_event("file_complete", "code", {"path": fpath}))
 
                 elif tool_name == "compile_project":
                     data = result.data or {}
                     errors = data.get("errors", []) if not result.ok else []
                     compile_errors = errors if not result.ok else None
+                    # Partial: unresolved imports of files not generated yet.
+                    # Record which paths were missing — graph.py checks whether
+                    # they're planned by ANY task; if not, it's a planning gap
+                    # → incremental replan (not a silent "all good").
+                    if data.get("partial"):
+                        for p in data.get("partial_paths", []):
+                            p_clean = p.lstrip("./")
+                            if p_clean and p_clean not in partial_paths:
+                                partial_paths.append(p_clean)
                     queue.put_nowait(_make_queue_event("compile_status", "code", {
                         "ok": result.ok,
                         "errors": errors,
                         "task_id": task_id,
                     }))
 
-                messages.append({"role": "assistant", "content": None, "tool_calls": [tc]})
+                    # Environment errors (worker unreachable / missing dir /
+                    # empty project) have no code to fix — do NOT feed them
+                    # into the LLM repair loop (it would burn rounds rewriting
+                    # valid files). Retry briefly; if still broken, fail the
+                    # task so the dependency gate / planner reflect handles it.
+                    if errors and all(is_env_error(e) for e in errors):
+                        for attempt in range(2):
+                            await asyncio.sleep(1.0)
+                            # Retry at the same level the LLM asked for — no
+                            # forced mode override (compile timing/mode is the
+                            # model's own decision).
+                            retry = await registry.invoke("compile_project", {"full": tool_args.get("full", False)})
+                            if retry.ok:
+                                compile_errors = None
+                                queue.put_nowait(_make_queue_event("compile_status", "code", {
+                                    "ok": True, "errors": [], "task_id": task_id,
+                                }))
+                                break
+                            errors = retry.data.get("errors", []) if not retry.ok else []
+                            compile_errors = errors
+                        else:
+                            logger.warning(
+                                "executor_env_error_task_failed",
+                                task_id=task_id, errors=[e.get("message") for e in errors][:3],
+                            )
+                            env_blocked = True
+
+                messages.append({"role": "assistant", "content": None, "tool_calls": [tc],
+                                 "reasoning_content": response.get("reasoning_content")})
+                # Worker unreachable or empty project — explicit failure
+                if not result.ok and not errors and result.error:
+                    compile_errors = [_env_error(result.error)]
+                    queue.put_nowait(_make_queue_event("compile_status", "code", {
+                        "ok": False, "errors": compile_errors, "task_id": task_id,
+                    }))
                 messages.append({"role": "tool", "tool_call_id": tc["id"],
                     "content": json.dumps({"ok": result.ok, "data": result.data, "error": result.error},
                     ensure_ascii=False)})
@@ -794,37 +996,66 @@ async def executor_task(
         elif response.get("content"):
             content = response["content"]
             messages.append({"role": "assistant", "content": content})
+            # The agent's own words, streamed verbatim — the dialogue surface.
+            # Internal markers and blank text never reach the UI.
+            text = content.replace("__TASK_DONE__", "").strip()
+            if text:
+                queue.put_nowait(_make_queue_event("agent_message", "code", {
+                    "text": text,
+                    "task_id": task_id,
+                }))
             if "__TASK_DONE__" in content:
                 break
 
-        # Auto-compile every 4 rounds
-        if round_idx > 0 and round_idx % 4 == 0 and generated_files:
-            compile_result = await registry.invoke("compile_project", {})
-            ok = compile_result.ok
-            errors = compile_result.data.get("errors", []) if not ok else []
-            queue.put_nowait(_make_queue_event("compile_status", "code", {
-                "ok": ok, "errors": errors, "task_id": task_id,
-            }))
-            if ok and not errors:
-                break
+        else:
+            # 空轮次:既无工具调用也无内容——思考耗尽预算或流异常收尾。
+            # 相同上下文重发只会得到相同结果,不得静默空转烧轮次预算:
+            # 显式失败,交给 planner_reflect 的重试/replan 恢复。
+            logger.warning(
+                "executor_empty_round",
+                task_id=task_id,
+                round=round_idx,
+                reasoning_len=len(response.get("reasoning_content") or ""),
+            )
+            llm_error = "LLM 返回空轮次(既无工具调用也无内容,思考可能耗尽预算)"
+            break
+
+        # No automatic compile trigger here — compile timing is at the LLM's
+        # own discretion (compile_project tool). The system-wide full compile
+        # runs in graph Step 4 after ALL tasks complete.
 
     # Build summary
     summary = f"Task {task_id} done: {len(generated_files)} files"
     compile_err_count = len(compile_errors) if compile_errors else 0
+    failure_kind = "done"
+    missing_paths: list[str] = []
+    if llm_error:
+        failure_kind = "llm_error"
+        summary = f"Task {task_id} failed (LLM 调用失败): {llm_error[:200]}"
+    elif compile_errors:
+        failure_kind = classify_compile_errors(compile_errors)
+        if failure_kind == "missing_file":
+            missing_paths = extract_missing_paths(compile_errors)
 
     queue.put_nowait(_make_queue_event("task_complete", "code", {
         "task_id": task_id,
         "summary": summary,
         "file_count": len(generated_files),
         "compile_errors": compile_err_count,
+        "failure_kind": failure_kind,
+        "llm_error": llm_error,
     }))
 
     return {
         "task_id": task_id,
-        "status": "done" if not compile_errors else "failed",
+        "status": "done" if (not compile_errors and not llm_error) else "failed",
         "generated_files": generated_files,
         "compile_errors": compile_errors,
+        "llm_error": llm_error,
         "summary": summary,
+        "failure_kind": failure_kind,
+        "missing_paths": missing_paths,
+        "partial_paths": partial_paths,
     }
 
 
@@ -860,26 +1091,70 @@ async def planner_reflect_node(
     ]
 
     if all_done and not failed_tasks and not compile_errors:
-        # All good
+        # All good — event carries only the decision; the frontend renders
+        # the status card text (backend events have zero voice).
         queue.put_nowait(_make_queue_event("planner_reflect", "code", {
             "decision": "done",
-            "reason": "所有任务完成，编译通过",
         }))
         state["context_summary"] = context_summary
         state["stage_phase"] = "complete"
         return state
 
     if all_done and failed_tasks:
-        # Some tasks failed — auto-retry once
-        queue.put_nowait(_make_queue_event("planner_reflect", "code", {
-            "decision": "has_failures",
-            "failed_task_ids": [t["id"] for t in failed_tasks],
-        }))
+        # Classify failures — three tiers:
+        #   missing_file  → PLANNING gap (imports a file no task produces):
+        #                   files enter the replan pool immediately.
+        #   code/env      → first failure: retry once (same executor, its
+        #                   message history intact — fixes slips). Still
+        #                   failing after the retry: the retried executor's
+        #                   context is exhausted (12 rounds), repeating it
+        #                   won't converge — hand the task's OWN files to the
+        #                   incremental planner so a FRESH task/executor
+        #                   regenerates them with a clean context.
+        missing_paths: list[str] = []
+        retryable: list[dict] = []
+        replan_files: list[str] = []
+        for t in failed_tasks:
+            kind = t.get("failure_kind") or "code"
+            if kind == "missing_file":
+                missing_paths.extend(t.get("missing_paths") or [])
+            elif t.get("retry_count", 0) >= 1:
+                replan_files.extend(t.get("files") or [])
+            else:
+                retryable.append(t)
 
-        for t in dag.get("tasks", []):
-            if t.get("status") == "failed":
-                t["status"] = "pending"
-                t["compile_errors"] = None
+        retryable_ids = {t["id"] for t in retryable}
+
+        # Merge retried-but-failing tasks' files into the replan pool
+        if replan_files:
+            missing_paths.extend(replan_files)
+        if missing_paths:
+            # Dedup, keep order
+            seen: set[str] = set()
+            missing_paths = [p for p in missing_paths if not (p in seen or seen.add(p))]
+            state["replan_request"] = {
+                "missing_files": missing_paths,
+                "failed_task_ids": [t["id"] for t in failed_tasks],
+            }
+            queue.put_nowait(_make_queue_event("planner_reflect", "code", {
+                "decision": "replan_missing_files",
+                "missing_files": missing_paths,
+                "failed_task_ids": [t["id"] for t in failed_tasks],
+            }))
+
+        if retryable:
+            queue.put_nowait(_make_queue_event("planner_reflect", "code", {
+                "decision": "has_failures",
+                "failed_task_ids": sorted(retryable_ids),
+            }))
+            # Replan-covered tasks (missing_file, retried-once) stay failed;
+            # first-time code/env failures reset to pending with retry_count
+            # incremented — one retry, then the replan pool takes over.
+            for t in dag.get("tasks", []):
+                if t.get("status") == "failed" and t.get("id") in retryable_ids:
+                    t["status"] = "pending"
+                    t["compile_errors"] = None
+                    t["retry_count"] = t.get("retry_count", 0) + 1
 
         state["planner_reflect_count"] = state.get("planner_reflect_count", 0) + 1
         state["context_summary"] = context_summary
@@ -887,6 +1162,25 @@ async def planner_reflect_node(
 
     state["context_summary"] = context_summary
     return state
+
+
+def _build_executor_spec_context(spec: dict | None, task: dict) -> str:
+    """Serialize the Spec sections relevant to a task into the Executor prompt.
+
+    Sections: component_tree / pages / data_model / api_contracts (+ the task's
+    files). The task's own contract is already in the prompt; these fragments
+    give the Executor the design intent behind the contract.
+    """
+    if not spec:
+        return ""
+    sections = []
+    for key in ("component_tree", "pages", "data_model", "api_contracts"):
+        value = spec.get(key)
+        if value:
+            sections.append(f"### {key}\n{json.dumps(value, ensure_ascii=False, indent=2)}")
+    # Attach the task's own files to pages/component tree context implicitly —
+    # the full fragments above already cover them. Keep the block compact.
+    return f"## 架构 Spec 相关片段（设计意图，代码必须与此一致）\n" + "\n".join(sections) + "\n\n"
 
 
 def _estimate_files(design_doc: str) -> list[str]:
@@ -909,7 +1203,7 @@ def _make_queue_event(event_type: str, stage: str, data: dict) -> dict:
 async def _llm_generate_with_tools_streaming(
     messages: list[dict],
     tools: list[dict],
-    model: str = "glm-5.2",
+    model: str = "deepseek-v4-pro",
     on_thinking=None,
 ) -> dict:
     """Call LLM with native function calling — streaming via callback."""
@@ -923,102 +1217,87 @@ async def _llm_generate_with_tools_streaming(
         content = m.get("content")
         tc_list = m.get("tool_calls")
         if tc_list:
-            # Assistant message with tool_calls
+            # Assistant message with tool_calls — the STANDARD OpenAI payload
+            # field. (Previously serialized into content; DeepSeek strictly
+            # requires the real tool_calls field to see the calls.) The prior
+            # round's reasoning_content must be passed back verbatim in
+            # thinking mode (DeepSeek 400 without it).
             provider_messages.append(Message(
                 role=m.get("role", "assistant"),
-                content=json.dumps(tc_list, ensure_ascii=False) if content is None else (content or ""),
+                content=content or "",
+                tool_calls=tc_list,
+                reasoning_content=m.get("reasoning_content"),
             ))
         else:
             provider_messages.append(Message(
                 role=m.get("role", "user"),
                 content=content or "",
+                tool_call_id=m.get("tool_call_id"),
             ))
 
-    config = LLMConfig(enable_thinking=True, tools=tools)
+    # DeepSeek reasoning models consume thinking tokens from the SAME
+    # max_tokens budget — 4096 left too little for "think + write file
+    # content", forcing the model into tiny (query-only) actions. Generous
+    # budget so a write_code round survives its own reasoning.
+    config = LLMConfig(enable_thinking=True, max_tokens=8192, tools=tools)
 
     # Collect response
     full_content = ""
+    full_reasoning = ""
     tool_calls_list: list[dict] = []
     current_tool_call: dict | None = None
 
-    async for event in _provider.stream_generate(model, provider_messages, config):
-        if isinstance(event, TokenEvent):
-            full_content += event.text
-        elif isinstance(event, ReasoningEvent):
-            if on_thinking:
-                on_thinking(event.text)
-        elif isinstance(event, ToolCallEvent):
-            # Accumulate tool call deltas
-            if current_tool_call and current_tool_call.get("id") == event.call_id:
-                current_tool_call["function"]["arguments"] += (event.arguments or "")
-            else:
-                if current_tool_call:
-                    tool_calls_list.append(current_tool_call)
-                current_tool_call = {
-                    "id": event.call_id or "",
-                    "function": {
-                        "name": event.name or "",
-                        "arguments": event.arguments or "",
-                    },
-                }
-        elif isinstance(event, CompleteEvent):
-            if current_tool_call:
-                tool_calls_list.append(current_tool_call)
+    try:
+        async with asyncio.timeout(LLM_CALL_DEADLINE_SECONDS):
+            async for event in _provider.stream_generate(model, provider_messages, config):
+                if isinstance(event, TokenEvent):
+                    full_content += event.text
+                elif isinstance(event, ReasoningEvent):
+                    if on_thinking:
+                        on_thinking(event.text)
+                    # 累积思考内容 — DeepSeek 思考模式要求把上一轮的 reasoning_content
+                    # 原样回传(否则 400 "reasoning_content must be passed back")
+                    full_reasoning += event.text
+                elif isinstance(event, ToolCallEvent):
+                    # Accumulate tool call deltas. OpenAI-compatible streams put the
+                    # id/name on the FIRST chunk of an index; later chunks often carry
+                    # ONLY arguments (no id). An id-less chunk CONTINUES the current
+                    # call — opening a new entry on it produced empty-named tool
+                    # invocations (`tool: ""` → unknown tool → task failure). A
+                    # late-arriving name fills the current call.
+                    if current_tool_call and (event.call_id == current_tool_call.get("id") or not event.call_id):
+                        if event.arguments:
+                            current_tool_call["function"]["arguments"] += event.arguments
+                        if event.name and not current_tool_call["function"].get("name"):
+                            current_tool_call["function"]["name"] = event.name
+                    else:
+                        if current_tool_call:
+                            tool_calls_list.append(current_tool_call)
+                        current_tool_call = {
+                            "id": event.call_id or "",
+                            "type": "function",  # OpenAI 标准字段 — DeepSeek 严格校验(400 missing field `type`)
+                            "function": {
+                                "name": event.name or "",
+                                "arguments": event.arguments or "",
+                            },
+                        }
+                elif isinstance(event, CompleteEvent):
+                    if current_tool_call:
+                        tool_calls_list.append(current_tool_call)
+    except TimeoutError:
+        logger.error(
+            "llm_call_deadline_exceeded",
+            model=model,
+            seconds=LLM_CALL_DEADLINE_SECONDS,
+        )
+        raise
 
     if tool_calls_list:
-        return {"content": None, "tool_calls": tool_calls_list}
+        return {"content": None, "tool_calls": tool_calls_list,
+                "reasoning_content": full_reasoning or None}
 
-    return {"content": full_content.strip(), "tool_calls": None}
-
-
-async def _llm_generate_with_tools(
-    messages: list[dict],
-    tools: list[dict],
-    model: str = "glm-5.2",
-) -> dict:
-    """Call LLM with function calling support. Returns {"content": ..., "tool_calls": ...}.
-
-    Uses a prompt-based approach: injects tool schema into system prompt
-    and parses the response for tool_calls JSON.
-    """
-    tool_prompt = (
-        "\n\n你可以调用以下工具函数。要调用工具，在回复中输出 JSON：\n"
-        '{"tool_calls": [{"id": "call_1", "function": {"name": "工具名", "arguments": "{\\"key\\": \\"value\\"}"}}]}\n'
-        "可用工具：\n" + json.dumps(tools, ensure_ascii=False, indent=2) + "\n"
-        "如果不需要调用工具，直接输出文本回复。"
-    )
-
-    messages_with_tools = list(messages)
-    if messages_with_tools and messages_with_tools[0]["role"] == "system":
-        messages_with_tools[0] = {
-            "role": "system",
-            "content": messages_with_tools[0]["content"] + tool_prompt,
-        }
-    else:
-        messages_with_tools.insert(0, {"role": "system", "content": tool_prompt})
-
-    prompt_text = ""
-    for m in messages_with_tools:
-        role = m.get("role", "?")
-        content = m.get("content", "")
-        if content is None and m.get("tool_calls"):
-            content = json.dumps(m["tool_calls"], ensure_ascii=False)
-        prompt_text += f"\n[{role}]: {content or ''}"
-
-    raw = await _llm_generate(
-        system_prompt=prompt_text[:500],
-        user_content=prompt_text[500:],
-        model=model,
-    )
-
-    try:
-        parsed = json.loads(raw.strip())
-        if "tool_calls" in parsed:
-            return {"content": None, "tool_calls": parsed["tool_calls"]}
-    except (json.JSONDecodeError, KeyError):
-        pass
-
-    return {"content": raw.strip(), "tool_calls": None}
+    return {"content": full_content.strip(), "tool_calls": None,
+            "reasoning_content": full_reasoning or None}
 
 
 # ---- Multi-Agent Review Node ----

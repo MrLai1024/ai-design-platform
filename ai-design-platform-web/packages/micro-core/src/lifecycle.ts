@@ -6,24 +6,24 @@ import type { FrameworkLifeCycles } from 'qiankun';
  */
 export function getGlobalLifecycleHooks(): FrameworkLifeCycles<Record<string, unknown>> {
   return {
-    beforeLoad: async (app) => {
-      console.log(`[micro-core] Loading ${app.name}...`);
+    beforeLoad: async () => {
+      // no-op: 静默
     },
 
-    beforeMount: async (app) => {
-      console.log(`[micro-core] Mounting ${app.name}...`);
+    beforeMount: async () => {
+      // no-op: 静默
     },
 
-    afterMount: async (app) => {
-      console.log(`[micro-core] ${app.name} mounted`);
+    afterMount: async () => {
+      // no-op: 静默
     },
 
-    beforeUnmount: async (app) => {
-      console.log(`[micro-core] Unmounting ${app.name}...`);
+    beforeUnmount: async () => {
+      // no-op: 静默
     },
 
-    afterUnmount: async (app) => {
-      console.log(`[micro-core] ${app.name} unmounted`);
+    afterUnmount: async () => {
+      // no-op: 静默
     },
   };
 }

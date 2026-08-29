@@ -18,6 +18,7 @@ from app.services.llm.provider import (
     StreamEvent,
     TokenEvent,
     ToolCallEvent,
+    to_openai_messages,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,19 +32,9 @@ API_BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
 # 连接池配置
 LIMITS = httpx.Limits(max_connections=50, max_keepalive_connections=10)
 
-# 默认超时：连接 30s，读取 600s（10 分钟）以容纳 GLM 思考模式
-DEFAULT_TIMEOUT = httpx.Timeout(timeout=600.0, connect=30.0)
-
-
-def _to_openai_messages(messages: list[Message | dict]) -> list[dict[str, str]]:
-    """将领域消息转换为 OpenAI 格式。支持 Message 对象和 dict。"""
-    result = []
-    for m in messages:
-        if isinstance(m, dict):
-            result.append({"role": m.get("role", ""), "content": m.get("content", "")})
-        else:
-            result.append({"role": m.role, "content": m.content})
-    return result
+# 默认超时：连接 30s，读取 300s（5 分钟）。健康流持续吐字，3 分钟无字节即
+# 卡死——早失败早恢复；单次调用总时长由调用层的 asyncio.timeout 兜底。
+DEFAULT_TIMEOUT = httpx.Timeout(timeout=300.0, connect=30.0)
 
 
 class ZhipuProvider(LLMProvider):
@@ -94,7 +85,7 @@ class ZhipuProvider(LLMProvider):
 
         body: dict[str, Any] = {
             "model": model,
-            "messages": _to_openai_messages(messages),
+            "messages": to_openai_messages(messages),
             "max_tokens": cfg.max_tokens,
             "temperature": cfg.temperature,
             "stream": True,

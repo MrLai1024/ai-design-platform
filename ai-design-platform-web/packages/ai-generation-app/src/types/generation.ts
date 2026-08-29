@@ -164,13 +164,17 @@ export interface CompileErrorEntry {
   file: string
   line: number
   message: string
+  /** 错误来源：node-compiler（服务端 esbuild/vue-tsc）或 preview（前端 esbuild 预览） */
+  source?: 'node-compiler' | 'preview'
 }
 
 export interface AgentLogEntry {
   id: string
   type: 'thinking' | 'tool_call' | 'tool_result' | 'file_start'
-       | 'file_complete' | 'compile' | 'phase_summary'
+       | 'file_complete' | 'compile' | 'phase_summary' | 'cancel' | 'feedback_summary'
+       | 'agent_message'
   timestamp: number
+  agentMessage?: string
   thinkingText?: string
   thinkingDone?: boolean
   toolName?: string
@@ -183,6 +187,10 @@ export interface AgentLogEntry {
   compileOk?: boolean
   compileErrors?: CompileErrorEntry[]
   summary?: string
+  // feedback_summary fields
+  feedbackText?: string
+  feedbackResult?: string
+  feedbackExpanded?: boolean
 }
 
 export type GraphEventTypeExtended =

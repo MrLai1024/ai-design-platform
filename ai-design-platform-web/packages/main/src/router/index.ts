@@ -10,22 +10,16 @@ export const routes: RouteRecordRaw[] = [
     component: Home,
   },
   {
-    path: '/ai-chat/:pathMatch(.*)*',
-    name: 'AiChat',
-    component: SubAppContainer,
-    props: { containerId: 'sub-app-chat' },
-  },
-  {
     path: '/ai-generation/:pathMatch(.*)*',
     name: 'AiGeneration',
     component: SubAppContainer,
     props: { containerId: 'sub-app-generation' },
   },
   {
-    path: '/ai-workflow/:pathMatch(.*)*',
-    name: 'AiWorkflow',
+    path: '/project-space/:pathMatch(.*)*',
+    name: 'ProjectSpace',
     component: SubAppContainer,
-    props: { containerId: 'sub-app-workflow' },
+    props: { containerId: 'sub-app-project-space' },
   },
   {
     path: '/:pathMatch(.*)*',

@@ -72,7 +72,7 @@ export function useStreamChat() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           messages: requestMessages,
-          model: 'glm-5.2',
+          model: 'deepseek-v4-pro',
           stream: true,
         }),
         signal: abortController.signal,
@@ -202,7 +202,7 @@ export function useStreamChat() {
                 break
 
               case 'loop_warning':
-                console.warn(`Loop warning: ${event.reason}`)
+                // no-op: 静默忽略 loop 警告
                 break
 
               case 'loop_break':
