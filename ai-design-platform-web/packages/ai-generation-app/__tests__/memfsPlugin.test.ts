@@ -8,7 +8,7 @@
 //   Could not resolve "src/main.ts"
 // The memfs plugin must take over entry resolution (importer === '').
 import { describe, expect, it } from 'vitest'
-import { createMemfsPlugin } from './memfsPlugin'
+import { createMemfsPlugin } from '../src/bundler/memfsPlugin'
 
 type Resolver = (args: any) => any
 

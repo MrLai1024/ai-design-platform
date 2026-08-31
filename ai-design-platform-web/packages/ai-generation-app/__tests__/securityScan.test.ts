@@ -1,6 +1,6 @@
 // src/utils/securityScan.test.ts
 import { describe, it, expect } from 'vitest'
-import { scanCode } from './securityScan'
+import { scanCode } from '../src/utils/securityScan'
 
 describe('scanCode', () => {
   it('returns null for safe code', () => {

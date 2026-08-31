@@ -1,6 +1,6 @@
 // src/utils/parseMultiSFC.test.ts
 import { describe, it, expect } from 'vitest'
-import { parseMultiSFC, parseSingleCodeBlock } from './parseMultiSFC'
+import { parseMultiSFC, parseSingleCodeBlock } from '../src/utils/parseMultiSFC'
 
 describe('parseMultiSFC', () => {
   it('parses multi-file with ## heading markers', () => {

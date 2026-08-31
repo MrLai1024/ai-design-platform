@@ -6,7 +6,7 @@
 // making a run look like "only 2 files were generated".
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { useGenerationStore } from './generation'
+import { useGenerationStore } from '../src/stores/generation'
 
 function task(id: string, files: string[], status = 'pending' as const, type = 'business' as const) {
   return { id, description: id, files, status, type, deps: [], contract: {} }

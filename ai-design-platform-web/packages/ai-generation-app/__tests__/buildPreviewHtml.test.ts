@@ -1,6 +1,6 @@
 // src/utils/buildPreviewHtml.test.ts
 import { describe, it, expect } from 'vitest'
-import { buildPreviewHtml } from './buildPreviewHtml'
+import { buildPreviewHtml } from '../src/utils/buildPreviewHtml'
 
 describe('buildPreviewHtml', () => {
   it('wraps compiled code in complete HTML document', () => {
