@@ -1,43 +1,43 @@
 package middleware
 
 import (
+	"net/http"
+	"strings"
+
+	"ai-design-platform/gateway/internal/auth"
+
 	"github.com/gin-gonic/gin"
 )
 
-// User 是已认证用户信息的占位符类型。
-type User struct {
-	ID   string
-	Name string
-}
+// userIDContextKey 是 gin context 中存储已认证用户 id 的键。
+const userIDContextKey = "authUserID"
 
-const userKey = "user"
-
-// Auth 返回一个验证 JWT 令牌的中间件。
-// 第一阶段：桩代码 — 接受任何请求并设置占位用户。
-// 第二阶段：真正的 JWT 验证。
-func Auth() gin.HandlerFunc {
+// Auth 校验 Authorization: Bearer <token>,解析出 user_id 注入 gin context。
+// token 缺失、格式非法或校验失败时返回 401 并中断请求链。
+// 401 响应与 handler 包统一信封一致(业务码 40100 未认证;此处不引用 handler 包以避免 import cycle)。
+func Auth(tokens *auth.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// TODO(phase2): 从 Authorization 头验证 JWT
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			// 目前，允许未认证的请求并使用占位用户
-			c.Set(userKey, User{ID: "anonymous", Name: "Anonymous"})
-			c.Next()
+		token, ok := strings.CutPrefix(c.GetHeader("Authorization"), "Bearer ")
+		if !ok || token == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 40100, "msg": "未认证", "data": nil})
 			return
 		}
-
-		// 占位：将令牌视为用户 ID
-		c.Set(userKey, User{ID: authHeader, Name: authHeader})
+		userID, err := tokens.Verify(token)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": 40100, "msg": "未认证", "data": nil})
+			return
+		}
+		c.Set(userIDContextKey, userID)
 		c.Next()
 	}
 }
 
-// GetUser 从 Gin 上下文中提取已认证用户。
-func GetUser(c *gin.Context) (User, bool) {
-	u, exists := c.Get(userKey)
-	if !exists {
-		return User{}, false
+// GetUserID 从 gin context 取出 Auth 中间件注入的用户 id。
+func GetUserID(c *gin.Context) (string, bool) {
+	v, ok := c.Get(userIDContextKey)
+	if !ok {
+		return "", false
 	}
-	user, ok := u.(User)
-	return user, ok
+	userID, ok := v.(string)
+	return userID, ok
 }

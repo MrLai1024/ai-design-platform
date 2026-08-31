@@ -10,7 +10,6 @@ import (
 type Config struct {
 	ServerPort  string
 	DatabaseURL string
-	JWTSecret   string
 }
 
 // Load 从环境变量读取配置,并提供默认值。
@@ -18,7 +17,6 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		ServerPort:  getEnv("PROJECT_SERVICE_PORT", "8081"),
 		DatabaseURL: getEnv("DATABASE_URL", "postgres://aiplatform:aiplatform@localhost:5432/aiplatform?sslmode=disable"),
-		JWTSecret:   getEnv("JWT_SECRET", "dev-secret"),
 	}
 
 	if strings.TrimSpace(cfg.DatabaseURL) == "" {

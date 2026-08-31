@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"ai-design-platform/project-service/internal/auth"
 	"ai-design-platform/project-service/internal/config"
 	"ai-design-platform/project-service/internal/handler"
 	"ai-design-platform/project-service/internal/middleware"
@@ -96,7 +95,8 @@ func main() {
 }
 
 // newRouter 装配全部路由。
-// health 与 POST /users(自动注册)公开;其余用户域接口统一挂认证中间件。
+// 用户域(注册/当前用户)已迁至 gateway;本服务只保留 teams/projects 业务路由,
+// 全部挂 X-User-Id 信任中间件(gateway 校验 JWT 后注入该 header)。
 func newRouter(cfg *config.Config, db *sql.DB) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -105,31 +105,24 @@ func newRouter(cfg *config.Config, db *sql.DB) *gin.Engine {
 	healthH := handler.NewHealthHandler()
 	r.GET("/health", healthH.Health)
 
-	users := store.NewUsers(db)
-	tokens := auth.NewManager(cfg.JWTSecret)
-
-	api := r.Group("/api/v1")
-
-	authH := handler.NewAuthHandler(users, tokens)
 	teamH := handler.NewTeamHandler(store.NewTeams(db))
 	projectH := handler.NewProjectHandler(store.NewProjects(db))
 
-	// users 路由组:POST /users 自动注册公开;/users 其余子路由需认证。
-	usersGroup := api.Group("/users")
-	usersGroup.POST("", authH.AutoRegister)
-	usersAuthed := usersGroup.Group("", middleware.Auth(tokens))
-	usersAuthed.GET("/me", authH.Me)
-	usersAuthed.GET("/me/teams", teamH.List)
-	usersAuthed.GET("/me/projects", projectH.List)
+	api := r.Group("/api/v1")
+
+	// 用户域业务列表路由:/users/me/teams(我的团队)与 /users/me/projects(我的项目)。
+	users := api.Group("/users", middleware.Auth())
+	users.GET("/me/teams", teamH.List)
+	users.GET("/me/projects", projectH.List)
 
 	// teams 路由组:GET "" 为可加入团队列表(搜索,keyword 可选);/:id/projects 由 ProjectHandler 提供。
-	teams := api.Group("/teams", middleware.Auth(tokens))
+	teams := api.Group("/teams", middleware.Auth())
 	teams.GET("", teamH.Search)
 	teams.POST("", teamH.Create)
 	teams.POST("/:id/members", teamH.Join)
 	teams.GET("/:id/projects", projectH.TeamProjects)
 
-	projects := api.Group("/projects", middleware.Auth(tokens))
+	projects := api.Group("/projects", middleware.Auth())
 	projects.POST("", projectH.Create)
 	projects.GET("/:id", projectH.Detail)
 

@@ -14,6 +14,7 @@ type Config struct {
 	RedisAddr          string
 	NodeCompilerAddr   string
 	ProjectServiceAddr string
+	JWTSecret          string
 	LogLevel           string
 }
 
@@ -26,6 +27,7 @@ func Load() (*Config, error) {
 		RedisAddr:          getEnv("REDIS_ADDR", "localhost:6379"),
 		NodeCompilerAddr:   getEnv("NODE_COMPILER_ADDR", "localhost:5199"),
 		ProjectServiceAddr: getEnv("PROJECT_SERVICE_ADDR", "http://localhost:8081"),
+		JWTSecret:          getEnv("JWT_SECRET", "dev-secret"),
 		LogLevel:           getEnv("LOG_LEVEL", "info"),
 	}
 

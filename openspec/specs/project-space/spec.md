@@ -174,12 +174,12 @@ project-service SHALL 提供团队接口:我的团队列表、按名称搜索团
 
 ### Requirement: 数据库表设计
 
-project-service SHALL 使用 PostgreSQL 持久化,建表:users(账号/密码/时间戳)、teams(名称/简介/owner/时间戳)、team_members(团队-成员唯一关系/加入时间)、projects(名称/简介/级别/team_id 可空/创建人/时间戳);个人项目以 team_id 为空表示。
+project-service SHALL 使用 PostgreSQL 持久化,建表:teams(名称/简介/owner/时间戳)、team_members(团队-成员唯一关系/加入时间)、projects(名称/简介/级别/team_id 可空/创建人/时间戳);个人项目以 team_id 为空表示。users 表(账号/密码/时间戳)的建表 DDL SHALL 归口 gateway 全局服务唯一管理,project-service 迁移仅保留对 users 的外键引用,并依赖 gateway 先启动完成建表。
 
 #### Scenario: 表结构与唯一约束
 
-- **WHEN** project-service 启动执行迁移
-- **THEN** 四张表创建成功:users.account 唯一;team_members(team_id, user_id) 唯一;projects.level 仅允许 demo/production 两类值
+- **WHEN** gateway 先启动(EnsureUsersTable 创建 users 表)且 project-service 随后执行迁移
+- **THEN** users 表由 gateway 创建成功(account 唯一);project-service 创建 teams/team_members/projects 三张业务表并成功引用 users 外键;team_members(team_id, user_id) 唯一;projects.level 仅允许 demo/production 两类值
 
 #### Scenario: 数据按用户隔离
 

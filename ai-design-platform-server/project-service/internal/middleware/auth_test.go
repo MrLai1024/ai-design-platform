@@ -6,19 +6,19 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"ai-design-platform/project-service/internal/auth"
-
 	"github.com/gin-gonic/gin"
 )
 
+// testUserID 是测试用的合法 UUID 用户 id。
+const testUserID = "11111111-1111-1111-1111-111111111111"
+
 // newAuthRouter 构建挂载 Auth 中间件的测试路由器,受保护 handler 回显解析出的 user_id。
 // 若请求到达 handler 而 user_id 缺失,说明中间件未正确注入。
-func newAuthRouter(t *testing.T, secret string) (*gin.Engine, *auth.Manager) {
+func newAuthRouter(t *testing.T) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	m := auth.NewManager(secret)
 	r := gin.New()
-	r.GET("/protected", Auth(m), func(c *gin.Context) {
+	r.GET("/protected", Auth(), func(c *gin.Context) {
 		userID, ok := GetUserID(c)
 		if !ok {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "user_id missing"})
@@ -26,7 +26,7 @@ func newAuthRouter(t *testing.T, secret string) (*gin.Engine, *auth.Manager) {
 		}
 		c.JSON(http.StatusOK, gin.H{"user_id": userID})
 	})
-	return r, m
+	return r
 }
 
 func doProtected(t *testing.T, r *gin.Engine, header string) *httptest.ResponseRecorder {
@@ -34,7 +34,7 @@ func doProtected(t *testing.T, r *gin.Engine, header string) *httptest.ResponseR
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/protected", nil)
 	if header != "" {
-		req.Header.Set("Authorization", header)
+		req.Header.Set("X-User-Id", header)
 	}
 	r.ServeHTTP(w, req)
 	return w
@@ -66,44 +66,31 @@ func assertUnauthorized(t *testing.T, w *httptest.ResponseRecorder, header, msg 
 }
 
 func TestAuthRejectsMissingHeader(t *testing.T) {
-	r, _ := newAuthRouter(t, "test-secret")
+	r := newAuthRouter(t)
 	w := doProtected(t, r, "")
 	assertUnauthorized(t, w, "", "missing header")
 }
 
 func TestAuthRejectsMalformedHeader(t *testing.T) {
-	r, _ := newAuthRouter(t, "test-secret")
-	for _, header := range []string{"Token abc", "Bearer", "Bearer ", "bearer abc.def.ghi"} {
+	r := newAuthRouter(t)
+	for _, header := range []string{
+		"not-a-uuid",
+		"12345",
+		"11111111-1111-1111-1111-11111111111",   // 缺一位
+		"11111111-1111-1111-1111-1111111111111", // 多一位
+		"user-123",
+		"11111111-1111-1111-1111-11111111111g", // 非 hex
+		"Bearer abc",
+	} {
 		w := doProtected(t, r, header)
 		assertUnauthorized(t, w, header, "malformed header")
 	}
 }
 
-func TestAuthRejectsInvalidToken(t *testing.T) {
-	r, _ := newAuthRouter(t, "test-secret")
-	w := doProtected(t, r, "Bearer not.a.jwt")
-	assertUnauthorized(t, w, "Bearer not.a.jwt", "invalid token")
-}
-
-func TestAuthRejectsWrongSecret(t *testing.T) {
-	r, _ := newAuthRouter(t, "test-secret")
-	other := auth.NewManager("other-secret")
-	token, err := other.Sign("user-123")
-	if err != nil {
-		t.Fatalf("Sign() error = %v, want nil", err)
-	}
-	w := doProtected(t, r, "Bearer "+token)
-	assertUnauthorized(t, w, "wrong-secret token", "token signed with other secret")
-}
-
 func TestAuthInjectsUserID(t *testing.T) {
-	r, m := newAuthRouter(t, "test-secret")
-	token, err := m.Sign("user-123")
-	if err != nil {
-		t.Fatalf("Sign() error = %v, want nil", err)
-	}
+	r := newAuthRouter(t)
 
-	w := doProtected(t, r, "Bearer "+token)
+	w := doProtected(t, r, testUserID)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
@@ -113,8 +100,8 @@ func TestAuthInjectsUserID(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal body: %v", err)
 	}
-	if body.UserID != "user-123" {
-		t.Errorf("user_id = %q, want %q", body.UserID, "user-123")
+	if body.UserID != testUserID {
+		t.Errorf("user_id = %q, want %q", body.UserID, testUserID)
 	}
 }
 

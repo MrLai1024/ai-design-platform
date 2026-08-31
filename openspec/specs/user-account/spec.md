@@ -82,14 +82,19 @@
 - **WHEN** 并发注册请求同时到达
 - **THEN** 每个请求分配到的账号互不相同(唯一约束兜底)
 
-### Requirement: JWT 签发与校验
+### Requirement: JWT 签发与校验(全局服务)
 
-project-service SHALL 签发 JWT token 并独占校验签名密钥,用户域接口凭 token 识别用户身份;token 无效或缺失时,用户域接口返回 401。
+gateway 作为全局服务 SHALL 签发 JWT token 并校验签名密钥;所有接口(用户域与业务域)凭 token 识别用户身份,token 无效或缺失时返回 401。gateway SHALL 在校验后将可信 user_id 以 `X-User-Id` 头注入转发给业务服务(project-service)的请求,并剥离客户端提供的同名头;业务服务信任该头,不再自行解析 JWT。
 
-#### Scenario: 携带有效 token 访问用户域接口
+#### Scenario: 携带有效 token 访问业务接口
 
-- **WHEN** 请求携带有效的 JWT token 访问 `/api/v1/teams`、`/api/v1/projects` 等用户域接口
-- **THEN** 接口正常返回该用户视角的数据
+- **WHEN** 请求携带有效的 JWT token 访问 `/api/v1/teams`、`/api/v1/projects` 等业务接口
+- **THEN** gateway 校验通过,转发时注入可信 `X-User-Id`,接口正常返回该用户视角的数据
+
+#### Scenario: 客户端伪造身份头被剥离
+
+- **WHEN** 请求携带伪造的 `X-User-Id` 头但无有效 token
+- **THEN** gateway 返回 401,伪造头不触达业务服务
 
 #### Scenario: 无 token 或 token 无效
 

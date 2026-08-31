@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"ai-design-platform/project-service/internal/auth"
 	"ai-design-platform/project-service/internal/middleware"
 	"ai-design-platform/project-service/internal/store"
 
@@ -22,35 +21,30 @@ const handlerTeamID = "66666666-6666-6666-6666-666666666666"
 
 // newTeamTestEnv 创建挂载认证中间件与四条团队路由的测试路由器。
 // 使用正则匹配器,避免测试与 store 包内 SQL 常量字符串强耦合。
-func newTeamTestEnv(t *testing.T) (*gin.Engine, sqlmock.Sqlmock, *auth.Manager) {
+func newTeamTestEnv(t *testing.T) (*gin.Engine, sqlmock.Sqlmock) {
 	t.Helper()
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("sqlmock.New() error = %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	tokens := auth.NewManager("test-secret")
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := NewTeamHandler(store.NewTeams(db))
 	// List(我的团队)挂在 /users/me/teams;可加入团队列表(搜索)挂在 GET /teams。
-	usersAuthed := r.Group("/api/v1/users/me", middleware.Auth(tokens))
+	usersAuthed := r.Group("/api/v1/users/me", middleware.Auth())
 	usersAuthed.GET("/teams", h.List)
-	teams := r.Group("/api/v1/teams", middleware.Auth(tokens))
+	teams := r.Group("/api/v1/teams", middleware.Auth())
 	teams.GET("", h.Search)
 	teams.POST("", h.Create)
 	teams.POST("/:id/members", h.Join)
-	return r, mock, tokens
+	return r, mock
 }
 
-// doTeamRequest 以固定用户身份(token 签发 handlerUserID)向团队路由发起请求。
-func doTeamRequest(t *testing.T, r *gin.Engine, tokens *auth.Manager, method, path, body string) *httptest.ResponseRecorder {
+// doTeamRequest 以固定用户身份(X-User-Id: handlerUserID,模拟 gateway 注入)向团队路由发起请求。
+func doTeamRequest(t *testing.T, r *gin.Engine, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	token, err := tokens.Sign(handlerUserID)
-	if err != nil {
-		t.Fatalf("Sign() error = %v, want nil", err)
-	}
 	w := httptest.NewRecorder()
 	var req *http.Request
 	if body == "" {
@@ -59,7 +53,7 @@ func doTeamRequest(t *testing.T, r *gin.Engine, tokens *auth.Manager, method, pa
 		req = httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-User-Id", handlerUserID)
 	r.ServeHTTP(w, req)
 	return w
 }
@@ -81,13 +75,13 @@ type teamResp struct {
 
 // TestListTeamsEmpty 覆盖空列表:响应为裸数组 [] 而非 null。
 func TestListTeamsEmpty(t *testing.T) {
-	r, mock, tokens := newTeamTestEnv(t)
+	r, mock := newTeamTestEnv(t)
 
 	mock.ExpectQuery("SELECT t.id, t.name, t.description, t.owner_id, t.created_at FROM teams t JOIN team_members").
 		WithArgs(handlerUserID).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "description", "owner_id", "created_at"}))
 
-	w := doTeamRequest(t, r, tokens, http.MethodGet, "/api/v1/users/me/teams", "")
+	w := doTeamRequest(t, r, http.MethodGet, "/api/v1/users/me/teams", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /users/me/teams status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
@@ -102,7 +96,7 @@ func TestListTeamsEmpty(t *testing.T) {
 
 // TestListTeams 覆盖有数据列表:camelCase 字段映射与行顺序。
 func TestListTeams(t *testing.T) {
-	r, mock, tokens := newTeamTestEnv(t)
+	r, mock := newTeamTestEnv(t)
 
 	mock.ExpectQuery("SELECT t.id, t.name, t.description, t.owner_id, t.created_at FROM teams t JOIN team_members").
 		WithArgs(handlerUserID).
@@ -111,7 +105,7 @@ func TestListTeams(t *testing.T) {
 				AddRow("77777777-7777-7777-7777-777777777777", "研发组", nil, handlerUserID, time.Now()),
 		)
 
-	w := doTeamRequest(t, r, tokens, http.MethodGet, "/api/v1/users/me/teams", "")
+	w := doTeamRequest(t, r, http.MethodGet, "/api/v1/users/me/teams", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /teams status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
@@ -142,7 +136,7 @@ func TestListTeams(t *testing.T) {
 
 // TestCreateTeamSuccess 覆盖创建成功:201 + camelCase 响应,创建者写入成员表。
 func TestCreateTeamSuccess(t *testing.T) {
-	r, mock, tokens := newTeamTestEnv(t)
+	r, mock := newTeamTestEnv(t)
 
 	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO teams").
@@ -153,7 +147,7 @@ func TestCreateTeamSuccess(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	w := doTeamRequest(t, r, tokens, http.MethodPost, "/api/v1/teams", `{"name":"设计组","description":"团队描述"}`)
+	w := doTeamRequest(t, r, http.MethodPost, "/api/v1/teams", `{"name":"设计组","description":"团队描述"}`)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("POST /teams status = %d, body = %s, want 201", w.Code, w.Body.String())
 	}
@@ -178,7 +172,7 @@ func TestCreateTeamSuccess(t *testing.T) {
 
 // TestCreateTeamWithoutDescription 覆盖描述缺省:参数落 NULL,响应省略 description 字段。
 func TestCreateTeamWithoutDescription(t *testing.T) {
-	r, mock, tokens := newTeamTestEnv(t)
+	r, mock := newTeamTestEnv(t)
 
 	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO teams").
@@ -189,7 +183,7 @@ func TestCreateTeamWithoutDescription(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	w := doTeamRequest(t, r, tokens, http.MethodPost, "/api/v1/teams", `{"name":"设计组"}`)
+	w := doTeamRequest(t, r, http.MethodPost, "/api/v1/teams", `{"name":"设计组"}`)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("POST /teams status = %d, body = %s, want 201", w.Code, w.Body.String())
 	}
@@ -206,9 +200,9 @@ func TestCreateTeamWithoutDescription(t *testing.T) {
 func TestCreateTeamMissingName(t *testing.T) {
 	for _, body := range []string{`{"name":""}`, `{"name":"   "}`, `{}`} {
 		t.Run(body, func(t *testing.T) {
-			r, mock, tokens := newTeamTestEnv(t)
+			r, mock := newTeamTestEnv(t)
 
-			w := doTeamRequest(t, r, tokens, http.MethodPost, "/api/v1/teams", body)
+			w := doTeamRequest(t, r, http.MethodPost, "/api/v1/teams", body)
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("POST /teams %s status = %d, body = %s, want 400", body, w.Code, w.Body.String())
 			}
@@ -229,9 +223,9 @@ func TestCreateTeamMissingName(t *testing.T) {
 
 // TestCreateTeamInvalidBody 覆盖请求体非法 JSON。
 func TestCreateTeamInvalidBody(t *testing.T) {
-	r, mock, tokens := newTeamTestEnv(t)
+	r, mock := newTeamTestEnv(t)
 
-	w := doTeamRequest(t, r, tokens, http.MethodPost, "/api/v1/teams", `not-json`)
+	w := doTeamRequest(t, r, http.MethodPost, "/api/v1/teams", `not-json`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("POST /teams status = %d, body = %s, want 400", w.Code, w.Body.String())
 	}
@@ -249,7 +243,7 @@ func TestCreateTeamInvalidBody(t *testing.T) {
 
 // TestCreateTeamMemberInsertFails 覆盖成员写入失败:返回 500(事务回滚在 store 层测试覆盖)。
 func TestCreateTeamMemberInsertFails(t *testing.T) {
-	r, mock, tokens := newTeamTestEnv(t)
+	r, mock := newTeamTestEnv(t)
 
 	mock.ExpectBegin()
 	mock.ExpectQuery("INSERT INTO teams").
@@ -260,7 +254,7 @@ func TestCreateTeamMemberInsertFails(t *testing.T) {
 		WillReturnError(&pgconn.PgError{Code: "23505"})
 	mock.ExpectRollback()
 
-	w := doTeamRequest(t, r, tokens, http.MethodPost, "/api/v1/teams", `{"name":"设计组"}`)
+	w := doTeamRequest(t, r, http.MethodPost, "/api/v1/teams", `{"name":"设计组"}`)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("POST /teams status = %d, body = %s, want 500", w.Code, w.Body.String())
 	}
@@ -278,13 +272,13 @@ func TestCreateTeamMemberInsertFails(t *testing.T) {
 
 // TestSearchTeams 覆盖按名称模糊匹配:ILIKE 模式与用户参数正确传递。
 func TestSearchTeams(t *testing.T) {
-	r, mock, tokens := newTeamTestEnv(t)
+	r, mock := newTeamTestEnv(t)
 
 	mock.ExpectQuery("ILIKE").
 		WithArgs("%设计%", handlerUserID).
 		WillReturnRows(teamRow(handlerTeamID, "设计组", nil, handlerUserID))
 
-	w := doTeamRequest(t, r, tokens, http.MethodGet, "/api/v1/teams?keyword=设计", "")
+	w := doTeamRequest(t, r, http.MethodGet, "/api/v1/teams?keyword=设计", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /teams?keyword=  status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
@@ -303,13 +297,13 @@ func TestSearchTeams(t *testing.T) {
 
 // TestSearchTeamsExcludesJoined 覆盖排除已加入团队:SQL 含 NOT EXISTS 且以当前用户过滤。
 func TestSearchTeamsExcludesJoined(t *testing.T) {
-	r, mock, tokens := newTeamTestEnv(t)
+	r, mock := newTeamTestEnv(t)
 
 	mock.ExpectQuery("NOT EXISTS").
 		WithArgs("%设计%", handlerUserID).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "description", "owner_id", "created_at"}))
 
-	w := doTeamRequest(t, r, tokens, http.MethodGet, "/api/v1/teams?keyword=设计", "")
+	w := doTeamRequest(t, r, http.MethodGet, "/api/v1/teams?keyword=设计", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /teams?keyword=  status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
@@ -327,13 +321,13 @@ func TestSearchTeamsExcludesJoined(t *testing.T) {
 func TestSearchTeamsEmptyKeyword(t *testing.T) {
 	for _, path := range []string{"/api/v1/teams", "/api/v1/teams?keyword=", "/api/v1/teams?keyword=%20%20"} {
 		t.Run(path, func(t *testing.T) {
-			r, mock, tokens := newTeamTestEnv(t)
+			r, mock := newTeamTestEnv(t)
 
 			mock.ExpectQuery("ILIKE").
 				WithArgs("%%", handlerUserID).
 				WillReturnRows(teamRow(handlerTeamID, "设计组", nil, handlerUserID))
 
-			w := doTeamRequest(t, r, tokens, http.MethodGet, path, "")
+			w := doTeamRequest(t, r, http.MethodGet, path, "")
 			if w.Code != http.StatusOK {
 				t.Fatalf("GET %s status = %d, body = %s, want 200", path, w.Code, w.Body.String())
 			}
@@ -354,13 +348,13 @@ func TestSearchTeamsEmptyKeyword(t *testing.T) {
 
 // TestJoinTeamSuccess 覆盖加入成功:200 + success 标记。
 func TestJoinTeamSuccess(t *testing.T) {
-	r, mock, tokens := newTeamTestEnv(t)
+	r, mock := newTeamTestEnv(t)
 
 	mock.ExpectExec("INSERT INTO team_members.*SELECT t.id").
 		WithArgs(handlerTeamID, handlerUserID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	w := doTeamRequest(t, r, tokens, http.MethodPost, "/api/v1/teams/"+handlerTeamID+"/members", "")
+	w := doTeamRequest(t, r, http.MethodPost, "/api/v1/teams/"+handlerTeamID+"/members", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("POST /teams/:id/members status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
@@ -375,13 +369,13 @@ func TestJoinTeamSuccess(t *testing.T) {
 
 // TestJoinTeamConflict 覆盖重复加入:唯一约束冲突映射为 409。
 func TestJoinTeamConflict(t *testing.T) {
-	r, mock, tokens := newTeamTestEnv(t)
+	r, mock := newTeamTestEnv(t)
 
 	mock.ExpectExec("INSERT INTO team_members.*SELECT t.id").
 		WithArgs(handlerTeamID, handlerUserID).
 		WillReturnError(&pgconn.PgError{Code: "23505", Message: "duplicate key value violates unique constraint"})
 
-	w := doTeamRequest(t, r, tokens, http.MethodPost, "/api/v1/teams/"+handlerTeamID+"/members", "")
+	w := doTeamRequest(t, r, http.MethodPost, "/api/v1/teams/"+handlerTeamID+"/members", "")
 	if w.Code != http.StatusConflict {
 		t.Fatalf("POST /teams/:id/members status = %d, body = %s, want 409", w.Code, w.Body.String())
 	}
@@ -399,13 +393,13 @@ func TestJoinTeamConflict(t *testing.T) {
 
 // TestJoinTeamNotFound 覆盖团队不存在:0 行受影响映射为 404。
 func TestJoinTeamNotFound(t *testing.T) {
-	r, mock, tokens := newTeamTestEnv(t)
+	r, mock := newTeamTestEnv(t)
 
 	mock.ExpectExec("INSERT INTO team_members.*SELECT t.id").
 		WithArgs(handlerTeamID, handlerUserID).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
-	w := doTeamRequest(t, r, tokens, http.MethodPost, "/api/v1/teams/"+handlerTeamID+"/members", "")
+	w := doTeamRequest(t, r, http.MethodPost, "/api/v1/teams/"+handlerTeamID+"/members", "")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("POST /teams/:id/members status = %d, body = %s, want 404", w.Code, w.Body.String())
 	}
@@ -423,9 +417,9 @@ func TestJoinTeamNotFound(t *testing.T) {
 
 // TestJoinTeamInvalidID 覆盖 P3 修复:非 UUID 的 :id 返回 400 而非 500,不触碰数据库。
 func TestJoinTeamInvalidID(t *testing.T) {
-	r, mock, tokens := newTeamTestEnv(t)
+	r, mock := newTeamTestEnv(t)
 
-	w := doTeamRequest(t, r, tokens, http.MethodPost, "/api/v1/teams/not-a-uuid/members", "")
+	w := doTeamRequest(t, r, http.MethodPost, "/api/v1/teams/not-a-uuid/members", "")
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("POST /teams/:id/members status = %d, body = %s, want 400", w.Code, w.Body.String())
 	}

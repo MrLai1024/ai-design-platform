@@ -9,10 +9,12 @@ import (
 	"syscall"
 	"time"
 
+	"ai-design-platform/gateway/internal/auth"
 	"ai-design-platform/gateway/internal/client"
 	"ai-design-platform/gateway/internal/config"
 	"ai-design-platform/gateway/internal/handler"
 	"ai-design-platform/gateway/internal/middleware"
+	"ai-design-platform/gateway/internal/store"
 
 	"github.com/gin-gonic/gin"
 )
@@ -27,6 +29,33 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("Failed to load config", "error", err)
+		os.Exit(1)
+	}
+
+	// 数据库连接池(users 表访问)
+	db, err := store.NewPool(cfg.DatabaseURL)
+	if err != nil {
+		slog.Error("Failed to create database pool", "error", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	// 启动自检:ping 失败即退出
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	err = store.Check(pingCtx, db)
+	pingCancel()
+	if err != nil {
+		slog.Error("Failed to connect to database", "error", err)
+		os.Exit(1)
+	}
+
+	// users 表建表:DDL 唯一归属 gateway(全局服务),project-service 迁移仅引用。
+	// 因此 gateway 必须早于 project-service 启动(compose 已约束 depends_on)。
+	ensureCtx, ensureCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	err = store.EnsureUsersTable(ensureCtx, db)
+	ensureCancel()
+	if err != nil {
+		slog.Error("Failed to ensure users table", "error", err)
 		os.Exit(1)
 	}
 
@@ -49,6 +78,8 @@ func main() {
 	e2eHandler := handler.NewE2EHandler(graphHandler, aiClient)
 	prdHandler := handler.NewPRDHandler(aiClient)
 	compileHandler := handler.NewCompileHandler(cfg.NodeCompilerAddr)
+	tokens := auth.NewManager(cfg.JWTSecret)
+	userH := handler.NewUserHandler(store.NewUsers(db), tokens)
 
 	// Gin 路由器
 	gin.SetMode(gin.ReleaseMode)
@@ -56,9 +87,43 @@ func main() {
 	r.Use(gin.Recovery())
 	r.Use(middleware.Logging())
 
-	// project-service 反向代理路由。
-	// 必须在 middleware.Auth() 之前注册:gin 的路由只经过注册时已挂载的全局中间件,
-	// 因此转发请求不经过 gateway 的 auth 桩中间件,由 project-service 自行鉴权(5.2)。
+	// 公开路由:健康检查与自动注册(POST /users 无需登录)。
+	r.GET("/health", healthH.Health)
+	r.GET("/ready", healthH.Ready)
+	publicAPI := r.Group("/api/v1")
+	publicAPI.POST("/users", userH.AutoRegister)
+
+	// 全局鉴权中间件:此后注册的路由全部需要有效 JWT。
+	r.Use(middleware.Auth(tokens))
+
+	// 需鉴权路由:当前用户信息 + 现有 AI 链路。
+	api := r.Group("/api/v1")
+	api.GET("/users/me", userH.Me)
+
+	// 原始聊天
+	api.POST("/prd/stream", prdHandler.StreamPRD)
+
+	api.POST("/chat/stream", chatH.StreamChat)
+	api.POST("/chat/cancel/:id", chatH.CancelChat)
+
+	// 对话管理
+	api.POST("/conversations", convH.CreateConversation)
+	api.GET("/conversations", convH.ListConversations)
+	api.GET("/conversations/:id", convH.GetConversation)
+	api.POST("/conversations/:id/messages", convH.SendMessage)
+	api.DELETE("/conversations/:id", convH.DeleteConversation)
+
+	// LangGraph 流式生成
+	api.POST("/generation/stream", graphHandler.StreamGeneration)
+	api.POST("/e2e/result", e2eHandler.SubmitE2EResult)
+	api.POST("/generation/confirm", e2eHandler.ConfirmStage)
+	api.POST("/generation/compile_feedback", e2eHandler.SubmitCompileFeedback)
+	api.POST("/generation/compile", compileHandler.SubmitCompile)
+	api.POST("/generation/feedback", graphHandler.SubmitFeedback)
+
+	// project-service 反向代理路由(teams/projects)。
+	// 在 auth 中间件挂载之后注册:gin 的路由只经过注册时已挂载的全局中间件,
+	// 因此转发请求先经 gateway 鉴权,再注入可信 X-User-Id 传给 project-service。
 	projectProxy, err := handler.NewProjectServiceProxy(cfg.ProjectServiceAddr)
 	if err != nil {
 		slog.Error("Failed to create project service proxy", "error", err)
@@ -66,44 +131,13 @@ func main() {
 	}
 	projectProxy.Register(r)
 
-	// 现有 AI 链路路由保持现状:全部经过 Auth 桩中间件。
-	r.Use(middleware.Auth())
-
-	// 路由
-	r.GET("/health", healthH.Health)
-	r.GET("/ready", healthH.Ready)
-
-	api := r.Group("/api/v1")
-	{
-		// 原始聊天
-		api.POST("/prd/stream", prdHandler.StreamPRD)
-
-		api.POST("/chat/stream", chatH.StreamChat)
-		api.POST("/chat/cancel/:id", chatH.CancelChat)
-
-		// 对话管理
-		api.POST("/conversations", convH.CreateConversation)
-		api.GET("/conversations", convH.ListConversations)
-		api.GET("/conversations/:id", convH.GetConversation)
-		api.POST("/conversations/:id/messages", convH.SendMessage)
-		api.DELETE("/conversations/:id", convH.DeleteConversation)
-
-		// LangGraph 流式生成
-		api.POST("/generation/stream", graphHandler.StreamGeneration)
-		api.POST("/e2e/result", e2eHandler.SubmitE2EResult)
-		api.POST("/generation/confirm", e2eHandler.ConfirmStage)
-		api.POST("/generation/compile_feedback", e2eHandler.SubmitCompileFeedback)
-		api.POST("/generation/compile", compileHandler.SubmitCompile)
-		api.POST("/generation/feedback", graphHandler.SubmitFeedback)
-	}
-
 	// HTTP 服务器
 	srv := &http.Server{
 		Addr:         ":" + cfg.ServerPort,
 		Handler:      r,
-		ReadTimeout:  30 * time.Second,    // 读取请求体
-		WriteTimeout: 10 * time.Minute,    // SSE 长连接，匹配 AI 服务 600s 超时
-		IdleTimeout:  5 * time.Minute,     // Keep-alive 空闲超时
+		ReadTimeout:  30 * time.Second, // 读取请求体
+		WriteTimeout: 10 * time.Minute, // SSE 长连接，匹配 AI 服务 600s 超时
+		IdleTimeout:  5 * time.Minute,  // Keep-alive 空闲超时
 	}
 
 	// 优雅关闭

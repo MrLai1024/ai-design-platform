@@ -1,0 +1,391 @@
+package handler
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"ai-design-platform/gateway/internal/auth"
+	"ai-design-platform/gateway/internal/middleware"
+	"ai-design-platform/gateway/internal/store"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+// handlerUserID 是 handler 测试用的固定用户 id。
+const handlerUserID = "22222222-2222-2222-2222-222222222222"
+
+// testPassword 是 handler 测试用的固定密码。
+const testPassword = "Passw0rdAbc12345"
+
+// respEnvelope 是统一响应信封,Data 保持原始 JSON 以便二次解析业务数据。
+type respEnvelope struct {
+	Code int             `json:"code"`
+	Msg  string          `json:"msg"`
+	Data json.RawMessage `json:"data"`
+}
+
+// unmarshalEnvelope 解析统一信封并断言成功字段(code=0、msg=success)。
+func unmarshalEnvelope(t *testing.T, body []byte) respEnvelope {
+	t.Helper()
+	var env respEnvelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 0 {
+		t.Errorf("envelope code = %d, want 0 (success), body = %s", env.Code, body)
+	}
+	if env.Msg != "success" {
+		t.Errorf("envelope msg = %q, want %q", env.Msg, "success")
+	}
+	return env
+}
+
+// newUserTestEnv 创建带 sqlmock 的 UserHandler 与配套 token Manager。
+// 使用正则匹配器,避免测试与 store 包内 SQL 常量字符串强耦合。
+func newUserTestEnv(t *testing.T) (*UserHandler, sqlmock.Sqlmock, *auth.Manager) {
+	t.Helper()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("sqlmock.New() error = %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	tokens := auth.NewManager("test-secret")
+	return NewUserHandler(store.NewUsers(db), tokens), mock, tokens
+}
+
+// newFixedGenerators 注入按序返回指定账号的生成器(密码固定)。
+func newFixedGenerators(accounts ...string) (func() (string, error), func() (string, error), func() int) {
+	next := 0
+	genAccount := func() (string, error) {
+		if next >= len(accounts) {
+			return "", errors.New("unexpected extra account generation")
+		}
+		a := accounts[next]
+		next++
+		return a, nil
+	}
+	genPassword := func() (string, error) { return testPassword, nil }
+	return genAccount, genPassword, func() int { return next }
+}
+
+func doAutoRegister(t *testing.T, h *UserHandler) *httptest.ResponseRecorder {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/users", nil)
+	h.AutoRegister(c)
+	return w
+}
+
+func userRow(id, account, password string) *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"id", "account", "password", "created_at"}).
+		AddRow(id, account, password, time.Now())
+}
+
+func TestAutoRegisterSuccess(t *testing.T) {
+	h, mock, tokens := newUserTestEnv(t)
+	h.genAccount, h.genPassword, _ = newFixedGenerators("user_abc123456")
+
+	mock.ExpectQuery("INSERT INTO users").
+		WithArgs("user_abc123456", testPassword).
+		WillReturnRows(userRow(handlerUserID, "user_abc123456", testPassword))
+
+	w := doAutoRegister(t, h)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("AutoRegister() status = %d, body = %s, want 201", w.Code, w.Body.String())
+	}
+
+	env := unmarshalEnvelope(t, w.Body.Bytes())
+	var body struct {
+		Account  string `json:"account"`
+		Password string `json:"password"`
+		Token    string `json:"token"`
+	}
+	if err := json.Unmarshal(env.Data, &body); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if body.Account != "user_abc123456" {
+		t.Errorf("account = %q, want %q", body.Account, "user_abc123456")
+	}
+	if body.Password != testPassword {
+		t.Errorf("password = %q, want %q", body.Password, testPassword)
+	}
+	// token 应可被同一 Manager 校验,且 user_id 为落库返回的 id。
+	userID, err := tokens.Verify(body.Token)
+	if err != nil {
+		t.Fatalf("Verify(token) error = %v, want nil", err)
+	}
+	if userID != handlerUserID {
+		t.Errorf("token user_id = %q, want %q", userID, handlerUserID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestAutoRegisterRetriesOnConflict(t *testing.T) {
+	h, mock, _ := newUserTestEnv(t)
+	genAccount, genPassword, calls := newFixedGenerators("user_a", "user_b", "user_c")
+	h.genAccount, h.genPassword = genAccount, genPassword
+
+	// 第一次账号冲突,换账号后第二次成功。
+	mock.ExpectQuery("INSERT INTO users").
+		WithArgs("user_a", testPassword).
+		WillReturnError(&pgconn.PgError{Code: "23505"})
+	mock.ExpectQuery("INSERT INTO users").
+		WithArgs("user_b", testPassword).
+		WillReturnRows(userRow(handlerUserID, "user_b", testPassword))
+
+	w := doAutoRegister(t, h)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("AutoRegister() status = %d, body = %s, want 201", w.Code, w.Body.String())
+	}
+	env := unmarshalEnvelope(t, w.Body.Bytes())
+	var body struct {
+		Account string `json:"account"`
+	}
+	if err := json.Unmarshal(env.Data, &body); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if body.Account != "user_b" {
+		t.Errorf("account = %q, want %q (conflict 后应换账号重试)", body.Account, "user_b")
+	}
+	if n := calls(); n != 2 {
+		t.Errorf("genAccount calls = %d, want 2", n)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestAutoRegisterConflictExhausted(t *testing.T) {
+	h, mock, _ := newUserTestEnv(t)
+	h.genAccount, h.genPassword, _ = newFixedGenerators("user_a", "user_b", "user_c")
+
+	for _, account := range []string{"user_a", "user_b", "user_c"} {
+		mock.ExpectQuery("INSERT INTO users").
+			WithArgs(account, testPassword).
+			WillReturnError(&pgconn.PgError{Code: "23505"})
+	}
+
+	w := doAutoRegister(t, h)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("AutoRegister() status = %d, want 500", w.Code)
+	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 50000 || env.Msg != "内部错误" {
+		t.Errorf("envelope = {code:%d msg:%q}, want {code:50000 msg:%q}", env.Code, env.Msg, "内部错误")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestAutoRegisterCreateError(t *testing.T) {
+	h, mock, _ := newUserTestEnv(t)
+	h.genAccount, h.genPassword, _ = newFixedGenerators("user_a")
+
+	mock.ExpectQuery("INSERT INTO users").
+		WithArgs("user_a", testPassword).
+		WillReturnError(errors.New("connection refused"))
+
+	w := doAutoRegister(t, h)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("AutoRegister() status = %d, want 500", w.Code)
+	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 50000 || env.Msg != "内部错误" {
+		t.Errorf("envelope = {code:%d msg:%q}, want {code:50000 msg:%q}", env.Code, env.Msg, "内部错误")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestAutoRegisterAccountGenError(t *testing.T) {
+	h, mock, _ := newUserTestEnv(t)
+	h.genAccount = func() (string, error) { return "", errors.New("entropy exhausted") }
+
+	w := doAutoRegister(t, h)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("AutoRegister() status = %d, want 500", w.Code)
+	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 50000 || env.Msg != "内部错误" {
+		t.Errorf("envelope = {code:%d msg:%q}, want {code:50000 msg:%q}", env.Code, env.Msg, "内部错误")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// newMeRouter 构建挂载认证中间件的 /users/me 路由,验证中间件与 handler 的协作。
+func newMeRouter(t *testing.T, h *UserHandler, tokens *auth.Manager) *gin.Engine {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/api/v1/users/me", middleware.Auth(tokens), h.Me)
+	return r
+}
+
+func doMe(t *testing.T, r *gin.Engine, bearer string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func TestMeSuccess(t *testing.T) {
+	h, mock, tokens := newUserTestEnv(t)
+	mock.ExpectQuery("SELECT id, account, password, created_at FROM users WHERE id").
+		WithArgs(handlerUserID).
+		WillReturnRows(userRow(handlerUserID, "user_me", testPassword))
+
+	token, err := tokens.Sign(handlerUserID)
+	if err != nil {
+		t.Fatalf("Sign() error = %v, want nil", err)
+	}
+
+	w := doMe(t, newMeRouter(t, h, tokens), token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Me() status = %d, body = %s, want 200", w.Code, w.Body.String())
+	}
+	env := unmarshalEnvelope(t, w.Body.Bytes())
+	var body struct {
+		Account  string `json:"account"`
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal(env.Data, &body); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if body.Account != "user_me" || body.Password != testPassword {
+		t.Errorf("Me() = (%q, %q), want (%q, %q)", body.Account, body.Password, "user_me", testPassword)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestMeUserNotFound(t *testing.T) {
+	h, mock, tokens := newUserTestEnv(t)
+	mock.ExpectQuery("SELECT id, account, password, created_at FROM users WHERE id").
+		WithArgs(handlerUserID).
+		WillReturnError(sql.ErrNoRows)
+
+	token, err := tokens.Sign(handlerUserID)
+	if err != nil {
+		t.Fatalf("Sign() error = %v, want nil", err)
+	}
+
+	w := doMe(t, newMeRouter(t, h, tokens), token)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("Me() status = %d, body = %s, want 404", w.Code, w.Body.String())
+	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 40001 || env.Msg != "用户不存在" {
+		t.Errorf("envelope = {code:%d msg:%q}, want {code:40001 msg:%q}", env.Code, env.Msg, "用户不存在")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// newUserRouter 按 main.go 的装配顺序挂路由:公开路由(POST /users)在全局 Auth
+// 之前注册,需鉴权路由(users/me)在 Auth 之后注册。回归验证 gin 的中间件挂载语义,
+// 防止将来装配顺序被移动后注册接口静默 401。
+func newUserRouter(t *testing.T, h *UserHandler, tokens *auth.Manager) *gin.Engine {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	publicAPI := r.Group("/api/v1")
+	publicAPI.POST("/users", h.AutoRegister)
+	r.Use(middleware.Auth(tokens))
+	api := r.Group("/api/v1")
+	api.GET("/users/me", h.Me)
+	return r
+}
+
+func doRegister(t *testing.T, r *gin.Engine) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/users", nil)
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// TestRegisterRoutePublic 验证 POST /users 是公开路由:不带 token 也能注册成功(201)。
+func TestRegisterRoutePublic(t *testing.T) {
+	h, mock, tokens := newUserTestEnv(t)
+	h.genAccount, h.genPassword, _ = newFixedGenerators("user_public")
+
+	mock.ExpectQuery("INSERT INTO users").
+		WithArgs("user_public", testPassword).
+		WillReturnRows(userRow(handlerUserID, "user_public", testPassword))
+
+	r := newUserRouter(t, h, tokens)
+	w := doRegister(t, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("POST /users without token status = %d, body = %s, want 201 (public)", w.Code, w.Body.String())
+	}
+	unmarshalEnvelope(t, w.Body.Bytes())
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestMeRouteRequiresAuth 验证 GET /users/me 挂载在 Auth 之后:无 token 返回 401。
+func TestMeRouteRequiresAuth(t *testing.T) {
+	h, mock, tokens := newUserTestEnv(t)
+
+	r := newUserRouter(t, h, tokens)
+	w := doMe(t, r, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /users/me without token status = %d, want 401", w.Code)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+func TestMeRequiresAuth(t *testing.T) {
+	h, mock, tokens := newUserTestEnv(t)
+
+	w := doMe(t, newMeRouter(t, h, tokens), "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("Me() without token status = %d, want 401", w.Code)
+	}
+	var env respEnvelope
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Code != 40100 || env.Msg != "未认证" {
+		t.Errorf("envelope = {code:%d msg:%q}, want {code:40100 msg:%q}", env.Code, env.Msg, "未认证")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}

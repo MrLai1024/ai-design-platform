@@ -1,9 +1,15 @@
 // src/composables/useMultiAgent.ts
 import { ref } from 'vue'
+import { credentials } from '@ai-design/shared'
 import { useGenerationStore } from '../stores/generation'
 import { useStreamChat } from './useStreamChat'
 import { handleCodeSSEEvent } from './useCodeStream'
 import type { Stage, E2ECaseResult } from '../types/generation'
+
+/** JSON 请求头 + 平台 JWT(gateway 全局鉴权) */
+function authHeaders(): Record<string, string> {
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${credentials.getToken() ?? ''}` }
+}
 
 export function useMultiAgent() {
   const store = useGenerationStore()
@@ -26,7 +32,7 @@ export function useMultiAgent() {
     try {
       await fetch('/api/v1/generation/feedback', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify({
           generation_id: store.currentGenerationId,
           stage: store.stage,
@@ -86,7 +92,7 @@ export function useMultiAgent() {
     try {
       const response = await fetch('/api/v1/generation/stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify({
           messages: chatMessages,
           model: 'deepseek-v4-pro',
@@ -332,7 +338,7 @@ export function useMultiAgent() {
       const controller = getAbortController()
       const response = await fetch('/api/v1/generation/stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify(body),
         signal: controller.signal,
       })
@@ -372,7 +378,7 @@ export function useMultiAgent() {
       for (const result of results) {
         await fetch('/api/v1/e2e/result', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders(),
           body: JSON.stringify({
             generation_id: store.currentGenerationId,
             case_id: result.caseId,

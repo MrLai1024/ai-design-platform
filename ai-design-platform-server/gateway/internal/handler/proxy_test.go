@@ -9,11 +9,17 @@ import (
 	"strings"
 	"testing"
 
+	"ai-design-platform/gateway/internal/auth"
+	"ai-design-platform/gateway/internal/middleware"
+
 	"github.com/gin-gonic/gin"
 )
 
-// newProxyRouter 装配一个只挂代理路由的 gin 引擎(与 main.go 的注册逻辑一致,
-// 代理路由在 Auth 之前注册)。
+// proxyTestUserID 是代理身份注入测试用的可信用户 id(与 JWT claims 一致)。
+const proxyTestUserID = "11111111-1111-1111-1111-111111111111"
+
+// newProxyRouter 装配一个只挂代理路由的 gin 引擎(无鉴权,与 main.go 相反顺序,
+// 仅用于路径透传/覆盖/502 等与鉴权无关的行为测试)。
 func newProxyRouter(t *testing.T, upstream string) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -24,6 +30,22 @@ func newProxyRouter(t *testing.T, upstream string) *gin.Engine {
 	r := gin.New()
 	proxy.Register(r)
 	return r
+}
+
+// newProxyAuthedRouter 按 main.go 的真实装配顺序挂路由:先挂全局 Auth 再注册代理,
+// 转发请求先经过 gateway 鉴权,Auth 注入的 user_id 由 Director 以 X-User-Id 传给上游。
+func newProxyAuthedRouter(t *testing.T, upstream string) (*gin.Engine, *auth.Manager) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	proxy, err := NewProjectServiceProxy(upstream)
+	if err != nil {
+		t.Fatalf("NewProjectServiceProxy(%q): %v", upstream, err)
+	}
+	tokens := auth.NewManager("test-secret")
+	r := gin.New()
+	r.Use(middleware.Auth(tokens))
+	proxy.Register(r)
+	return r, tokens
 }
 
 // startUpstream 启动一个伪 project-service,记录收到的请求并回显。
@@ -48,7 +70,7 @@ func TestProjectServiceProxyPassthrough(t *testing.T) {
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/users/me/projects?page=2", strings.NewReader(`{"name":"x"}`))
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/v1/teams?page=2", strings.NewReader(`{"name":"x"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,8 +97,8 @@ func TestProjectServiceProxyPassthrough(t *testing.T) {
 	if lastReq.Method != http.MethodPost {
 		t.Errorf("upstream method = %s, want POST", lastReq.Method)
 	}
-	if lastReq.URL.Path != "/api/v1/users/me/projects" {
-		t.Errorf("upstream path = %s, want /api/v1/users/me/projects", lastReq.URL.Path)
+	if lastReq.URL.Path != "/api/v1/teams" {
+		t.Errorf("upstream path = %s, want /api/v1/teams", lastReq.URL.Path)
 	}
 	if lastReq.URL.RawQuery != "page=2" {
 		t.Errorf("upstream query = %q, want page=2", lastReq.URL.RawQuery)
@@ -86,8 +108,78 @@ func TestProjectServiceProxyPassthrough(t *testing.T) {
 	}
 }
 
-// TestProjectServiceProxyRouteCoverage 验证三条前缀的精确与子路径路由均被转发,
-// 不相关路径不被转发。
+// TestProjectServiceProxyStripsClientUserID 安全断言:客户端伪造的 X-User-Id
+// 在转发时被无条件剥离,上游收到的请求不含客户端注入的身份。
+func TestProjectServiceProxyStripsClientUserID(t *testing.T) {
+	upstream, getLastReq := startUpstream(t)
+	r := newProxyRouter(t, upstream.URL)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/teams", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-User-Id", "evil-user-id")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+
+	lastReq := getLastReq()
+	if lastReq == nil {
+		t.Fatal("upstream did not receive request")
+	}
+	if got := lastReq.Header.Get("X-User-Id"); got != "" {
+		t.Errorf("upstream X-User-Id = %q, want empty (client value must be stripped)", got)
+	}
+}
+
+// TestProjectServiceProxyInjectsTrustedUserID 安全断言:带有效 JWT 的请求
+// 即使客户端携带伪造 X-User-Id:evil,上游收到的也是 gateway 校验后的可信 user_id。
+func TestProjectServiceProxyInjectsTrustedUserID(t *testing.T) {
+	upstream, getLastReq := startUpstream(t)
+	r, tokens := newProxyAuthedRouter(t, upstream.URL)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	token, err := tokens.Sign(proxyTestUserID)
+	if err != nil {
+		t.Fatalf("Sign() error = %v, want nil", err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/teams", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-User-Id", "evil-user-id")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+
+	lastReq := getLastReq()
+	if lastReq == nil {
+		t.Fatal("upstream did not receive request")
+	}
+	if got := lastReq.Header.Get("X-User-Id"); got != proxyTestUserID {
+		t.Errorf("upstream X-User-Id = %q, want trusted %q", got, proxyTestUserID)
+	}
+}
+
+// TestProjectServiceProxyRouteCoverage 验证 teams/projects 前缀的精确与子路径路由均被转发,
+// 不相关路径(含已收归本地的 /api/v1/users 前缀)不被转发。
 func TestProjectServiceProxyRouteCoverage(t *testing.T) {
 	upstream, _ := startUpstream(t)
 	r := newProxyRouter(t, upstream.URL)
@@ -95,16 +187,15 @@ func TestProjectServiceProxyRouteCoverage(t *testing.T) {
 	defer srv.Close()
 
 	proxied := []string{
-		"/api/v1/users",
-		"/api/v1/users/me",
-		"/api/v1/users/me/teams",
-		"/api/v1/users/me/projects",
 		"/api/v1/teams",
 		"/api/v1/teams?keyword=abc",
 		"/api/v1/teams/abc-123/members",
 		"/api/v1/teams/abc-123/projects",
 		"/api/v1/projects",
 		"/api/v1/projects/abc-123",
+		// 用户域子资源:本地实现 /users、/users/me,以下仍由 project-service 提供
+		"/api/v1/users/me/teams",
+		"/api/v1/users/me/projects",
 	}
 	for _, p := range proxied {
 		resp, err := http.Get(srv.URL + p)
@@ -118,6 +209,8 @@ func TestProjectServiceProxyRouteCoverage(t *testing.T) {
 	}
 
 	notProxied := []string{
+		"/api/v1/users",
+		"/api/v1/users/me",
 		"/api/v1/auth",
 		"/api/v1/auth/auto-register",
 		"/api/v1/chats",
@@ -221,49 +314,51 @@ func TestProjectServiceProxyRejectsNonProxyMethods(t *testing.T) {
 	}
 }
 
-// TestProxyRoutesBypassAuthMiddleware 回归测试:按 main.go 的真实装配顺序
-// (proxy.Register 在 r.Use(Auth) 之前)验证转发路由不经过 auth 中间件。
-// 用"严格版"中间件替代桩 Auth(桩总是放行),防止未来装配顺序被移动后静默破坏。
-func TestProxyRoutesBypassAuthMiddleware(t *testing.T) {
+// TestProxyRoutesRequireAuth 回归测试:按 main.go 的真实装配顺序
+// (先挂全局 Auth 再 proxy.Register)验证转发路由全部经过 gateway 鉴权,
+// 无有效 JWT 的请求返回 401,不触碰上游。
+func TestProxyRoutesRequireAuth(t *testing.T) {
 	upstream, getLastReq := startUpstream(t)
-	proxy, err := NewProjectServiceProxy(upstream.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	r := gin.New()
-	// 与 main.go 一致:代理路由先注册……
-	proxy.Register(r)
-	// ……之后才挂 auth;严格版:一律 401。
-	r.Use(func(c *gin.Context) {
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-	})
-	// 对照路由:注册在 auth 之后,应被 auth 拦截。
-	r.GET("/api/v1/ai-check", func(c *gin.Context) { c.Status(http.StatusOK) })
-
+	r, tokens := newProxyAuthedRouter(t, upstream.URL)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
-	// 代理路由不受 auth 影响,正常转发。
+	// 无 token:转发路由被 Auth 拦截,返回 401 信封。
 	resp, err := http.Get(srv.URL + "/api/v1/teams")
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("proxy route status = %d, want %d (must bypass auth)", resp.StatusCode, http.StatusCreated)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("proxy route without token status = %d, want 401", resp.StatusCode)
 	}
-	if getLastReq() == nil {
-		t.Fatal("upstream did not receive request")
+	if getLastReq() != nil {
+		t.Error("upstream received a request without auth")
 	}
 
-	// 对照:auth 之后注册的路由被拦截,证明中间件生效、而非测试未挂上。
-	resp2, err := http.Get(srv.URL + "/api/v1/ai-check")
+	// 带有效 token:鉴权通过,正常转发并注入可信 X-User-Id。
+	token, err := tokens.Sign(proxyTestUserID)
+	if err != nil {
+		t.Fatalf("Sign() error = %v, want nil", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/projects", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp2, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp2.Body.Close()
-	if resp2.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("post-auth route status = %d, want 401 (control)", resp2.StatusCode)
+	if resp2.StatusCode != http.StatusCreated {
+		t.Fatalf("proxy route with token status = %d, want %d", resp2.StatusCode, http.StatusCreated)
+	}
+	lastReq := getLastReq()
+	if lastReq == nil {
+		t.Fatal("upstream did not receive request")
+	}
+	if got := lastReq.Header.Get("X-User-Id"); got != proxyTestUserID {
+		t.Errorf("upstream X-User-Id = %q, want trusted %q", got, proxyTestUserID)
 	}
 }
