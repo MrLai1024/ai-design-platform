@@ -1,4 +1,4 @@
-// Package auth 提供 JWT 签发/校验(HS256,与 gateway 共享 JWT_SECRET)与账号密码随机生成。
+// Package auth 提供 JWT 签发/校验(HS256)与账号密码随机生成。
 package auth
 
 import (
@@ -12,7 +12,7 @@ import (
 // TokenTTL 是签发 token 的有效期(7 天)。
 const TokenTTL = 7 * 24 * time.Hour
 
-// Claims 是 project-service 签发的 JWT claims,user_id 标识用户。
+// Claims 是 gateway 签发的 JWT claims,user_id 标识用户。
 type Claims struct {
 	UserID string `json:"user_id"`
 	jwt.RegisteredClaims

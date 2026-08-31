@@ -41,15 +41,13 @@ func TestInitMigrationContent(t *testing.T) {
 	// 归一化空白(SQL 中列对齐的多空格不影响校验)。
 	normalized := strings.Join(strings.Fields(string(content)), " ")
 
-	// 四张表 + 幂等 DDL + 关键约束。
+	// 三张业务表 + 幂等 DDL + 关键约束;users 表归 gateway 管理,本迁移仅保留外键引用。
 	for _, want := range []string{
 		"CREATE EXTENSION IF NOT EXISTS pgcrypto",
-		"CREATE TABLE IF NOT EXISTS users",
 		"CREATE TABLE IF NOT EXISTS teams",
 		"CREATE TABLE IF NOT EXISTS team_members",
 		"CREATE TABLE IF NOT EXISTS projects",
 		"gen_random_uuid()",
-		"account varchar(255) NOT NULL UNIQUE",
 		"PRIMARY KEY (team_id, user_id)",
 		"CHECK (level IN ('demo', 'production'))",
 		"REFERENCES users (id)",
@@ -58,6 +56,18 @@ func TestInitMigrationContent(t *testing.T) {
 		if !strings.Contains(normalized, want) {
 			t.Errorf("0001_init.sql missing %q", want)
 		}
+	}
+}
+
+// TestInitMigrationNoUsersTable 防止 users 建表语句回流到 project-service 迁移:
+// users 表 DDL 已归口 gateway(全局服务),此处再建即造成双份维护。
+func TestInitMigrationNoUsersTable(t *testing.T) {
+	content, err := fs.ReadFile(FS, "0001_init.sql")
+	if err != nil {
+		t.Fatalf("ReadFile(0001_init.sql) error = %v", err)
+	}
+	if strings.Contains(string(content), "CREATE TABLE IF NOT EXISTS users") {
+		t.Error("0001_init.sql must not create users table (owned by gateway)")
 	}
 }
 

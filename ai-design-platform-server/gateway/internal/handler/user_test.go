@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"ai-design-platform/project-service/internal/auth"
-	"ai-design-platform/project-service/internal/middleware"
-	"ai-design-platform/project-service/internal/store"
+	"ai-design-platform/gateway/internal/auth"
+	"ai-design-platform/gateway/internal/middleware"
+	"ai-design-platform/gateway/internal/store"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
@@ -47,9 +47,9 @@ func unmarshalEnvelope(t *testing.T, body []byte) respEnvelope {
 	return env
 }
 
-// newAuthTestEnv 创建带 sqlmock 的 AuthHandler 与配套 token Manager。
+// newUserTestEnv 创建带 sqlmock 的 UserHandler 与配套 token Manager。
 // 使用正则匹配器,避免测试与 store 包内 SQL 常量字符串强耦合。
-func newAuthTestEnv(t *testing.T) (*AuthHandler, sqlmock.Sqlmock, *auth.Manager) {
+func newUserTestEnv(t *testing.T) (*UserHandler, sqlmock.Sqlmock, *auth.Manager) {
 	t.Helper()
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
@@ -57,7 +57,7 @@ func newAuthTestEnv(t *testing.T) (*AuthHandler, sqlmock.Sqlmock, *auth.Manager)
 	}
 	t.Cleanup(func() { db.Close() })
 	tokens := auth.NewManager("test-secret")
-	return NewAuthHandler(store.NewUsers(db), tokens), mock, tokens
+	return NewUserHandler(store.NewUsers(db), tokens), mock, tokens
 }
 
 // newFixedGenerators 注入按序返回指定账号的生成器(密码固定)。
@@ -75,7 +75,7 @@ func newFixedGenerators(accounts ...string) (func() (string, error), func() (str
 	return genAccount, genPassword, func() int { return next }
 }
 
-func doAutoRegister(t *testing.T, h *AuthHandler) *httptest.ResponseRecorder {
+func doAutoRegister(t *testing.T, h *UserHandler) *httptest.ResponseRecorder {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
@@ -91,7 +91,7 @@ func userRow(id, account, password string) *sqlmock.Rows {
 }
 
 func TestAutoRegisterSuccess(t *testing.T) {
-	h, mock, tokens := newAuthTestEnv(t)
+	h, mock, tokens := newUserTestEnv(t)
 	h.genAccount, h.genPassword, _ = newFixedGenerators("user_abc123456")
 
 	mock.ExpectQuery("INSERT INTO users").
@@ -132,7 +132,7 @@ func TestAutoRegisterSuccess(t *testing.T) {
 }
 
 func TestAutoRegisterRetriesOnConflict(t *testing.T) {
-	h, mock, _ := newAuthTestEnv(t)
+	h, mock, _ := newUserTestEnv(t)
 	genAccount, genPassword, calls := newFixedGenerators("user_a", "user_b", "user_c")
 	h.genAccount, h.genPassword = genAccount, genPassword
 
@@ -167,7 +167,7 @@ func TestAutoRegisterRetriesOnConflict(t *testing.T) {
 }
 
 func TestAutoRegisterConflictExhausted(t *testing.T) {
-	h, mock, _ := newAuthTestEnv(t)
+	h, mock, _ := newUserTestEnv(t)
 	h.genAccount, h.genPassword, _ = newFixedGenerators("user_a", "user_b", "user_c")
 
 	for _, account := range []string{"user_a", "user_b", "user_c"} {
@@ -193,7 +193,7 @@ func TestAutoRegisterConflictExhausted(t *testing.T) {
 }
 
 func TestAutoRegisterCreateError(t *testing.T) {
-	h, mock, _ := newAuthTestEnv(t)
+	h, mock, _ := newUserTestEnv(t)
 	h.genAccount, h.genPassword, _ = newFixedGenerators("user_a")
 
 	mock.ExpectQuery("INSERT INTO users").
@@ -217,7 +217,7 @@ func TestAutoRegisterCreateError(t *testing.T) {
 }
 
 func TestAutoRegisterAccountGenError(t *testing.T) {
-	h, mock, _ := newAuthTestEnv(t)
+	h, mock, _ := newUserTestEnv(t)
 	h.genAccount = func() (string, error) { return "", errors.New("entropy exhausted") }
 
 	w := doAutoRegister(t, h)
@@ -237,7 +237,7 @@ func TestAutoRegisterAccountGenError(t *testing.T) {
 }
 
 // newMeRouter 构建挂载认证中间件的 /users/me 路由,验证中间件与 handler 的协作。
-func newMeRouter(t *testing.T, h *AuthHandler, tokens *auth.Manager) *gin.Engine {
+func newMeRouter(t *testing.T, h *UserHandler, tokens *auth.Manager) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -257,7 +257,7 @@ func doMe(t *testing.T, r *gin.Engine, bearer string) *httptest.ResponseRecorder
 }
 
 func TestMeSuccess(t *testing.T) {
-	h, mock, tokens := newAuthTestEnv(t)
+	h, mock, tokens := newUserTestEnv(t)
 	mock.ExpectQuery("SELECT id, account, password, created_at FROM users WHERE id").
 		WithArgs(handlerUserID).
 		WillReturnRows(userRow(handlerUserID, "user_me", testPassword))
@@ -288,7 +288,7 @@ func TestMeSuccess(t *testing.T) {
 }
 
 func TestMeUserNotFound(t *testing.T) {
-	h, mock, tokens := newAuthTestEnv(t)
+	h, mock, tokens := newUserTestEnv(t)
 	mock.ExpectQuery("SELECT id, account, password, created_at FROM users WHERE id").
 		WithArgs(handlerUserID).
 		WillReturnError(sql.ErrNoRows)
@@ -314,8 +314,65 @@ func TestMeUserNotFound(t *testing.T) {
 	}
 }
 
+// newUserRouter 按 main.go 的装配顺序挂路由:公开路由(POST /users)在全局 Auth
+// 之前注册,需鉴权路由(users/me)在 Auth 之后注册。回归验证 gin 的中间件挂载语义,
+// 防止将来装配顺序被移动后注册接口静默 401。
+func newUserRouter(t *testing.T, h *UserHandler, tokens *auth.Manager) *gin.Engine {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	publicAPI := r.Group("/api/v1")
+	publicAPI.POST("/users", h.AutoRegister)
+	r.Use(middleware.Auth(tokens))
+	api := r.Group("/api/v1")
+	api.GET("/users/me", h.Me)
+	return r
+}
+
+func doRegister(t *testing.T, r *gin.Engine) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/users", nil)
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// TestRegisterRoutePublic 验证 POST /users 是公开路由:不带 token 也能注册成功(201)。
+func TestRegisterRoutePublic(t *testing.T) {
+	h, mock, tokens := newUserTestEnv(t)
+	h.genAccount, h.genPassword, _ = newFixedGenerators("user_public")
+
+	mock.ExpectQuery("INSERT INTO users").
+		WithArgs("user_public", testPassword).
+		WillReturnRows(userRow(handlerUserID, "user_public", testPassword))
+
+	r := newUserRouter(t, h, tokens)
+	w := doRegister(t, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("POST /users without token status = %d, body = %s, want 201 (public)", w.Code, w.Body.String())
+	}
+	unmarshalEnvelope(t, w.Body.Bytes())
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestMeRouteRequiresAuth 验证 GET /users/me 挂载在 Auth 之后:无 token 返回 401。
+func TestMeRouteRequiresAuth(t *testing.T) {
+	h, mock, tokens := newUserTestEnv(t)
+
+	r := newUserRouter(t, h, tokens)
+	w := doMe(t, r, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /users/me without token status = %d, want 401", w.Code)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 func TestMeRequiresAuth(t *testing.T) {
-	h, mock, tokens := newAuthTestEnv(t)
+	h, mock, tokens := newUserTestEnv(t)
 
 	w := doMe(t, newMeRouter(t, h, tokens), "")
 	if w.Code != http.StatusUnauthorized {

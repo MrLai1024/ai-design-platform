@@ -46,15 +46,18 @@ services:
     environment:
       - PROJECT_SERVICE_PORT=8081
       - DATABASE_URL=postgres://aiplatform:aiplatform@postgres:5432/aiplatform?sslmode=disable
-      - JWT_SECRET=${JWT_SECRET:-dev-secret}
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://localhost:8081/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
+    # users 表归 gateway 建表(全局服务),本服务迁移保留外键引用,
+    # 必须等 gateway healthy(EnsureUsersTable 完成)之后才能迁移。
     depends_on:
       postgres:
+        condition: service_healthy
+      gateway:
         condition: service_healthy
     restart: unless-stopped
 
@@ -91,7 +94,16 @@ services:
       - REDIS_ADDR=redis:6379
       - NODE_COMPILER_ADDR=node-compiler:5199
       - PROJECT_SERVICE_ADDR=http://project-service:8081
+      - JWT_SECRET=${JWT_SECRET:-dev-secret}
       - LOG_LEVEL=debug
+    # gateway 先起:启动时创建 users 表,project-service 依赖本服务 healthy。
+    # 反向代理对尚未就绪的 project-service 返回 502(有兜底),不影响启动。
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,8 +111,6 @@ services:
         condition: service_started
       node-compiler:
         condition: service_started
-      project-service:
-        condition: service_healthy
     restart: unless-stopped
 
 volumes:

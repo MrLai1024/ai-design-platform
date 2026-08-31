@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"ai-design-platform/project-service/internal/auth"
 	"ai-design-platform/project-service/internal/middleware"
 	"ai-design-platform/project-service/internal/store"
 
@@ -22,36 +21,31 @@ const handlerProjectID = "99999999-9999-9999-9999-999999999999"
 
 // newProjectTestEnv 创建挂载认证中间件与四条项目路由的测试路由器。
 // 使用正则匹配器,避免测试与 store 包内 SQL 常量字符串强耦合。
-func newProjectTestEnv(t *testing.T) (*gin.Engine, sqlmock.Sqlmock, *auth.Manager) {
+func newProjectTestEnv(t *testing.T) (*gin.Engine, sqlmock.Sqlmock) {
 	t.Helper()
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	if err != nil {
 		t.Fatalf("sqlmock.New() error = %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
-	tokens := auth.NewManager("test-secret")
 
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := NewProjectHandler(store.NewProjects(db))
 	// 个人项目列表挂在 /users/me/projects;projects 组仅保留创建与详情。
-	usersAuthed := r.Group("/api/v1/users/me", middleware.Auth(tokens))
+	usersAuthed := r.Group("/api/v1/users/me", middleware.Auth())
 	usersAuthed.GET("/projects", h.List)
-	projects := r.Group("/api/v1/projects", middleware.Auth(tokens))
+	projects := r.Group("/api/v1/projects", middleware.Auth())
 	projects.POST("", h.Create)
 	projects.GET("/:id", h.Detail)
-	teams := r.Group("/api/v1/teams", middleware.Auth(tokens))
+	teams := r.Group("/api/v1/teams", middleware.Auth())
 	teams.GET("/:id/projects", h.TeamProjects)
-	return r, mock, tokens
+	return r, mock
 }
 
-// doProjectRequest 以固定用户身份(token 签发 handlerUserID)向项目路由发起请求。
-func doProjectRequest(t *testing.T, r *gin.Engine, tokens *auth.Manager, method, path, body string) *httptest.ResponseRecorder {
+// doProjectRequest 以固定用户身份(X-User-Id: handlerUserID,模拟 gateway 注入)向项目路由发起请求。
+func doProjectRequest(t *testing.T, r *gin.Engine, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	token, err := tokens.Sign(handlerUserID)
-	if err != nil {
-		t.Fatalf("Sign() error = %v, want nil", err)
-	}
 	w := httptest.NewRecorder()
 	var req *http.Request
 	if body == "" {
@@ -60,7 +54,7 @@ func doProjectRequest(t *testing.T, r *gin.Engine, tokens *auth.Manager, method,
 		req = httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-User-Id", handlerUserID)
 	r.ServeHTTP(w, req)
 	return w
 }
@@ -90,13 +84,13 @@ type projectResp struct {
 
 // TestCreatePersonalProjectSuccess 覆盖创建个人项目:无 teamId 落个人项目,201 + camelCase 响应。
 func TestCreatePersonalProjectSuccess(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("INSERT INTO projects").
 		WithArgs("个人项目", "项目简介", "demo", nil, handlerUserID).
 		WillReturnRows(projectRow(handlerProjectID, "个人项目", "项目简介", "demo", nil, handlerUserID))
 
-	w := doProjectRequest(t, r, tokens, http.MethodPost, "/api/v1/projects", `{"name":"个人项目","description":"项目简介","level":"demo"}`)
+	w := doProjectRequest(t, r, http.MethodPost, "/api/v1/projects", `{"name":"个人项目","description":"项目简介","level":"demo"}`)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("POST /projects status = %d, body = %s, want 201", w.Code, w.Body.String())
 	}
@@ -127,13 +121,13 @@ func TestCreatePersonalProjectSuccess(t *testing.T) {
 
 // TestCreatePersonalProjectWithoutDescription 覆盖简介缺省:参数落 NULL,响应省略 description 字段。
 func TestCreatePersonalProjectWithoutDescription(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("INSERT INTO projects").
 		WithArgs("个人项目", nil, "demo", nil, handlerUserID).
 		WillReturnRows(projectRow(handlerProjectID, "个人项目", nil, "demo", nil, handlerUserID))
 
-	w := doProjectRequest(t, r, tokens, http.MethodPost, "/api/v1/projects", `{"name":"个人项目","level":"demo"}`)
+	w := doProjectRequest(t, r, http.MethodPost, "/api/v1/projects", `{"name":"个人项目","level":"demo"}`)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("POST /projects status = %d, body = %s, want 201", w.Code, w.Body.String())
 	}
@@ -148,7 +142,7 @@ func TestCreatePersonalProjectWithoutDescription(t *testing.T) {
 
 // TestCreateTeamProjectSuccess 覆盖创建团队项目:先校验成员身份,再落 team_id。
 func TestCreateTeamProjectSuccess(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("LEFT JOIN team_members").
 		WithArgs(handlerTeamID, handlerUserID).
@@ -158,7 +152,7 @@ func TestCreateTeamProjectSuccess(t *testing.T) {
 		WillReturnRows(projectRow(handlerProjectID, "团队项目", "简介", "production", handlerTeamID, handlerUserID))
 
 	body := `{"name":"团队项目","description":"简介","level":"production","teamId":"` + handlerTeamID + `"}`
-	w := doProjectRequest(t, r, tokens, http.MethodPost, "/api/v1/projects", body)
+	w := doProjectRequest(t, r, http.MethodPost, "/api/v1/projects", body)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("POST /projects status = %d, body = %s, want 201", w.Code, w.Body.String())
 	}
@@ -186,9 +180,9 @@ func TestCreateProjectMissingName(t *testing.T) {
 		`{"level":"demo"}`,
 	} {
 		t.Run(body, func(t *testing.T) {
-			r, mock, tokens := newProjectTestEnv(t)
+			r, mock := newProjectTestEnv(t)
 
-			w := doProjectRequest(t, r, tokens, http.MethodPost, "/api/v1/projects", body)
+			w := doProjectRequest(t, r, http.MethodPost, "/api/v1/projects", body)
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("POST /projects %s status = %d, body = %s, want 400", body, w.Code, w.Body.String())
 			}
@@ -215,9 +209,9 @@ func TestCreateProjectInvalidLevel(t *testing.T) {
 		`{"name":"项目","level":"DEMO"}`,
 	} {
 		t.Run(body, func(t *testing.T) {
-			r, mock, tokens := newProjectTestEnv(t)
+			r, mock := newProjectTestEnv(t)
 
-			w := doProjectRequest(t, r, tokens, http.MethodPost, "/api/v1/projects", body)
+			w := doProjectRequest(t, r, http.MethodPost, "/api/v1/projects", body)
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("POST /projects %s status = %d, body = %s, want 400", body, w.Code, w.Body.String())
 			}
@@ -237,9 +231,9 @@ func TestCreateProjectInvalidLevel(t *testing.T) {
 
 // TestCreateProjectInvalidBody 覆盖请求体非法 JSON。
 func TestCreateProjectInvalidBody(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
-	w := doProjectRequest(t, r, tokens, http.MethodPost, "/api/v1/projects", `not-json`)
+	w := doProjectRequest(t, r, http.MethodPost, "/api/v1/projects", `not-json`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("POST /projects status = %d, body = %s, want 400", w.Code, w.Body.String())
 	}
@@ -257,14 +251,14 @@ func TestCreateProjectInvalidBody(t *testing.T) {
 
 // TestCreateTeamProjectNotMember 覆盖非成员创建团队项目:403,不发起插入。
 func TestCreateTeamProjectNotMember(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("LEFT JOIN team_members").
 		WithArgs(handlerTeamID, handlerUserID).
 		WillReturnRows(membershipRow(false))
 
 	body := `{"name":"团队项目","level":"demo","teamId":"` + handlerTeamID + `"}`
-	w := doProjectRequest(t, r, tokens, http.MethodPost, "/api/v1/projects", body)
+	w := doProjectRequest(t, r, http.MethodPost, "/api/v1/projects", body)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("POST /projects status = %d, body = %s, want 403", w.Code, w.Body.String())
 	}
@@ -282,14 +276,14 @@ func TestCreateTeamProjectNotMember(t *testing.T) {
 
 // TestCreateTeamProjectTeamNotFound 覆盖团队不存在:404,不发起插入。
 func TestCreateTeamProjectTeamNotFound(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("LEFT JOIN team_members").
 		WithArgs(handlerTeamID, handlerUserID).
 		WillReturnError(sql.ErrNoRows)
 
 	body := `{"name":"团队项目","level":"demo","teamId":"` + handlerTeamID + `"}`
-	w := doProjectRequest(t, r, tokens, http.MethodPost, "/api/v1/projects", body)
+	w := doProjectRequest(t, r, http.MethodPost, "/api/v1/projects", body)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("POST /projects status = %d, body = %s, want 404", w.Code, w.Body.String())
 	}
@@ -307,9 +301,9 @@ func TestCreateTeamProjectTeamNotFound(t *testing.T) {
 
 // TestCreateProjectInvalidTeamID 覆盖非 UUID 的 teamId:400,不触碰数据库。
 func TestCreateProjectInvalidTeamID(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
-	w := doProjectRequest(t, r, tokens, http.MethodPost, "/api/v1/projects", `{"name":"项目","level":"demo","teamId":"not-a-uuid"}`)
+	w := doProjectRequest(t, r, http.MethodPost, "/api/v1/projects", `{"name":"项目","level":"demo","teamId":"not-a-uuid"}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("POST /projects status = %d, body = %s, want 400", w.Code, w.Body.String())
 	}
@@ -327,13 +321,13 @@ func TestCreateProjectInvalidTeamID(t *testing.T) {
 
 // TestCreateProjectInsertError 覆盖插入失败:返回 500。
 func TestCreateProjectInsertError(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("INSERT INTO projects").
 		WithArgs("个人项目", nil, "demo", nil, handlerUserID).
 		WillReturnError(sql.ErrConnDone)
 
-	w := doProjectRequest(t, r, tokens, http.MethodPost, "/api/v1/projects", `{"name":"个人项目","level":"demo"}`)
+	w := doProjectRequest(t, r, http.MethodPost, "/api/v1/projects", `{"name":"个人项目","level":"demo"}`)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("POST /projects status = %d, body = %s, want 500", w.Code, w.Body.String())
 	}
@@ -351,13 +345,13 @@ func TestCreateProjectInsertError(t *testing.T) {
 
 // TestListPersonalProjectsEmpty 覆盖空列表:响应为裸数组 [] 而非 null。
 func TestListPersonalProjectsEmpty(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("FROM projects WHERE team_id IS NULL").
 		WithArgs(handlerUserID).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "description", "level", "team_id", "created_by", "created_at"}))
 
-	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/users/me/projects", "")
+	w := doProjectRequest(t, r, http.MethodGet, "/api/v1/users/me/projects", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /users/me/projects status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
@@ -372,7 +366,7 @@ func TestListPersonalProjectsEmpty(t *testing.T) {
 
 // TestListPersonalProjects 覆盖有数据列表:camelCase 字段映射与行顺序透传。
 func TestListPersonalProjects(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("FROM projects WHERE team_id IS NULL").
 		WithArgs(handlerUserID).
@@ -381,7 +375,7 @@ func TestListPersonalProjects(t *testing.T) {
 				AddRow("88888888-8888-8888-8888-888888888888", "生产项目", nil, "production", nil, handlerUserID, time.Now()),
 		)
 
-	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/users/me/projects", "")
+	w := doProjectRequest(t, r, http.MethodGet, "/api/v1/users/me/projects", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /users/me/projects status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
@@ -412,7 +406,7 @@ func TestListPersonalProjects(t *testing.T) {
 
 // TestListTeamProjectsSuccess 覆盖团队项目列表:成员可见,teamId 字段透传。
 func TestListTeamProjectsSuccess(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("LEFT JOIN team_members").
 		WithArgs(handlerTeamID, handlerUserID).
@@ -421,7 +415,7 @@ func TestListTeamProjectsSuccess(t *testing.T) {
 		WithArgs(handlerTeamID).
 		WillReturnRows(projectRow(handlerProjectID, "团队项目", nil, "demo", handlerTeamID, handlerUserID))
 
-	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/teams/"+handlerTeamID+"/projects", "")
+	w := doProjectRequest(t, r, http.MethodGet, "/api/v1/teams/"+handlerTeamID+"/projects", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /teams/:id/projects status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
@@ -443,7 +437,7 @@ func TestListTeamProjectsSuccess(t *testing.T) {
 
 // TestListTeamProjectsEmpty 覆盖团队项目空列表:响应为 []。
 func TestListTeamProjectsEmpty(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("LEFT JOIN team_members").
 		WithArgs(handlerTeamID, handlerUserID).
@@ -452,7 +446,7 @@ func TestListTeamProjectsEmpty(t *testing.T) {
 		WithArgs(handlerTeamID).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name", "description", "level", "team_id", "created_by", "created_at"}))
 
-	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/teams/"+handlerTeamID+"/projects", "")
+	w := doProjectRequest(t, r, http.MethodGet, "/api/v1/teams/"+handlerTeamID+"/projects", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /teams/:id/projects status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
@@ -467,13 +461,13 @@ func TestListTeamProjectsEmpty(t *testing.T) {
 
 // TestListTeamProjectsNotMember 覆盖非成员访问团队项目列表:403。
 func TestListTeamProjectsNotMember(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("LEFT JOIN team_members").
 		WithArgs(handlerTeamID, handlerUserID).
 		WillReturnRows(membershipRow(false))
 
-	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/teams/"+handlerTeamID+"/projects", "")
+	w := doProjectRequest(t, r, http.MethodGet, "/api/v1/teams/"+handlerTeamID+"/projects", "")
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("GET /teams/:id/projects status = %d, body = %s, want 403", w.Code, w.Body.String())
 	}
@@ -491,13 +485,13 @@ func TestListTeamProjectsNotMember(t *testing.T) {
 
 // TestListTeamProjectsTeamNotFound 覆盖团队不存在:404。
 func TestListTeamProjectsTeamNotFound(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("LEFT JOIN team_members").
 		WithArgs(handlerTeamID, handlerUserID).
 		WillReturnError(sql.ErrNoRows)
 
-	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/teams/"+handlerTeamID+"/projects", "")
+	w := doProjectRequest(t, r, http.MethodGet, "/api/v1/teams/"+handlerTeamID+"/projects", "")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("GET /teams/:id/projects status = %d, body = %s, want 404", w.Code, w.Body.String())
 	}
@@ -515,9 +509,9 @@ func TestListTeamProjectsTeamNotFound(t *testing.T) {
 
 // TestListTeamProjectsInvalidTeamID 覆盖 P3:非 UUID 的 :id 返回 400,不触碰数据库。
 func TestListTeamProjectsInvalidTeamID(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
-	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/teams/not-a-uuid/projects", "")
+	w := doProjectRequest(t, r, http.MethodGet, "/api/v1/teams/not-a-uuid/projects", "")
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("GET /teams/:id/projects status = %d, body = %s, want 400", w.Code, w.Body.String())
 	}
@@ -535,13 +529,13 @@ func TestListTeamProjectsInvalidTeamID(t *testing.T) {
 
 // TestGetProjectDetailPersonal 覆盖个人项目详情:创建者可见,teamId 为 null。
 func TestGetProjectDetailPersonal(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("FROM projects WHERE id").
 		WithArgs(handlerProjectID).
 		WillReturnRows(projectRow(handlerProjectID, "个人项目", "简介", "demo", nil, handlerUserID))
 
-	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/projects/"+handlerProjectID, "")
+	w := doProjectRequest(t, r, http.MethodGet, "/api/v1/projects/"+handlerProjectID, "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /projects/:id status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
@@ -563,13 +557,13 @@ func TestGetProjectDetailPersonal(t *testing.T) {
 
 // TestGetProjectDetailOthersPersonalForbidden 覆盖他人个人项目:非创建者 403 不可见。
 func TestGetProjectDetailOthersPersonalForbidden(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("FROM projects WHERE id").
 		WithArgs(handlerProjectID).
 		WillReturnRows(projectRow(handlerProjectID, "他人项目", nil, "demo", nil, "11111111-1111-1111-1111-111111111111"))
 
-	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/projects/"+handlerProjectID, "")
+	w := doProjectRequest(t, r, http.MethodGet, "/api/v1/projects/"+handlerProjectID, "")
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("GET /projects/:id status = %d, body = %s, want 403", w.Code, w.Body.String())
 	}
@@ -587,7 +581,7 @@ func TestGetProjectDetailOthersPersonalForbidden(t *testing.T) {
 
 // TestGetProjectDetailTeamMember 覆盖团队项目详情:团队成员可见。
 func TestGetProjectDetailTeamMember(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("FROM projects WHERE id").
 		WithArgs(handlerProjectID).
@@ -596,7 +590,7 @@ func TestGetProjectDetailTeamMember(t *testing.T) {
 		WithArgs(handlerTeamID, handlerUserID).
 		WillReturnRows(membershipRow(true))
 
-	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/projects/"+handlerProjectID, "")
+	w := doProjectRequest(t, r, http.MethodGet, "/api/v1/projects/"+handlerProjectID, "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /projects/:id status = %d, body = %s, want 200", w.Code, w.Body.String())
 	}
@@ -615,7 +609,7 @@ func TestGetProjectDetailTeamMember(t *testing.T) {
 
 // TestGetProjectDetailTeamNonMember 覆盖团队项目详情:非成员 403。
 func TestGetProjectDetailTeamNonMember(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("FROM projects WHERE id").
 		WithArgs(handlerProjectID).
@@ -624,7 +618,7 @@ func TestGetProjectDetailTeamNonMember(t *testing.T) {
 		WithArgs(handlerTeamID, handlerUserID).
 		WillReturnRows(membershipRow(false))
 
-	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/projects/"+handlerProjectID, "")
+	w := doProjectRequest(t, r, http.MethodGet, "/api/v1/projects/"+handlerProjectID, "")
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("GET /projects/:id status = %d, body = %s, want 403", w.Code, w.Body.String())
 	}
@@ -642,13 +636,13 @@ func TestGetProjectDetailTeamNonMember(t *testing.T) {
 
 // TestGetProjectDetailNotFound 覆盖项目不存在:404。
 func TestGetProjectDetailNotFound(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
 	mock.ExpectQuery("FROM projects WHERE id").
 		WithArgs(handlerProjectID).
 		WillReturnError(sql.ErrNoRows)
 
-	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/projects/"+handlerProjectID, "")
+	w := doProjectRequest(t, r, http.MethodGet, "/api/v1/projects/"+handlerProjectID, "")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("GET /projects/:id status = %d, body = %s, want 404", w.Code, w.Body.String())
 	}
@@ -666,9 +660,9 @@ func TestGetProjectDetailNotFound(t *testing.T) {
 
 // TestGetProjectDetailInvalidID 覆盖 P3:非 UUID 的 :id 返回 400,不触碰数据库。
 func TestGetProjectDetailInvalidID(t *testing.T) {
-	r, mock, tokens := newProjectTestEnv(t)
+	r, mock := newProjectTestEnv(t)
 
-	w := doProjectRequest(t, r, tokens, http.MethodGet, "/api/v1/projects/not-a-uuid", "")
+	w := doProjectRequest(t, r, http.MethodGet, "/api/v1/projects/not-a-uuid", "")
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("GET /projects/:id status = %d, body = %s, want 400", w.Code, w.Body.String())
 	}

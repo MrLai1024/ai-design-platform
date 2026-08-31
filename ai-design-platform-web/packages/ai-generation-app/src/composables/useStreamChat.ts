@@ -1,8 +1,14 @@
 // src/composables/useStreamChat.ts
 import { ref } from 'vue'
+import { credentials } from '@ai-design/shared'
 import { useGenerationStore } from '@/stores/generation'
 import { useComponentDocs } from './useComponentDocs'
 import type { ChatMessage, Stage } from '@/types/generation'
+
+/** JSON 请求头 + 平台 JWT(gateway 全局鉴权) */
+function authHeaders(): Record<string, string> {
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${credentials.getToken() ?? ''}` }
+}
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 9)

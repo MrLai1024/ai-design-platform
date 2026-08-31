@@ -5,8 +5,9 @@ import (
 	"log/slog"
 	"net/http"
 
-	"ai-design-platform/project-service/internal/auth"
-	"ai-design-platform/project-service/internal/store"
+	"ai-design-platform/gateway/internal/auth"
+	"ai-design-platform/gateway/internal/middleware"
+	"ai-design-platform/gateway/internal/store"
 
 	"github.com/gin-gonic/gin"
 )
@@ -14,17 +15,17 @@ import (
 // maxRegisterAttempts 是账号唯一冲突时换账号重试的最大次数。
 const maxRegisterAttempts = 3
 
-// AuthHandler 提供自动注册与当前用户信息接口。
-type AuthHandler struct {
+// UserHandler 提供自动注册与当前用户信息接口。
+type UserHandler struct {
 	users       *store.Users
 	tokens      *auth.Manager
 	genAccount  func() (string, error)
 	genPassword func() (string, error)
 }
 
-// NewAuthHandler 创建 AuthHandler,使用 crypto/rand 随机生成账号与密码。
-func NewAuthHandler(users *store.Users, tokens *auth.Manager) *AuthHandler {
-	return &AuthHandler{
+// NewUserHandler 创建 UserHandler,使用 crypto/rand 随机生成账号与密码。
+func NewUserHandler(users *store.Users, tokens *auth.Manager) *UserHandler {
+	return &UserHandler{
 		users:       users,
 		tokens:      tokens,
 		genAccount:  auth.RandomAccount,
@@ -34,7 +35,7 @@ func NewAuthHandler(users *store.Users, tokens *auth.Manager) *AuthHandler {
 
 // AutoRegister 生成唯一账号与随机密码落 users 表,签发 token 返回(POST /api/v1/users)。
 // 账号唯一约束冲突时换账号重试,最多 maxRegisterAttempts 次。
-func (h *AuthHandler) AutoRegister(c *gin.Context) {
+func (h *UserHandler) AutoRegister(c *gin.Context) {
 	for attempt := 1; attempt <= maxRegisterAttempts; attempt++ {
 		account, err := h.genAccount()
 		if err != nil {
@@ -74,8 +75,8 @@ func (h *AuthHandler) AutoRegister(c *gin.Context) {
 }
 
 // Me 返回当前登录用户的账号与密码(GET /api/v1/users/me)。
-func (h *AuthHandler) Me(c *gin.Context) {
-	userID, ok := currentUserID(c)
+func (h *UserHandler) Me(c *gin.Context) {
+	userID, ok := middleware.GetUserID(c)
 	if !ok {
 		return
 	}
